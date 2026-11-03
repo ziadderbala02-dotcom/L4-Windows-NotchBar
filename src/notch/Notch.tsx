@@ -8,6 +8,7 @@ import { PrivacyDots } from "../features/privacy/PrivacyDots";
 import { FOCUS_CLICKS, focusMode, setFocusMode } from "./focus";
 import { useDragToMove } from "./drag";
 import { LiveSlot, useLiveActivity } from "./live";
+import { goal } from "../features/football/store";
 import { DOCK_HEIGHT, HEADER_HEIGHT, geometry, openGeometry, type NotchGeometry } from "./geometry";
 import { HeaderButton, headerSlot } from "./header";
 import { sizeOverride } from "./size";
@@ -44,6 +45,7 @@ export function Notch() {
   const tab = tabId === settingsTab.id ? settingsTab : (visible.find((t) => t.id === tabId) ?? visible[0] ?? tabs[0]);
   const np = useNowPlaying();
   const live = useLiveActivity();
+  const goalNow = goal.use();
 
   // Like the Dynamic Island: opening jumps to the running activity's tool,
   // but only after a pause. Closed briefly (copying a key, grabbing a file) → you
@@ -78,7 +80,9 @@ export function Notch() {
       ? geometry.line
       : lineIdle && status === "peek"
         ? geometry.linePeek
-        : shapeFor(status, shownLive, size);
+        : shapeFor(status, shownLive, size, !!goalNow);
+  // Goal: the closed notch glows in the scoring team's color while it celebrates.
+  const glow = status !== "open" && shownLive === "football" && goalNow && !goalNow.disallowed ? goalNow.team.color : null;
   const tightHit = shape === geometry.line || shape === geometry.linePeek;
   const sticky = useStickyHitZone(status, size.h);
   const transition = useTransitionFor(status, shape);
@@ -170,7 +174,7 @@ export function Notch() {
         onPointerLeave={isNative || focus ? undefined : onPointerLeave}
         onClick={onClick}
       >
-        <NotchShape geometry={shape} transition={transition} elevated={status === "open"}>
+        <NotchShape geometry={shape} transition={transition} elevated={status === "open"} glow={glow}>
           <LiveSlot id={status === "open" ? null : shownLive} />
           {!line && !idleLine && <PrivacyDots />}
 
@@ -327,9 +331,10 @@ function useStickyHitZone(status: NotchStatus, height: number) {
 /** pb-3 of the hit zone. */
 const HIT_PAD_BOTTOM = 12;
 
-function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h: number }): NotchGeometry {
+function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h: number }, goal = false): NotchGeometry {
   if (status === "open") return openGeometry(size.w, size.h);
-  const base = live === "system" ? geometry.gaming : live ? geometry.live : geometry.closed;
+  if (live === "football" && goal) return geometry.goal;
+  const base = live === "system" ? geometry.gaming : live === "football" ? geometry.score : live ? geometry.live : geometry.closed;
   if (status === "peek") {
     // Hover nudge relative to the current width so it also fits the live state.
     const bump = geometry.peek.w - geometry.closed.w;

@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "L4-Notchbar",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "identifier": "app.notch.windows",
   "build": {
     "beforeDevCommand": "npm run dev",
@@ -47,13 +47,13 @@
       "icons/128x128.png",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": false
   },
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDU5QzRCNzVEMzJFQ0JBRkIKUldUN3V1d3lYYmZFV2JWb3RoYTcwTXdjZ1RveW9hRm1CNzNZbWNTc25xcWRJV01zZUNSbWhxdUMK",
       "endpoints": [
-        "https://github.com/Linux5Real/L4-Windows-NotchBar/releases/latest/download/latest.json"
+        "https://github.com/ziadderbala02-dotcom/L4-Windows-NotchBar/releases/latest/download/latest.json"
       ],
       "windows": {
         "installMode": "passive"

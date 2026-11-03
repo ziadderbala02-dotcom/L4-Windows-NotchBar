@@ -1,0 +1,111 @@
+/*
+ * Football data, provider-neutral. ESPN (./espn.ts) covers the big leagues and
+ * tournaments; SofaScore (./sofa.ts) fills the gaps ESPN doesn't cover (Egyptian league).
+ */
+
+export type Source = "espn" | "sofa";
+
+export interface Side {
+  /** Provider team ID ("83"). With the source it identifies a team: "espn:83". */
+  id: string;
+  name: string;
+  short: string;
+  abbr: string;
+  logo: string | null;
+  /** Team color as #rrggbb, already brightened enough to glow on black. */
+  color: string;
+  score: number;
+}
+
+export interface MatchEvent {
+  kind: "goal" | "red";
+  side: "home" | "away";
+  minute: string;
+  player: string | null;
+  own: boolean;
+  penalty: boolean;
+}
+
+export interface Match {
+  /** "espn:401234" / "sofa:12345678". */
+  key: string;
+  source: Source;
+  id: string;
+  /** Competition slug (ESPN) or tournament ID (SofaScore). */
+  league: string;
+  leagueName: string;
+  state: "pre" | "in" | "post";
+  /** "67'", "45'+2'", "HT", "FT", or the kickoff time before the start. */
+  clock: string;
+  /** Kickoff, ms since epoch. */
+  kickoff: number;
+  home: Side;
+  away: Side;
+  events: MatchEvent[];
+}
+
+/** A team the user follows. */
+export interface FollowedTeam {
+  key: string;
+  source: Source;
+  id: string;
+  name: string;
+  logo: string | null;
+  /** ESPN: the league the team was picked from (for its schedule). */
+  league: string | null;
+}
+
+export function teamKey(source: Source, id: string): string {
+  return `${source}:${id}`;
+}
+
+/** Fallback when a provider has no color: neutral but still visible. */
+const FALLBACK = "#d1d1d6";
+
+/**
+ * Team colors come in all shades; a navy or black glow disappears on the black notch.
+ * Keeps the hue and raises the lightness instead (navy → bright blue, maroon → red).
+ * Of a team's two colors the more colorful one wins; grey, black or white → soft white.
+ */
+export function glowColor(hex: string | null | undefined, alt?: string | null): string {
+  const pick = [hex, alt].map(norm).filter((c): c is string => !!c).map(hsl);
+  if (!pick.length) return FALLBACK;
+  const colorful = pick.filter((c) => c[1] >= 0.2 && c[2] > 0.06 && c[2] < 0.97);
+  if (!colorful.length) return FALLBACK;
+  const [h, s, l] = colorful.sort((a, b) => b[1] - a[1])[0];
+  return fromHsl(h, Math.max(s, 0.6), Math.min(Math.max(l, 0.55), 0.7));
+}
+
+function norm(c: string | null | undefined): string | null {
+  if (!c) return null;
+  const s = c.trim().replace(/^#/, "");
+  if (/^[0-9a-f]{6}$/i.test(s)) return `#${s.toLowerCase()}`;
+  if (/^[0-9a-f]{3}$/i.test(s)) return `#${s.split("").map((x) => x + x).join("").toLowerCase()}`;
+  return null;
+}
+
+function hsl(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  const r = ((n >> 16) & 255) / 255;
+  const g = ((n >> 8) & 255) / 255;
+  const b = (n & 255) / 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  if (max === min) return [0, 0, l];
+  const d = max - min;
+  const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+  const h = max === r ? ((g - b) / d + (g < b ? 6 : 0)) / 6 : max === g ? ((b - r) / d + 2) / 6 : ((r - g) / d + 4) / 6;
+  return [h, s, l];
+}
+
+function fromHsl(h: number, s: number, l: number): string {
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const ch = (t: number) => {
+    const x = t < 0 ? t + 1 : t > 1 ? t - 1 : t;
+    const v = x < 1 / 6 ? p + (q - p) * 6 * x : x < 1 / 2 ? q : x < 2 / 3 ? p + (q - p) * (2 / 3 - x) * 6 : p;
+    return Math.round(v * 255).toString(16).padStart(2, "0");
+  };
+  return `#${ch(h + 1 / 3)}${ch(h)}${ch(h - 1 / 3)}`;
+}

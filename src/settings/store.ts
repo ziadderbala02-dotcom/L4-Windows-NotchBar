@@ -61,6 +61,7 @@ export interface Settings {
 /** All tool IDs in default order. Must match `src/notch/tabs.ts`. */
 export const TOOL_IDS = [
   "overview",
+  "football",
   "media",
   "timer",
   "todos",
@@ -144,6 +145,7 @@ settings.set((s) => {
     if (tools.some((t) => t.id === id)) continue;
     // Overview is the start page, so put it first for existing installs.
     if (id === "overview") tools.unshift({ id, enabled: true });
+    else if (id === "football") tools.splice(tools[0]?.id === "overview" ? 1 : 0, 0, { id, enabled: true });
     else tools.push({ id, enabled: !DEFAULT_OFF.has(id) });
   }
   return {

@@ -8,6 +8,7 @@ mod display;
 mod documents;
 mod drop;
 mod fps;
+mod football;
 mod hit_test;
 mod media;
 mod memory;
@@ -94,6 +95,7 @@ pub fn run() {
             secrets::secret_has,
             trading::trading_fetch,
             usage::usage_fetch,
+            football::football_get,
             system::system_stats,
             convert::convert_probe,
             convert::convert_files,

@@ -7,6 +7,8 @@ import { LiveDiscord } from "../features/discord/LiveDiscord";
 import { useDiscordCall } from "../features/discord/store";
 import { LiveGaming } from "../features/system/LiveGaming";
 import { useGamingLive } from "../features/system/gaming";
+import { LiveScore } from "../features/football/LiveScore";
+import { goal, useFeaturedMatch } from "../features/football/store";
 import { geometry } from "./geometry";
 import { LiveSpread, ShapeWidth } from "./liveEdges";
 
@@ -20,9 +22,14 @@ export function useLiveActivity(): { id: string | null } {
   const timerLive = useTimerLive();
   const call = useDiscordCall();
   const np = useNowPlaying();
+  const match = useFeaturedMatch();
+  const g = goal.use();
   if (gaming) return { id: "system" };
+  // A goal interrupts everything except gaming mode, for the few seconds it lasts.
+  if (match && g && g.matchKey === match.key) return { id: "football" };
   if (timerLive) return { id: "timer" };
   if (call) return { id: "discord" };
+  if (match) return { id: "football" };
   if (np?.isPlaying) return { id: "media" };
   return { id: null };
 }
@@ -35,10 +42,11 @@ export function useLiveActivity(): { id: string | null } {
 export function LiveSlot({ id }: { id: string | null }) {
   const np = useNowPlaying();
   const call = useDiscordCall();
+  const match = useFeaturedMatch();
   // Keep the last size while an activity fades out (id is null when the notch opens).
   const last = useRef(id);
   if (id) last.current = id;
-  const box = last.current === "system" ? geometry.gaming : geometry.live;
+  const box = last.current === "system" ? geometry.gaming : last.current === "football" ? geometry.score : geometry.live;
   const boxW = useRef(box.w);
   boxW.current = box.w;
   const spread = useTransform(useContext(ShapeWidth), (w) =>
@@ -56,6 +64,7 @@ export function LiveSlot({ id }: { id: string | null }) {
           {id === "discord" && call && (
             <LiveDiscord key="discord" call={call} />
           )}
+          {id === "football" && match && <LiveScore key="football" match={match} />}
           {id === "media" && np && <LiveActivity key="media" np={np} />}
         </AnimatePresence>
       </div>

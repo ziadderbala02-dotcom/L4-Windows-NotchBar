@@ -1,5 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import { animate, motion, useMotionValue, useTransform, type Transition } from "motion/react";
+import { AnimatePresence, animate, motion, useMotionValue, useTransform, type Transition } from "motion/react";
 import type { NotchGeometry } from "./geometry";
 import { ShapeWidth } from "./liveEdges";
 
@@ -8,6 +8,8 @@ interface Props {
   transition: Transition;
   /** Shadow only when the notch "floats" over content (open). */
   elevated: boolean;
+  /** Pulsing colored halo around the body (goal celebration), or null. */
+  glow?: string | null;
   children?: ReactNode;
 }
 
@@ -19,7 +21,7 @@ interface Props {
  * re-render per frame. Animations are interruptible and keep their velocity
  * (important when hovering in and out quickly).
  */
-export function NotchShape({ geometry, transition, elevated, children }: Props) {
+export function NotchShape({ geometry, transition, elevated, glow = null, children }: Props) {
   const w = useMotionValue(geometry.w);
   const h = useMotionValue(geometry.h);
   const r = useMotionValue(geometry.r);
@@ -73,6 +75,23 @@ export function NotchShape({ geometry, transition, elevated, children }: Props) 
             "radial-gradient(circle farthest-side at 100% 100%, transparent calc(100% - 0.75px), var(--color-notch) 100%)",
         }}
       />
+      <AnimatePresence>
+        {glow && (
+          <motion.div
+            key="glow"
+            aria-hidden
+            className="absolute inset-0"
+            style={{
+              borderBottomLeftRadius: r,
+              borderBottomRightRadius: r,
+              boxShadow: `0 0 0 2px ${glow}, 0 0 14px 3px ${glow}, 0 0 34px 6px ${glow}66`,
+            }}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 1, 0.45, 1, 0.45, 1], transition: { duration: 2.4, times: [0, 0.12, 0.35, 0.55, 0.78, 1], ease: "easeInOut" } }}
+            exit={{ opacity: 0, transition: { duration: 0.6 } }}
+          />
+        )}
+      </AnimatePresence>
       <motion.div
         aria-hidden
         className="absolute inset-0"

@@ -30,6 +30,10 @@ export const geometry = {
   peek: { w: 204, h: 34, r: 12, ear: 7 },
   /** Closed with a live activity (music): side slots for cover + equalizer. */
   live: { w: 284, h: 30, r: 10, ear: 6 },
+  /** Live football: crest, code and score on each side, the minute in the middle. */
+  score: { w: 312, h: 30, r: 10, ear: 6 },
+  /** Goal celebration: grows wide and tall enough for the shout, scorer and score. */
+  goal: { w: 400, h: 58, r: 20, ear: 9 },
   /** Gaming mode: wider slots for FPS/CPU on the left and GPU/RAM on the right. */
   gaming: { w: 436, h: 30, r: 10, ear: 6 },
   /** Focus mode "line": a thin strip at the screen edge, just enough to find it again. */
