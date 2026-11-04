@@ -32,6 +32,10 @@ const MAX_BURST = 3;
 
 /** Seen IDs, persisted so a restart doesn't replay old headlines. */
 const seen = createStore<Record<string, number>>({}, { persist: "football-news-seen" });
+/** "Clear all": headlines published before this stay out of the list (persisted). */
+const clearedAt = createStore<number>(0, { persist: "football-news-cleared" });
+/** The first round after start only fills the list, it doesn't pop anything. */
+let started = false;
 seen.set((s) => Object.fromEntries(Object.entries(s).filter(([, at]) => Date.now() - at < 7 * 86_400_000)));
 
 /** Search words per team where the bare name is ambiguous ("الأهلي" is several clubs). */
@@ -99,17 +103,24 @@ async function pollNews() {
     all.push(n);
   }
   // Last two days, newest first, merged with what was already listed (365 only sends a few).
+  // Newest headline already listed: only something newer than that may pop up, so what the
+  // notch shows is always the top of the News list (Google indexes some articles late; those
+  // just slot into the list at their real time).
+  const highWater = news.get().reduce((m, n) => Math.max(m, n.at), 0);
+  // Right after start the list is empty: fill it quietly instead of popping old items.
+  const launch = !started;
+  started = true;
   const merged = [...all, ...news.get().filter((o) => !titles.has(norm(o.title)))];
   const fresh = merged.filter((n) => Date.now() - n.at < 2 * 86_400_000).sort((a, b) => b.at - a.at);
-  news.set(fresh.slice(0, 80));
+  news.set(fresh.filter((n) => n.at > clearedAt.get()).slice(0, 60));
 
   const unseen = all.filter((n) => !seen.get()[n.id]);
   seen.set((s) => ({ ...s, ...Object.fromEntries(unseen.map((n) => [n.id, Date.now()])) }));
   // First run: what's already out counts as seen, no burst of popups.
-  if (firstRun || mode === "off") return;
+  if (firstRun || launch || mode === "off") return;
   const pop = unseen
     .filter((n) => mode === "all" || n.team)
-    .filter((n) => Date.now() - n.at < 3 * 3600_000)
+    .filter((n) => Date.now() - n.at < 3 * 3600_000 && n.at > highWater)
     .sort((a, b) => b.at - a.at)
     .slice(0, MAX_BURST)
     .reverse();
@@ -145,4 +156,12 @@ window.setInterval(refreshNews, POLL_MS);
 export function openNews(url: string) {
   if (isNative) void invoke("football_open", { url }).catch(() => {});
   else window.open(url, "_blank");
+}
+
+/** Empty the News list (and drop whatever is waiting to pop up); only newer headlines come back. */
+export function clearNews() {
+  clearedAt.set(Date.now());
+  news.set([]);
+  queue.length = 0;
+  newsNotice.set(null);
 }

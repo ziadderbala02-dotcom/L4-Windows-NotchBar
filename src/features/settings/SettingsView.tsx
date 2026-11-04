@@ -546,6 +546,9 @@ function Display() {
       <Row label={t("Uhr und Akku")} hint={t("Im geschlossenen Notch, wenn nichts anderes läuft")}>
         <Switch label={t("Uhr und Akku")} checked={s.idleClock} onChange={(idleClock) => updateSettings({ idleClock })} />
       </Row>
+      <Row label={t("Benachrichtigungen im Notch")} hint={t("WhatsApp, Mails und andere Windows-Benachrichtigungen")}>
+        <Switch label={t("Benachrichtigungen im Notch")} checked={s.notifications} onChange={(notifications) => updateSettings({ notifications })} />
+      </Row>
     </Group>
   );
 }

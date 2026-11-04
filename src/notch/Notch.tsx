@@ -9,6 +9,11 @@ import { FOCUS_CLICKS, focusMode, setFocusMode } from "./focus";
 import { useDragToMove } from "./drag";
 import { LiveSlot, useLiveActivity } from "./live";
 import { goal } from "../features/football/store";
+import { NewsExpanded } from "../features/football/LiveScore";
+import { newsNotice, openNews, type TeamNews } from "../features/football/news";
+import { notifNotice, openApp, type Notif } from "../features/notifications/store";
+import { NotifExpanded } from "../features/notifications/NotificationsView";
+import { RecordButton } from "../features/record/LiveRecord";
 import { DOCK_HEIGHT, HEADER_HEIGHT, geometry, openGeometry, type NotchGeometry } from "./geometry";
 import { HeaderButton, headerSlot } from "./header";
 import { sizeOverride } from "./size";
@@ -22,6 +27,9 @@ import { findTab, settingsTab, tabs, type NotchTab } from "./tabs";
 import { holdOpen, pinned, togglePin, useNotchState, type NotchStatus } from "./useNotchState";
 import { t } from "../i18n";
 import { timer } from "../features/timer/store";
+
+/** Open size for a headline shown in full. */
+const NEWS_SIZE = { w: 520, h: 150 };
 
 /** If the notch was closed at most this long, it reopens on the last used tool. */
 const RESUME_MS = 60_000;
@@ -47,7 +55,7 @@ export function Notch() {
   const live = useLiveActivity();
   const goalNow = goal.use();
   // The tool a live activity opens (a football notice opens the football tool).
-  const liveTab = live.id === "notice" || live.id === "news" ? "football" : live.id;
+  const liveTab = live.id === "notice" || live.id === "news" ? "football" : live.id === "notif" ? "notifications" : live.id;
 
   // Like the Dynamic Island: opening jumps to the running activity's tool,
   // but only after a pause. Closed briefly (copying a key, grabbing a file) → you
@@ -57,6 +65,21 @@ export function Notch() {
   const closedAt = useRef(0);
   // A target tool from the tray (settings entry) takes priority over the live activity.
   const trayTab = useRef<string | null>(null);
+  // Opened while a headline or a message was showing: the notch shows it in full, not the tools.
+  const [expanded, setExpanded] = useState<{ kind: "news"; n: TeamNews } | { kind: "notif"; n: Notif } | null>(null);
+  useLayoutEffect(() => {
+    if (status === "open" && prevStatus.current !== "open") {
+      const news = live.id === "news" ? newsNotice.get() : null;
+      const msg = live.id === "notif" ? notifNotice.get() : null;
+      if (news) setExpanded({ kind: "news", n: news });
+      else if (msg) setExpanded({ kind: "notif", n: msg });
+    }
+    if (status !== "open" && expanded) {
+      if (expanded.kind === "news") newsNotice.set(null);
+      else notifNotice.set(null);
+      setExpanded(null);
+    }
+  }, [status]);
   useLayoutEffect(() => {
     if (status === "open" && prevStatus.current !== "open") {
       const resumed = Date.now() - closedAt.current < RESUME_MS;
@@ -71,7 +94,7 @@ export function Notch() {
   useQuickDrop(status, open, dismiss);
 
   const override = sizeOverride.use();
-  const size = override?.tabId === tab.id ? override : tab.size;
+  const size = expanded ? NEWS_SIZE : override?.tabId === tab.id ? override : tab.size;
   // Live activity shown in the closed notch (the idle line only lets the timer alarm through).
   const shownLive = line ? null : idleLine ? (alert ? "timer" : null) : live.id;
   // The idle line never passes through the small notch: line → slightly bigger line on
@@ -191,7 +214,25 @@ export function Notch() {
                 animate={{ opacity: 1, transform: "translateY(0px)", filter: "blur(0px)", transition: content.enter }}
                 exit={{ opacity: 0, transform: "translateY(-4px)", filter: "blur(4px)", transition: content.exit }}
               >
-                <Header title={t(tab.label)} onDragStart={drag.onPointerDown} />
+                {expanded?.kind === "news" ? (
+                  <NewsExpanded
+                    n={expanded.n}
+                    onOpen={() => {
+                      openNews(expanded.n.url);
+                      dismiss();
+                    }}
+                  />
+                ) : expanded?.kind === "notif" ? (
+                  <NotifExpanded
+                    n={expanded.n}
+                    onOpen={() => {
+                      openApp(expanded.n);
+                      dismiss();
+                    }}
+                  />
+                ) : (
+                  <>
+                <Header title={t(tab.label)} onDragStart={drag.onPointerDown} onRecordStart={dismiss} />
                 <div className="relative min-h-0 flex-1 overflow-clip">
                   <AnimatePresence mode="popLayout" initial={false}>
                     <motion.div
@@ -206,6 +247,8 @@ export function Notch() {
                   </AnimatePresence>
                 </div>
                 <Dock tabs={visible} activeId={tab.id} />
+                  </>
+                )}
               </motion.div>
             )}
           </AnimatePresence>
@@ -216,7 +259,7 @@ export function Notch() {
 }
 
 /** Header: tool title on the left, actions + pin on the right. The middle (camera) stays free. */
-function Header({ title, onDragStart }: { title: string; onDragStart: (e: React.PointerEvent) => void }) {
+function Header({ title, onDragStart, onRecordStart }: { title: string; onDragStart: (e: React.PointerEvent) => void; onRecordStart: () => void }) {
   const isPinned = pinned.use();
   return (
     // Empty header space = drag handle.
@@ -237,6 +280,7 @@ function Header({ title, onDragStart }: { title: string; onDragStart: (e: React.
       <div className="flex items-center gap-1">
         {/* Tools render here via <HeaderActions> (src/notch/header.tsx). The grid stacks old and new during a switch. */}
         <div ref={(el) => headerSlot.set(el)} className="grid" />
+        <RecordButton onStarted={onRecordStart} />
         <HeaderButton label={t("Fokus-Modus (3× klicken zum Beenden)")} onClick={() => setFocusMode(true)}>
           <Selection size={14} weight="bold" />
         </HeaderButton>
@@ -343,7 +387,7 @@ function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h
         ? geometry.score
         : live === "clock"
           ? geometry.clock
-          : live === "notice" || live === "news"
+          : live === "notice" || live === "news" || live === "notif"
             ? geometry.notice
           : live
             ? geometry.live

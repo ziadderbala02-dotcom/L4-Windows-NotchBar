@@ -1,6 +1,6 @@
 [package]
 name = "notch"
-version = "1.9.0"
+version = "2.0.0"
 edition = "2021"
 license = "GPL-3.0-only"
 
@@ -33,6 +33,7 @@ pulldown-cmark = "0.13.4"
 texpresso = "2.0.2"
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 quick-xml = "0.42.0"
+rusqlite = { version = "0.41", features = ["bundled"] }
 csv = "1.4.0"
 hmac = "0.12"
 sha1 = "0.10"

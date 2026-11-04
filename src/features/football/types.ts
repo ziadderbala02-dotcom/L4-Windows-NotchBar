@@ -53,6 +53,8 @@ export interface FollowedTeam {
   logo: string | null;
   /** ESPN: the league the team was picked from (for its schedule). */
   league: string | null;
+  /** 365Scores team: its ESPN counterpart, used while 365Scores is down (null = none found). */
+  espn?: { id: string; league: string } | null;
 }
 
 export function teamKey(source: Source, id: string): string {

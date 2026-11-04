@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowClockwise, Check, MagnifyingGlass, Newspaper, Plus, SlidersHorizontal, SoccerBall, X } from "@phosphor-icons/react";
-import { news, newsMode, openNews, refreshNews } from "./news";
+import { ArrowClockwise, Check, MagnifyingGlass, Newspaper, Plus, SlidersHorizontal, SoccerBall, Trash, X } from "@phosphor-icons/react";
+import { clearNews, news, newsMode, openNews, refreshNews } from "./news";
 import { content } from "../../design/motion";
 import { locale, t } from "../../i18n";
 import { formatAgo, formatTime } from "../../lib/format";
-import { COMPETITIONS, competitionName, fetchTeamSchedule } from "./espn";
+import { competitionName, fetchTeamSchedule } from "./espn";
 import { sofaTeamMatches } from "./sofa";
-import { search365, teamGames365, type TeamOption365 } from "./s365";
+import { COMPETITIONS_365, search365, teamGames365, type TeamOption365 } from "./s365";
 import { Crest } from "./LiveScore";
 import { MatchDetail, clickOrDouble, detail, onTeamClick, openDetail } from "./MatchDetail";
-import { cycleCompetition, follow, refreshScores, scores, toggleTeam, updateFollow } from "./store";
+import { cycleCompetition, fallback, follow, refreshScores, scores, toggleTeam, updateFollow } from "./store";
 import type { Match } from "./types";
 
 /*
@@ -22,6 +22,8 @@ import type { Match } from "./types";
 export function FootballView() {
   const [panel, setPanel] = useState<"matches" | "news" | "follow">("matches");
   const open = detail.use();
+  const backup = fallback.use();
+  const newsCount = news.use().length;
   if (open) return <MatchDetail />;
   return (
     <div className="relative flex h-full flex-col px-5 pt-1 pb-2">
@@ -43,6 +45,20 @@ export function FootballView() {
           </div>
         )}
         <span className="flex-1" />
+        {backup.active && panel !== "follow" && (
+          <span className="rounded-full bg-fill-1 px-2 py-0.5 text-caption text-yellow" title={t("365Scores antwortet gerade nicht, die Daten kommen solange von ESPN")}>
+            {t("ESPN (Ersatz)")}
+          </span>
+        )}
+        {panel === "news" && newsCount > 0 && (
+          <button
+            className="pressable flex h-7 items-center gap-1.5 rounded-full bg-fill-1 px-3 text-caption font-medium text-label-2 hover:text-label"
+            onClick={clearNews}
+          >
+            <Trash size={12} weight="bold" />
+            {t("Alle löschen")}
+          </button>
+        )}
         {panel !== "follow" && (
           <button
             className="pressable flex size-7 items-center justify-center rounded-full text-label-3 hover:text-label"
@@ -79,7 +95,7 @@ export function FootballView() {
 
 function NewsList() {
   const list = news.use();
-  if (!list.length) return <div className="flex h-full items-center justify-center text-body text-label-3">{t("Noch keine Nachrichten – kommt gleich")}</div>;
+  if (!list.length) return <div className="flex h-full items-center justify-center text-body text-label-3">{t("Keine neuen Nachrichten")}</div>;
   return (
     <div className="-mx-1 flex h-full flex-col overflow-y-auto px-1 pb-1" dir="rtl">
       {list.map((n) => (
@@ -88,7 +104,7 @@ function NewsList() {
           <span className="min-w-0 flex-1">
             <span className="line-clamp-2 text-footnote text-label">{n.title}</span>
             <span className="text-caption text-label-3">
-              {n.source} · {formatAgo(Date.now() - n.at)}
+              {n.source} · <bdi>{formatAgo(Date.now() - n.at)}</bdi>
             </span>
           </span>
         </button>
@@ -274,12 +290,12 @@ function Follow() {
       <div>
         <Label text={t("Alle Spiele zeigen von")} hint={t("Spiele deiner Teams kommen immer, auch ohne Auswahl")} />
         <div className="flex flex-wrap gap-1.5">
-          {COMPETITIONS.map((c) => {
-            const mode = f.competitions.find((x) => x.slug === c.slug)?.mode;
+          {COMPETITIONS_365.map((c) => {
+            const mode = f.competitions.find((x) => x.slug === c.id)?.mode;
             return (
               <button
-                key={c.slug}
-                onClick={() => cycleCompetition(c.slug)}
+                key={c.id}
+                onClick={() => cycleCompetition(c.id)}
                 className={`pressable flex h-7 items-center gap-1 rounded-full px-3 text-caption font-medium ${
                   mode === "all" ? "bg-fill-3 text-label ring-1 ring-label-3" : "bg-fill-1 text-label-3"
                 }`}

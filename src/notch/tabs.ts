@@ -5,6 +5,7 @@ import {
   ClipboardText,
   CloudSun,
   Cpu,
+  Bell,
   SoccerBall,
   Gauge,
   GearSix,
@@ -35,6 +36,7 @@ import { SystemView } from "../features/system/SystemView";
 import { DiscordView } from "../features/discord/DiscordView";
 import { VaultView } from "../features/vault/VaultView";
 import { FootballView } from "../features/football/FootballView";
+import { NotificationsView } from "../features/notifications/NotificationsView";
 import { SettingsView } from "../features/settings/SettingsView";
 
 /**
@@ -57,6 +59,7 @@ export interface NotchTab {
 export const tabs: NotchTab[] = [
   { id: "overview", label: "Übersicht", icon: SquaresFour, size: { w: 520, h: 252 }, View: OverviewView },
   { id: "football", label: "Fußball", icon: SoccerBall, size: { w: 600, h: 340 }, View: FootballView },
+  { id: "notifications", label: "Benachrichtigungen", icon: Bell, size: { w: 560, h: 330 }, View: NotificationsView },
   { id: "media", label: "Wiedergabe", icon: MusicNotesSimple, size: { w: 520, h: 232 }, View: NowPlayingView },
   { id: "timer", label: "Timer", icon: Timer, size: { w: 520, h: 192 }, View: TimerView },
   { id: "todos", label: "To-Dos", icon: CheckCircle, size: { w: 520, h: 276 }, View: TodosView },

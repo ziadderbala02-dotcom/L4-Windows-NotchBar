@@ -13,7 +13,9 @@ mod hit_test;
 mod media;
 mod memory;
 mod mixer;
+mod notifications;
 mod power;
+mod record;
 mod privacy;
 pub mod secrets;
 mod system;
@@ -60,6 +62,7 @@ pub fn run() {
                 .build(),
         )
         .manage(hit_test::HitState::default())
+        .manage(record::RecordState::default())
         .manage(media::MediaState::default())
         .manage(mixer::MixerState::default())
         .manage(clipboard::ClipboardState::default())
@@ -99,6 +102,12 @@ pub fn run() {
             football::football_get,
             football::football_open,
             power::battery_get,
+            notifications::notifications_poll,
+            notifications::notifications_open,
+            record::record_status,
+            record::record_start,
+            record::record_stop,
+            record::ffmpeg_install,
             system::system_stats,
             convert::convert_probe,
             convert::convert_files,

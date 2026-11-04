@@ -59,14 +59,28 @@ pub async fn football_get(url: String) -> Result<String, String> {
 }
 
 /// Open a news article or match page in the default browser (https only).
+///
+/// Through ShellExecute with the URL percent-encoded: handing `explorer` an Arabic
+/// URL made it open the Documents folder instead of the browser.
 #[tauri::command]
 pub fn football_open(url: String) -> Result<(), String> {
     if !url.starts_with("https://") {
         return Err("only https".into());
     }
+    let url = encode_url(&url);
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer").arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+        use windows::core::{w, HSTRING};
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        let target = HSTRING::from(url.as_str());
+        let r = unsafe { ShellExecuteW(None, w!("open"), &target, None, None, SW_SHOWNORMAL) };
+        // Values above 32 mean success.
+        if r.0 as isize > 32 {
+            Ok(())
+        } else {
+            Err(format!("open failed ({})", r.0 as isize))
+        }
     }
     #[cfg(not(windows))]
     {
@@ -75,15 +89,29 @@ pub fn football_open(url: String) -> Result<(), String> {
     }
 }
 
+/// Percent-encode everything outside printable ASCII (Arabic slugs, spaces), keep the rest.
+fn encode_url(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    for b in url.bytes() {
+        if b > 0x20 && b < 0x7f && b != b'"' {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::host_of;
+    use super::{encode_url, host_of};
 
     #[test]
     fn hosts() {
         assert_eq!(host_of("https://site.api.espn.com/apis/x"), Some("site.api.espn.com"));
         assert_eq!(host_of("https://api.sofascore.com?x=1"), Some("api.sofascore.com"));
         assert_eq!(host_of("http://site.api.espn.com/"), None);
+        assert_eq!(encode_url("https://a.com/خبر x"), "https://a.com/%D8%AE%D8%A8%D8%B1%20x");
         assert_eq!(host_of("https://evil.com@site.api.espn.com/"), Some("evil.com@site.api.espn.com"));
     }
 }

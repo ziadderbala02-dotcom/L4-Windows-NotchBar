@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlarmIcon as Whistle, Newspaper, SoccerBall, UsersThree } from "@phosphor-icons/react";
-import { openNews, type TeamNews } from "./news";
-import { formatTime } from "../../lib/format";
+import { AlarmIcon as Whistle, ArrowUpRight, Newspaper, SoccerBall, UsersThree } from "@phosphor-icons/react";
+import type { TeamNews } from "./news";
+import { formatAgo, formatTime } from "../../lib/format";
 import { content } from "../../design/motion";
 import { LiveEdge } from "../../notch/liveEdges";
 import { t } from "../../i18n";
@@ -244,14 +244,13 @@ export function FootballNotice({ n }: { n: Notice }) {
  *   [crest]  الأهلي · أخبار365
  *            عنوان الخبر …
  *
- * Clicking opens the notch (Notch) and the article in the browser.
+ * Hover or click opens the notch on the full headline (NewsExpanded); a click there opens the article.
  */
 export function NewsNoticeView({ n }: { n: TeamNews }) {
   return (
     <motion.div
       className="absolute inset-x-0 top-0 flex cursor-pointer items-center gap-3 px-4"
       style={{ height: 54 }}
-      onClick={() => openNews(n.url)}
       initial={{ opacity: 0, filter: "blur(4px)" }}
       animate={{ opacity: 1, filter: "blur(0px)", transition: { ...content.enter, delay: 0.15 } }}
       exit={{ opacity: 0, filter: "blur(4px)", transition: content.exit }}
@@ -270,5 +269,31 @@ export function NewsNoticeView({ n }: { n: TeamNews }) {
         <div className="truncate text-footnote font-medium text-label">{n.title}</div>
       </div>
     </motion.div>
+  );
+}
+
+/**
+ * Hovering a headline in the closed notch opens it in full instead of the tools:
+ *
+ *   [crest]  الأهلي · أخبار365 · منذ 3 د
+ *            Full headline, wrapped over as many lines as it needs …
+ *                                            [Read the article ↗]
+ */
+export function NewsExpanded({ n, onOpen }: { n: TeamNews; onOpen: () => void }) {
+  return (
+    <div className="flex h-full cursor-pointer flex-col gap-2 px-6 pt-4 pb-4" dir="rtl" onClick={onOpen}>
+      <div className="flex items-center gap-2 text-caption font-semibold text-link">
+        {n.team?.logo ? <img src={n.team.logo} alt="" className="size-5 object-contain" /> : <Newspaper size={14} weight="fill" />}
+        <span className="truncate">
+          {n.team ? `${n.team.name} · ` : ""}
+          {n.source} · <bdi>{formatAgo(Date.now() - n.at)}</bdi>
+        </span>
+      </div>
+      <div className="line-clamp-3 text-title leading-[22px] font-semibold text-label">{n.title}</div>
+      <div className="mt-auto flex items-center gap-1 self-end text-caption font-medium text-label-2" dir="ltr">
+        {t("Artikel lesen")}
+        <ArrowUpRight size={11} weight="bold" />
+      </div>
+    </div>
   );
 }

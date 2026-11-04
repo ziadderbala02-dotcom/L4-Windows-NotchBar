@@ -43,7 +43,12 @@ function useBattery(): Battery | null | undefined {
   const [b, setB] = useState<Battery | null | undefined>(undefined);
   useEffect(() => {
     let alive = true;
-    const load = () => void readBattery().then((v) => alive && setB(v)).catch(() => alive && setB(null));
+    // Only re-render when something actually changed (most polls return the same values).
+    const same = (a: Battery | null | undefined, c: Battery | null) => a === c || (!!a && !!c && a.percent === c.percent && a.charging === c.charging && a.plugged === c.plugged);
+    const load = () =>
+      void readBattery()
+        .then((v) => alive && setB((prev) => (same(prev, v) ? prev : v)))
+        .catch(() => alive && setB((prev) => (prev === null ? prev : null)));
     load();
     // A cheap system call: often enough that plugging in shows within a few seconds.
     const id = window.setInterval(load, 3_000);

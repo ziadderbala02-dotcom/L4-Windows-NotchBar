@@ -58,12 +58,15 @@ export interface Settings {
   updates: { auto: boolean };
   /** Idle closed notch shows the time and battery instead of staying black. */
   idleClock: boolean;
+  /** Windows notifications (WhatsApp, mail …) pop up in the notch. */
+  notifications: boolean;
 }
 
 /** All tool IDs in default order. Must match `src/notch/tabs.ts`. */
 export const TOOL_IDS = [
   "overview",
   "football",
+  "notifications",
   "media",
   "timer",
   "todos",
@@ -108,6 +111,7 @@ const defaults: Settings = {
   presentation: { manual: false, auto: true },
   updates: { auto: true },
   idleClock: true,
+  notifications: true,
 };
 
 /** °F and 12 h where the Windows region uses them (US & co.), otherwise °C and 24 h. */
@@ -149,6 +153,10 @@ settings.set((s) => {
     // Overview is the start page, so put it first for existing installs.
     if (id === "overview") tools.unshift({ id, enabled: true });
     else if (id === "football") tools.splice(tools[0]?.id === "overview" ? 1 : 0, 0, { id, enabled: true });
+    else if (id === "notifications") {
+      const at = tools.findIndex((t) => t.id === "football");
+      tools.splice(at >= 0 ? at + 1 : 1, 0, { id, enabled: true });
+    }
     else tools.push({ id, enabled: !DEFAULT_OFF.has(id) });
   }
   return {

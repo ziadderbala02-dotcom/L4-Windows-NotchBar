@@ -9,6 +9,10 @@ import { LiveGaming } from "../features/system/LiveGaming";
 import { useGamingLive } from "../features/system/gaming";
 import { FootballNotice, LiveScore, NewsNoticeView } from "../features/football/LiveScore";
 import { newsNotice } from "../features/football/news";
+import { notifNotice } from "../features/notifications/store";
+import { LiveRecord, SavedNotice, useRecordLive } from "../features/record/LiveRecord";
+import { saved } from "../features/record/store";
+import { NotifNotice } from "../features/notifications/NotificationsView";
 import { goal, notice, useFeaturedMatch } from "../features/football/store";
 import { LiveClock, useClockLive } from "./LiveClock";
 import { geometry } from "./geometry";
@@ -29,10 +33,17 @@ export function useLiveActivity(): { id: string | null } {
   const clock = useClockLive();
   const note = notice.use();
   const headline = newsNotice.use();
+  const message = notifNotice.use();
+  const recording = useRecordLive();
+  const justSaved = saved.use();
   if (gaming) return { id: "system" };
+  // Recording: always visible, so it's never forgotten running.
+  if (recording) return { id: "record" };
+  if (justSaved) return { id: "saved" };
   // A goal interrupts everything except gaming mode, for the few seconds it lasts.
   if (match && g && g.matchKey === match.key) return { id: "football" };
   if (note) return { id: "notice" };
+  if (message) return { id: "notif" };
   if (headline && !timerLive && !call) return { id: "news" };
   if (timerLive) return { id: "timer" };
   if (call) return { id: "discord" };
@@ -53,6 +64,7 @@ export function LiveSlot({ id }: { id: string | null }) {
   const match = useFeaturedMatch();
   const note = notice.use();
   const headline = newsNotice.use();
+  const message = notifNotice.use();
   // Keep the last size while an activity fades out (id is null when the notch opens).
   const last = useRef(id);
   if (id) last.current = id;
@@ -63,7 +75,7 @@ export function LiveSlot({ id }: { id: string | null }) {
         ? geometry.score
         : last.current === "clock"
           ? geometry.clock
-          : last.current === "notice" || last.current === "news"
+          : last.current === "notice" || last.current === "news" || last.current === "notif"
             ? geometry.notice
           : geometry.live;
   const boxW = useRef(box.w);
@@ -86,8 +98,11 @@ export function LiveSlot({ id }: { id: string | null }) {
           {id === "football" && match && <LiveScore key="football" match={match} />}
           {id === "notice" && note && <FootballNotice key={`notice-${note.at}`} n={note} />}
           {id === "news" && headline && <NewsNoticeView key={`news-${headline.id}`} n={headline} />}
+          {id === "notif" && message && <NotifNotice key={`notif-${message.id}-${message.at}`} n={message} />}
           {id === "media" && np && <LiveActivity key="media" np={np} />}
           {id === "clock" && <LiveClock key="clock" />}
+          {id === "record" && <LiveRecord key="record" />}
+          {id === "saved" && <SavedNotice key="saved" />}
         </AnimatePresence>
       </div>
     </LiveSpread.Provider>

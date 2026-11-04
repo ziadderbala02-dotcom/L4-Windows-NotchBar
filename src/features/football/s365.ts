@@ -258,3 +258,37 @@ export async function news365(ids: string[], filter?: string): Promise<NewsItem[
     source: "365Scores",
   }));
 }
+
+/** Competitions offered under "show every match of" (365Scores IDs). */
+export const COMPETITIONS_365: { id: string; short: string; name: string }[] = [
+  { id: "552", short: "الدوري المصري", name: "Egyptian Premier League" },
+  { id: "553", short: "كأس مصر", name: "Egypt Cup" },
+  { id: "7808", short: "كأس الرابطة", name: "Egyptian League Cup" },
+  { id: "624", short: "أبطال أفريقيا", name: "CAF Champions League" },
+  { id: "627", short: "الكونفدرالية", name: "CAF Confederation Cup" },
+  { id: "167", short: "أمم أفريقيا", name: "Africa Cup of Nations" },
+  { id: "5930", short: "كأس العالم", name: "FIFA World Cup" },
+  { id: "572", short: "أبطال أوروبا", name: "UEFA Champions League" },
+  { id: "573", short: "الدوري الأوروبي", name: "UEFA Europa League" },
+  { id: "7", short: "الدوري الإنجليزي", name: "Premier League" },
+  { id: "11", short: "الدوري الإسباني", name: "LaLiga" },
+  { id: "17", short: "الدوري الإيطالي", name: "Serie A" },
+  { id: "25", short: "الدوري الألماني", name: "Bundesliga" },
+  { id: "35", short: "الدوري الفرنسي", name: "Ligue 1" },
+  { id: "649", short: "الدوري السعودي", name: "Saudi Pro League" },
+  { id: "8", short: "كأس إنجلترا", name: "FA Cup" },
+  { id: "15", short: "السوبر الإسباني", name: "Supercopa de España" },
+];
+
+/** Every game of these competitions (recent, live, next). */
+export async function competitionsGames365(ids: string[]): Promise<Match[]> {
+  if (!ids.length) return [];
+  const r = await getJson<{ games?: RawGame[] }>(url(`games/current/?competitions=${ids.join(",")}`));
+  return (r.games ?? []).map((g) => parse365(g));
+}
+
+/** The English name of a 365Scores team (to find it on ESPN for the fallback). */
+export async function englishName365(id: string, query: string): Promise<string | null> {
+  const r = await getJson<{ competitors?: RawCompetitor[] }>(url(`search/?query=${encodeURIComponent(query)}`).replace("langId=27", "langId=1"));
+  return r.competitors?.find((c) => String(c.id) === id)?.name ?? null;
+}

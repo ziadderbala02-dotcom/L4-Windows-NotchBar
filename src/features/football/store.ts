@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { createStore } from "../../lib/store";
 import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
-import { fetchLineups, fetchScoreboard } from "./espn";
+import { fetchLineups, fetchScoreboard, fetchTeams } from "./espn";
 import { sofaIncidents, sofaLineups, sofaMatch, sofaTeamMatches } from "./sofa";
-import { crest365, game365, teamGames365 } from "./s365";
+import { competitionsGames365, crest365, englishName365, game365, teamGames365 } from "./s365";
 import { teamKey, type FollowedTeam, type Lineups, type Match, type Side } from "./types";
 
 /*
@@ -19,7 +19,10 @@ import { teamKey, type FollowedTeam, type Lineups, type Match, type Side } from 
 export interface FollowState {
   enabled: boolean;
   teams: FollowedTeam[];
-  /** "teams" = only matches of followed teams, "all" = every match of the competition. */
+  /**
+   * Competitions shown in full (every match), as 365Scores IDs ("552"). Before 1.9.1
+   * these were ESPN slugs ("fifa.world"); the migration below converts them.
+   */
   competitions: { slug: string; mode: "teams" | "all" }[];
   /** Seconds the notch waits behind the live data (to match a delayed stream). */
   delay: number;
@@ -37,8 +40,8 @@ const defaults: FollowState = {
     { key: "s365:131", source: "s365", id: "131", name: "ريال مدريد", logo: crest365(131), league: null },
   ],
   competitions: [
-    { slug: "caf.nations", mode: "all" },
-    { slug: "fifa.world", mode: "all" },
+    { slug: "167", mode: "all" },
+    { slug: "5930", mode: "all" },
   ],
   delay: 0,
   news: true,
@@ -67,14 +70,93 @@ try {
   // No storage: keep the list.
 }
 
+// 1.9.1: everything comes from 365Scores, so ESPN and 365 never show the same match twice.
+// ESPN competition slugs become 365Scores IDs (the ones offered before; others are dropped).
+try {
+  if (!localStorage.getItem("notch:football-comps-365")) {
+    localStorage.setItem("notch:football-comps-365", "1");
+    const map: Record<string, string> = {
+      "caf.nations": "167", "fifa.world": "5930", "uefa.champions": "572", "uefa.europa": "573", "eng.1": "7", "esp.1": "11",
+      "ita.1": "17", "ger.1": "25", "fra.1": "35", "caf.champions": "624", "caf.confed": "627", "ksa.1": "649", "eng.fa": "8", "esp.super_cup": "15",
+    };
+    follow.set((s) => ({
+      ...s,
+      competitions: s.competitions
+        .filter((c) => c.mode === "all")
+        .map((c) => (map[c.slug] ? { slug: map[c.slug], mode: "all" as const } : /^\d+$/.test(c.slug) ? c : null))
+        .filter((c): c is { slug: string; mode: "all" } => !!c),
+    }));
+  }
+} catch {
+  // No storage: keep the list.
+}
+
 export function updateFollow(patch: Partial<FollowState> | ((s: FollowState) => Partial<FollowState>)) {
   follow.set((s) => ({ ...s, ...(typeof patch === "function" ? patch(s) : patch) }));
 }
 
 export function toggleTeam(team: FollowedTeam) {
+  const adding = !follow.get().teams.some((t) => t.key === team.key);
   updateFollow((s) => ({
-    teams: s.teams.some((t) => t.key === team.key) ? s.teams.filter((t) => t.key !== team.key) : [...s.teams, team],
+    teams: adding ? [...s.teams, team] : s.teams.filter((t) => t.key !== team.key),
   }));
+  if (adding && team.source === "s365" && team.espn === undefined && !KNOWN_ESPN[team.id]) void resolveEspn(team);
+}
+
+/* ---------- ESPN as a fallback for 365Scores ---------- */
+
+/**
+ * 365Scores is the main source (Arabic, Egyptian league), but its API is not official.
+ * After three failed rounds in a row the followed teams and competitions switch to their
+ * ESPN counterparts (English names, no Egyptian league) and 365Scores is retried every
+ * five minutes; the first success switches back. Only one source is ever live, so the
+ * same match can't show up twice.
+ */
+export const fallback = createStore<{ active: boolean; since: number | null }>({ active: false, since: null });
+let fails365 = 0;
+const FALLBACK_AFTER = 3;
+const RETRY_365_MS = 5 * 60_000;
+
+const KNOWN_ESPN: Record<string, { id: string; league: string }> = {
+  "8200": { id: "10207", league: "caf.confed" },
+  "132": { id: "83", league: "esp.1" },
+  "131": { id: "86", league: "esp.1" },
+};
+
+/** 365Scores competition → ESPN slug. */
+const COMP_TO_ESPN: Record<string, string> = {
+  "167": "caf.nations", "5930": "fifa.world", "572": "uefa.champions", "573": "uefa.europa", "7": "eng.1", "11": "esp.1",
+  "17": "ita.1", "25": "ger.1", "35": "fra.1", "624": "caf.champions", "627": "caf.confed", "649": "ksa.1", "8": "eng.fa", "15": "esp.super_cup",
+};
+
+/** Cups where followed clubs may play besides their league. */
+const FALLBACK_CUPS = ["uefa.champions", "uefa.europa", "caf.champions", "caf.confed", "fifa.cwc", "esp.copa_del_rey"];
+const LEAGUES_TO_SEARCH = ["eng.1", "esp.1", "ita.1", "ger.1", "fra.1", "ksa.1", "uefa.champions", "uefa.europa", "caf.champions", "caf.confed"];
+
+function espnFor(t: FollowedTeam): { id: string; league: string } | null {
+  if (t.source !== "s365") return null;
+  return t.espn ?? KNOWN_ESPN[t.id] ?? null;
+}
+
+/** Find a newly followed 365Scores team on ESPN (by its English name), once. */
+async function resolveEspn(team: FollowedTeam) {
+  const norm = (x: string) => x.toLowerCase().replace(/\b(fc|sc|cf|afc|club|al|el)\b|[^a-z]/g, "");
+  let found: { id: string; league: string } | null = null;
+  try {
+    const en = await englishName365(team.id, team.name);
+    if (en) {
+      for (const slug of LEAGUES_TO_SEARCH) {
+        const hit = (await fetchTeams(slug).catch(() => [])).find((x) => norm(x.name) === norm(en));
+        if (hit) {
+          found = { id: hit.id, league: slug };
+          break;
+        }
+      }
+    }
+  } catch {
+    // Leave it unresolved; it just won't have a fallback.
+  }
+  updateFollow((s) => ({ teams: s.teams.map((t) => (t.key === team.key ? { ...t, espn: found } : t)) }));
 }
 
 /** Every match of a competition on or off (your teams' matches show up anyway). */
@@ -207,7 +289,12 @@ function toolEnabled(): boolean {
 }
 
 function followedKeys(): Set<string> {
-  return new Set(follow.get().teams.map((t) => t.key));
+  const keys = new Set(follow.get().teams.map((t) => t.key));
+  if (fallback.get().active) for (const t of follow.get().teams) {
+    const e = espnFor(t);
+    if (e) keys.add(teamKey("espn", e.id));
+  }
+  return keys;
 }
 
 export function involvesFollowed(m: Match, keys = followedKeys()): boolean {
@@ -217,7 +304,8 @@ export function involvesFollowed(m: Match, keys = followedKeys()): boolean {
 function relevant(m: Match): boolean {
   const f = follow.get();
   if (involvesFollowed(m)) return true;
-  return m.source === "espn" && f.competitions.some((c) => c.slug === m.league && c.mode === "all");
+  if (m.source === "s365") return f.competitions.some((c) => c.slug === m.league && c.mode === "all");
+  return fallback.get().active && m.source === "espn" && f.competitions.some((c) => c.mode === "all" && COMP_TO_ESPN[c.slug] === m.league);
 }
 
 /** Running, or close enough to kickoff that the first minutes should be quick. */
@@ -232,10 +320,16 @@ function hot(m: Match, now = Date.now()): boolean {
  * followed) those on "my teams". 365Scores teams don't need any of them.
  */
 function espnSlugs(): string[] {
+  // Only teams added from ESPN (older installs); competitions come from 365Scores now.
+  const set = new Set<string>();
   const f = follow.get();
-  const anyEspnTeam = f.teams.some((t) => t.source === "espn");
-  const set = new Set(f.competitions.filter((c) => c.mode === "all" || anyEspnTeam).map((c) => c.slug));
   for (const t of f.teams) if (t.source === "espn" && t.league) set.add(t.league);
+  if (fallback.get().active) {
+    const mapped = f.teams.map(espnFor).filter((e): e is { id: string; league: string } => !!e);
+    for (const e of mapped) set.add(e.league);
+    if (mapped.length) for (const c of FALLBACK_CUPS) set.add(c);
+    for (const c of f.competitions) if (c.mode === "all" && COMP_TO_ESPN[c.slug]) set.add(COMP_TO_ESPN[c.slug]);
+  }
   return [...set];
 }
 
@@ -275,12 +369,14 @@ async function pollSofa(team: FollowedTeam, now: number) {
  */
 async function poll365(now: number) {
   const ids = follow.get().teams.filter((t) => t.source === "s365").map((t) => t.id);
-  if (!ids.length) {
+  const comps = follow.get().competitions.filter((c) => c.mode === "all" && /^\d+$/.test(c.slug)).map((c) => c.slug);
+  if (!ids.length && !comps.length) {
     cache365 = [];
     return;
   }
   try {
-    let ms = await teamGames365(ids);
+    const [byTeam, byComp] = await Promise.all([teamGames365(ids), competitionsGames365(comps)]);
+    let ms = [...byTeam, ...byComp.filter((g) => !byTeam.some((x) => x.key === g.key))];
     const live = ms.filter((m) => m.state === "in");
     if (live.length) {
       const details = await Promise.allSettled(live.map((m) => game365(m.id)));
@@ -290,10 +386,22 @@ async function poll365(now: number) {
     }
     cache365 = ms;
     failed.delete("s365");
+    fails365 = 0;
+    if (fallback.get().active) {
+      // Back on 365Scores: the ESPN data goes (espnSlugs shrinks, the cycle drops it).
+      fallback.set({ active: false, since: null });
+    }
     nextAt.set("s365", now + (ms.some((m) => hot(m, now)) ? FAST_MS : SLOW_MS));
   } catch {
     failed.add("s365");
-    nextAt.set("s365", now + RETRY_MS);
+    fails365++;
+    if (fails365 >= FALLBACK_AFTER && !fallback.get().active) {
+      fallback.set({ active: true, since: now });
+      cache365 = [];
+      // Fetch the ESPN side right away (its slugs aren't scheduled yet, so they're due).
+      window.setTimeout(() => void cycle(), 1500);
+    }
+    nextAt.set("s365", now + (fallback.get().active ? RETRY_365_MS : RETRY_MS));
   }
 }
 

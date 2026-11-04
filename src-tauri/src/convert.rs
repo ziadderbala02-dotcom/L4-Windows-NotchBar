@@ -256,7 +256,7 @@ fn convert_media(input: &Path, output: &Path, target: &str, quality: u8) -> Resu
     }
 }
 
-fn ffmpeg() -> Option<PathBuf> {
+pub(crate) fn ffmpeg() -> Option<PathBuf> {
     let mut probe = Command::new("ffmpeg");
     probe.arg("-version");
     hide_console(&mut probe);

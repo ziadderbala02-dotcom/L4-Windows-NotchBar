@@ -527,5 +527,20 @@
  "Letzte Ergebnisse": "Recent results",
  "Alle Schlagzeilen erscheinen im Tab Nachrichten": "Every headline is listed in the News tab",
  "Alle Fußball-News": "All football news",
- "Nur meine Teams": "My teams only"
+ "Nur meine Teams": "My teams only",
+ "Artikel lesen": "Read the article",
+ "365Scores antwortet gerade nicht, die Daten kommen solange von ESPN": "365Scores isn't answering right now, data comes from ESPN meanwhile",
+ "ESPN (Ersatz)": "ESPN (backup)",
+ "Benachrichtigungen": "Notifications",
+ "Benachrichtigungen im Notch": "Notifications in the notch",
+ "WhatsApp, Mails und andere Windows-Benachrichtigungen": "WhatsApp, mail and other Windows notifications",
+ "Verpasst": "Missed",
+ "{n} Benachrichtigungen": "{n} notifications",
+ "Benachrichtigungen können gerade nicht gelesen werden": "Can't read notifications right now",
+ "Neue Benachrichtigungen (WhatsApp, Mails …) erscheinen im Notch und bleiben hier": "New notifications (WhatsApp, mail …) pop up in the notch and stay here",
+ "Aufnahme beenden": "Stop recording",
+ "Gespeichert · Zeigen": "Saved · Show",
+ "Für Bildschirmaufnahmen wird ffmpeg benötigt – jetzt installieren": "Screen recording needs ffmpeg – install it now",
+ "Bildschirm aufnehmen": "Record the screen",
+ "Keine neuen Nachrichten": "No new headlines"
 }
