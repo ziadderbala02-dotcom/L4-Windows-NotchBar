@@ -11,6 +11,15 @@ export interface AskProviderConfig {
   baseUrl: string;
 }
 
+export type SoundKind = "notif" | "news" | "task" | "goal";
+export interface SoundPref {
+  on: boolean;
+  /** Built-in id ("pop", "alarm:bell", …) or "custom" with `file`. */
+  sound: string;
+  file: string | null;
+  volume: number;
+}
+
 export interface Settings {
   /** Open on hover or only on click. */
   openMode: "hover" | "click";
@@ -63,6 +72,8 @@ export interface Settings {
   /** How long a notification / a headline stays in the closed notch, in seconds. */
   notifSeconds: number;
   newsSeconds: number;
+  /** Sounds for what pops up in the notch. Quiet while Windows' Do not disturb is on. */
+  sounds: { muteAll: boolean; items: Record<SoundKind, SoundPref> };
 }
 
 /** All tool IDs in default order. Must match `src/notch/tabs.ts`. */
@@ -117,6 +128,15 @@ const defaults: Settings = {
   notifications: true,
   notifSeconds: 5,
   newsSeconds: 9,
+  sounds: {
+    muteAll: false,
+    items: {
+      notif: { on: true, sound: "pop", file: null, volume: 0.6 },
+      news: { on: false, sound: "tap", file: null, volume: 0.5 },
+      task: { on: true, sound: "alarm:marimba", file: null, volume: 0.7 },
+      goal: { on: true, sound: "goal", file: null, volume: 0.7 },
+    },
+  },
 };
 
 /** °F and 12 h where the Windows region uses them (US & co.), otherwise °C and 24 h. */
@@ -177,6 +197,12 @@ settings.set((s) => {
     units: { ...defaults.units, ...s.units },
     presentation: { ...defaults.presentation, ...s.presentation },
     updates: { ...defaults.updates, ...s.updates },
+    sounds: {
+      muteAll: s.sounds?.muteAll ?? false,
+      items: Object.fromEntries(
+        (Object.keys(defaults.sounds.items) as SoundKind[]).map((k) => [k, { ...defaults.sounds.items[k], ...s.sounds?.items?.[k] }]),
+      ) as Record<SoundKind, SoundPref>,
+    },
     ask: migrateAsk(s.ask),
   };
 });

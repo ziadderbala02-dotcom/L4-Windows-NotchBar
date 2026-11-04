@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { Eye, EyeSlash, Moon, MusicNoteSimple, SpeakerHigh, SpeakerLow, SpeakerNone, SpeakerSimpleSlash, Timer } from "@phosphor-icons/react";
+import { Eye, EyeSlash, Moon, MusicNoteSimple, SpeakerHigh, SpeakerLow, SpeakerNone, SpeakerSimpleSlash, Sun, SunDim, SunHorizon, Timer } from "@phosphor-icons/react";
+import { invoke } from "@tauri-apps/api/core";
+import { isNative } from "../../platform/native";
 import { DiscordLogo } from "../../ui/brands";
 import { content, springs } from "../../design/motion";
 import { HeaderActions, HeaderButton } from "../../notch/header";
@@ -41,6 +43,10 @@ export function OverviewView() {
       <div className="flex gap-2">
         <FocusTile />
         <VolumeTile />
+      </div>
+      <div className="flex gap-2">
+        <NightTile />
+        <BrightnessTile />
       </div>
     </div>
   );
@@ -285,6 +291,142 @@ function VolumeTile() {
         />
       </div>
       <span className="tabular w-8 shrink-0 text-right text-caption font-semibold text-label-2">{vol ? Math.round(level * 100) : "–"}</span>
+    </div>
+  );
+}
+
+/* ---------- brightness + Night light ---------- */
+
+const display = {
+  brightness: (): Promise<number | null> => (isNative ? invoke<number | null>("brightness_get") : Promise.resolve(70)),
+  setBrightness: (level: number) => (isNative ? invoke("brightness_set", { level }) : Promise.resolve()),
+  night: (): Promise<boolean | null> => (isNative ? invoke<boolean | null>("nightlight_get") : Promise.resolve(mockNight)),
+  toggleNight: (): Promise<boolean | null> => (isNative ? invoke<boolean | null>("nightlight_toggle") : Promise.resolve((mockNight = !mockNight))),
+};
+let mockNight = false;
+
+/** Night light on/off; warm (orange) when on. Unknown state → the click opens Settings. */
+function NightTile() {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => {
+    const load = () => void display.night().then(setOn).catch(() => setOn(null));
+    load();
+    const id = setInterval(load, 3000);
+    return () => clearInterval(id);
+  }, []);
+  const active = !!on;
+  return (
+    <button
+      aria-pressed={active}
+      onClick={() => {
+        if (on !== null) setOn(!on);
+        void display.toggleNight().then((v) => v !== null && setOn(v));
+      }}
+      className={`pressable flex h-10 w-[150px] shrink-0 items-center gap-2.5 rounded-[12px] px-2.5 transition-colors duration-200 ${
+        active ? "bg-orange text-black" : "bg-fill-1 text-label"
+      }`}
+    >
+      <motion.span
+        className={`flex size-6 items-center justify-center rounded-full ${active ? "bg-black/10" : "bg-fill-2"}`}
+        animate={{ rotate: active ? 0 : -40 }}
+        transition={springs.snappy}
+      >
+        <SunHorizon size={14} weight="fill" />
+      </motion.span>
+      <span className="min-w-0 text-left">
+        <span className="block truncate text-footnote font-semibold">{t("Nachtlicht")}</span>
+        <span className={`block text-caption ${active ? "text-black/55" : "text-label-3"}`}>{on === null ? t("Einstellungen") : active ? t("An") : t("Aus")}</span>
+      </span>
+    </button>
+  );
+}
+
+/** Brightness slider, same look as the volume. Hidden on displays that can't be dimmed. */
+function BrightnessTile() {
+  const [level, setLevel] = useState<number | null | undefined>(undefined);
+  const dragging = useRef(false);
+  const track = useRef<HTMLDivElement>(null);
+  const pending = useRef<number | null>(null);
+  const sending = useRef(false);
+
+  useEffect(() => {
+    const load = () => !dragging.current && !sending.current && void display.brightness().then((v) => setLevel(v)).catch(() => setLevel(null));
+    load();
+    // Function keys on the laptop change it too.
+    const id = setInterval(load, 4000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Each change goes through PowerShell (slow): send the latest value, one at a time.
+  const push = (v: number) => {
+    pending.current = v;
+    if (sending.current) return;
+    sending.current = true;
+    const next = () => {
+      const p = pending.current;
+      pending.current = null;
+      if (p === null) return void (sending.current = false);
+      void display.setBrightness(p).catch(() => {}).finally(next);
+    };
+    next();
+  };
+
+  const set = (clientX: number) => {
+    const r = track.current!.getBoundingClientRect();
+    const v = Math.round(Math.min(1, Math.max(0, (clientX - r.left) / r.width)) * 100);
+    setLevel(v);
+    push(v);
+  };
+  const step = (by: number) => {
+    if (level == null) return;
+    const v = Math.min(100, Math.max(0, level + by));
+    setLevel(v);
+    push(v);
+  };
+
+  if (level === null) {
+    return (
+      <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-[12px] bg-fill-1 px-3 text-caption text-label-3">
+        <Sun size={15} weight="fill" />
+        {t("Helligkeit lässt sich bei diesem Bildschirm nicht ändern")}
+      </div>
+    );
+  }
+  const v = level ?? 0;
+  return (
+    <div className="flex h-10 min-w-0 flex-1 items-center gap-2 rounded-[12px] bg-fill-1 pr-3 pl-1.5">
+      <span className="flex size-7 shrink-0 items-center justify-center text-label-2">
+        {v < 40 ? <SunDim size={15} weight="fill" /> : <Sun size={15} weight="fill" />}
+      </span>
+      <div
+        ref={track}
+        role="slider"
+        tabIndex={0}
+        aria-label={t("Helligkeit")}
+        aria-valuenow={v}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        className="relative h-6 min-w-0 flex-1 cursor-pointer touch-none overflow-hidden rounded-full bg-fill-2 outline-none"
+        onPointerDown={(e) => {
+          if (level === undefined) return;
+          dragging.current = true;
+          e.currentTarget.setPointerCapture(e.pointerId);
+          set(e.clientX);
+        }}
+        onPointerMove={(e) => e.currentTarget.hasPointerCapture(e.pointerId) && set(e.clientX)}
+        onPointerUp={() => (dragging.current = false)}
+        onPointerCancel={() => (dragging.current = false)}
+        onWheel={(e) => step(e.deltaY < 0 ? 5 : -5)}
+        onKeyDown={(e) => (e.key === "ArrowRight" ? step(5) : e.key === "ArrowLeft" ? step(-5) : undefined)}
+      >
+        <motion.div
+          className="absolute inset-0 origin-left rounded-full bg-label"
+          initial={false}
+          animate={{ transform: `scaleX(${v / 100})` }}
+          transition={dragging.current ? { duration: 0 } : springs.snappy}
+        />
+      </div>
+      <span className="tabular w-8 shrink-0 text-right text-caption font-semibold text-label-2">{level === undefined ? "–" : v}</span>
     </div>
   );
 }

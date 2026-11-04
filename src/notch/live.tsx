@@ -15,6 +15,7 @@ import { saved } from "../features/record/store";
 import { NotifNotice } from "../features/notifications/NotificationsView";
 import { goal, notice, useFeaturedMatch } from "../features/football/store";
 import { LiveClock, useClockLive } from "./LiveClock";
+import { LiveTaskAlarm, LiveTaskSoon, useSoonTask, useTaskAlarm } from "../features/todos/LiveTask";
 import { geometry } from "./geometry";
 import { LiveSpread, ShapeWidth } from "./liveEdges";
 
@@ -36,10 +37,14 @@ export function useLiveActivity(): { id: string | null } {
   const message = notifNotice.use();
   const recording = useRecordLive();
   const justSaved = saved.use();
+  const taskAlarm = useTaskAlarm();
+  const soonTask = useSoonTask();
   if (gaming) return { id: "system" };
   // Recording: always visible, so it's never forgotten running.
   if (recording) return { id: "record" };
   if (justSaved) return { id: "saved" };
+  // A task due now waits for an answer (Done / snooze); a goal still cuts in.
+  if (taskAlarm && !(match && g && g.matchKey === match.key)) return { id: "taskAlarm" };
   // A goal interrupts everything except gaming mode, for the few seconds it lasts.
   if (match && g && g.matchKey === match.key) return { id: "football" };
   if (note) return { id: "notice" };
@@ -48,6 +53,7 @@ export function useLiveActivity(): { id: string | null } {
   if (timerLive) return { id: "timer" };
   if (call) return { id: "discord" };
   if (match) return { id: "football" };
+  if (soonTask) return { id: "taskSoon" };
   if (np?.isPlaying) return { id: "media" };
   if (clock) return { id: "clock" };
   return { id: null };
@@ -65,6 +71,8 @@ export function LiveSlot({ id }: { id: string | null }) {
   const note = notice.use();
   const headline = newsNotice.use();
   const message = notifNotice.use();
+  const taskAlarm = useTaskAlarm();
+  const soonTask = useSoonTask();
   // Keep the last size while an activity fades out (id is null when the notch opens).
   const last = useRef(id);
   if (id) last.current = id;
@@ -75,7 +83,9 @@ export function LiveSlot({ id }: { id: string | null }) {
         ? geometry.score
         : last.current === "clock"
           ? geometry.clock
-          : last.current === "notice" || last.current === "news" || last.current === "notif"
+          : last.current === "taskAlarm"
+            ? geometry.taskAlarm
+            : last.current === "notice" || last.current === "news" || last.current === "notif"
             ? geometry.notice
           : geometry.live;
   const boxW = useRef(box.w);
@@ -101,6 +111,8 @@ export function LiveSlot({ id }: { id: string | null }) {
           {id === "notif" && message && <NotifNotice key={`notif-${message.id}-${message.at}`} n={message} />}
           {id === "media" && np && <LiveActivity key="media" np={np} />}
           {id === "clock" && <LiveClock key="clock" />}
+          {id === "taskAlarm" && taskAlarm && <LiveTaskAlarm key={`task-${taskAlarm.id}`} task={taskAlarm} />}
+          {id === "taskSoon" && soonTask && <LiveTaskSoon key={`soon-${soonTask.id}`} task={soonTask} />}
           {id === "record" && <LiveRecord key="record" />}
           {id === "saved" && <SavedNotice key="saved" />}
         </AnimatePresence>

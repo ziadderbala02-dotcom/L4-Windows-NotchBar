@@ -134,3 +134,94 @@ export function alarmRinging(): boolean {
 export function stopAlarm() {
   stopCurrent?.();
 }
+
+/* ---------- event sounds (notifications, news, task alarms, goals) ---------- */
+
+/** Short one-shot sounds; the alarm patterns above can be used as well (played once). */
+type Shot = { notes: Note[]; noise?: { at: number; dur: number; gain: number } };
+const shots: Record<string, Shot> = {
+  pop: { notes: [{ freq: 1200, at: 0, decay: 0.12, gain: 0.8 }, { freq: 1800, at: 0.05, decay: 0.1, gain: 0.5 }] },
+  ding: { notes: [{ freq: 1568, at: 0, decay: 0.9, partials: [[2, 0.3], [3, 0.12]] }] },
+  tap: { notes: [{ freq: 990, at: 0, decay: 0.08, type: "triangle", gain: 0.9 }, { freq: 1320, at: 0.09, decay: 0.1, type: "triangle", gain: 0.7 }] },
+  whistle: {
+    notes: [
+      { freq: 2950, at: 0, decay: 0.32, type: "triangle", gain: 0.5 },
+      { freq: 2950, at: 0.38, decay: 0.32, type: "triangle", gain: 0.5 },
+      { freq: 2950, at: 0.76, decay: 0.9, type: "triangle", gain: 0.6 },
+    ],
+  },
+  // Whistle plus a crowd roar (filtered noise).
+  goal: {
+    notes: [{ freq: 2950, at: 0, decay: 0.5, type: "triangle", gain: 0.45 }],
+    noise: { at: 0.15, dur: 2.6, gain: 0.5 },
+  },
+};
+
+export const eventSounds: { value: string; label: string }[] = [
+  { value: "pop", label: "Pop" },
+  { value: "ding", label: "Ding" },
+  { value: "tap", label: "Tippen" },
+  { value: "whistle", label: "Pfiff" },
+  { value: "goal", label: "Stadion" },
+  ...alarmSounds.map((a) => ({ value: `alarm:${a.value}`, label: a.label })),
+  { value: "custom", label: "Eigene Datei …" },
+];
+
+/** Play one built-in sound once. */
+export function playShot(id: string, volume: number) {
+  if (id.startsWith("alarm:")) return void playAlarm(id.slice(6) as AlarmSound, volume, 0);
+  const shot = shots[id] ?? shots.pop;
+  ctx ??= new AudioContext();
+  const c = ctx;
+  void c.resume();
+  const master = c.createGain();
+  master.gain.value = Math.max(0, Math.min(1, volume)) * 0.5;
+  master.connect(c.destination);
+  const start = c.currentTime + 0.02;
+  for (const n of shot.notes) {
+    const t = start + n.at;
+    for (const [mult, rel] of [[1, 1], ...(n.partials ?? [])] as [number, number][]) {
+      const osc = c.createOscillator();
+      const g = c.createGain();
+      osc.type = n.type ?? "sine";
+      osc.frequency.value = n.freq * mult;
+      const peak = 0.25 * (n.gain ?? 1) * rel;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(peak, t + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + n.decay);
+      osc.connect(g).connect(master);
+      osc.start(t);
+      osc.stop(t + n.decay + 0.05);
+    }
+  }
+  if (shot.noise) {
+    const { at, dur, gain } = shot.noise;
+    const len = Math.floor(c.sampleRate * dur);
+    const buf = c.createBuffer(1, len, c.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = c.createBufferSource();
+    src.buffer = buf;
+    const band = c.createBiquadFilter();
+    band.type = "bandpass";
+    band.frequency.value = 900;
+    band.Q.value = 0.6;
+    const g = c.createGain();
+    const t = start + at;
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(gain * 0.25, t + 0.35);
+    g.gain.setValueAtTime(gain * 0.25, t + dur * 0.55);
+    g.gain.linearRampToValueAtTime(0, t + dur);
+    src.connect(band).connect(g).connect(master);
+    src.start(t);
+    src.stop(t + dur);
+  }
+  window.setTimeout(() => master.disconnect(), 4000);
+}
+
+/** Play an audio file (already loaded as a blob URL). */
+export function playUrl(url: string, volume: number) {
+  const a = new Audio(url);
+  a.volume = Math.max(0, Math.min(1, volume));
+  void a.play().catch(() => {});
+}

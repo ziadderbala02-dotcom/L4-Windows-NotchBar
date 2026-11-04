@@ -4,7 +4,8 @@ import { ArrowSquareOut, Check, ClipboardText, Copy, File, FileAudio, FileText, 
 import { fade, springs } from "../../design/motion";
 import { createStore } from "../../lib/store";
 import { formatBytes } from "../../lib/format";
-import { drop, pasteFiles, takeDropped, usePasteFiles } from "../../platform/drop";
+import { drop, pasteFiles, pickFiles, takeDropped, usePasteFiles } from "../../platform/drop";
+import { keyboardFocus } from "../../platform/native";
 import { HeaderActions, HeaderButton } from "../../notch/header";
 import { copyFiles, filePreview, openFile, probeFiles, revealFile, type DroppedFile, type FileKind } from "../../platform/services";
 import { t } from "../../i18n";
@@ -36,13 +37,13 @@ export function ShelfView() {
   useEffect(() => {
     const paths = takeDropped();
     if (!paths?.length) return;
-    void probeFiles(paths).then(({ files }) => {
+    probeFiles(paths).then(({ files }) => {
       const now = Date.now();
       shelf.set((list) => {
         const fresh = files.filter((f) => !list.some((x) => x.path === f.path)).map((f) => ({ ...f, addedAt: now }));
         return [...fresh, ...list].slice(0, MAX_ITEMS);
       });
-    });
+    }).catch(() => flash(setNothing));
   }, [dropped]);
 
   const copyAll = async (paths: string[], key: string) => {
@@ -53,7 +54,7 @@ export function ShelfView() {
 
   if (items.length === 0) {
     return (
-      <div className="h-full px-4 pt-1 pb-2">
+      <div className="h-full px-4 pt-1 pb-2" onPointerDown={grabKeys}>
         <motion.div
           className={`flex h-full flex-col items-center justify-center gap-1.5 rounded-[14px] border-[1.5px] border-dashed transition-colors duration-200 ${
             dragging ? "border-label-2 bg-fill-2" : "border-fill-3 bg-fill-1"
@@ -159,13 +160,35 @@ function Card({ item, copied, onCopy }: { item: ShelfItem; copied: boolean; onCo
 }
 
 /** Second path besides drag and drop, visible because Ctrl+V isn't discoverable. */
+/** Ways in besides dragging: the Open dialog, and pasting what was copied in Explorer. */
 export function PasteHint({ nothing }: { nothing: boolean }) {
+  const [empty, setEmpty] = useState(false);
   return (
-    <button onClick={() => void pasteFiles()} className="pressable flex items-center gap-1 text-caption text-label-3 hover:text-label-2">
-      <ClipboardText size={12} weight="bold" />
-      {nothing ? t("Keine Dateien in der Zwischenablage") : t("oder Strg+V zum Einfügen")}
-    </button>
+    <div className="mt-1.5 flex flex-col items-center gap-1.5">
+      <div className="flex gap-1.5">
+        <button
+          onClick={() => void pickFiles()}
+          className="pressable flex h-8 items-center gap-1.5 rounded-full bg-label px-4 text-footnote font-semibold text-black"
+        >
+          <FolderOpen size={13} weight="bold" />
+          {t("Dateien auswählen")}
+        </button>
+        <button
+          onClick={() => void pasteFiles().then((ok) => !ok && flash(setEmpty))}
+          className="pressable flex h-8 items-center gap-1.5 rounded-full bg-fill-2 px-4 text-footnote font-medium text-label-2 hover:text-label"
+        >
+          <ClipboardText size={13} weight="bold" />
+          {t("Einfügen")}
+        </button>
+      </div>
+      <span className="text-caption text-label-3">{nothing || empty ? t("Keine Dateien in der Zwischenablage") : t("Im Explorer kopiert (Strg+C)? Dann „Einfügen“")}</span>
+    </div>
   );
+}
+
+/** Clicking into a file tool gives the notch keyboard focus, so Ctrl+V reaches it. */
+export function grabKeys() {
+  keyboardFocus(true);
 }
 
 function flash(set: (v: boolean) => void) {

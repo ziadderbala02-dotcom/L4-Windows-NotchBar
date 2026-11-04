@@ -5,6 +5,7 @@ mod controls;
 pub mod convert;
 mod discord;
 mod display;
+mod display_extra;
 mod documents;
 mod drop;
 mod fps;
@@ -108,6 +109,12 @@ pub fn run() {
             record::record_start,
             record::record_stop,
             record::ffmpeg_install,
+            display_extra::brightness_get,
+            display_extra::brightness_set,
+            display_extra::nightlight_get,
+            display_extra::nightlight_toggle,
+            display_extra::pick_files,
+            display_extra::sound_read,
             system::system_stats,
             convert::convert_probe,
             convert::convert_files,

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createStore } from "../../lib/store";
 import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
+import { playFor } from "../../lib/sounds";
 import { fetchLineups, fetchScoreboard, fetchTeams } from "./espn";
 import { sofaIncidents, sofaLineups, sofaMatch, sofaTeamMatches } from "./sofa";
 import { COMPETITIONS_365, competitionsGames365, crest365, englishName365, game365, teamGames365 } from "./s365";
@@ -523,6 +524,7 @@ function celebrate(m: Match, side: "home" | "away", disallowed: boolean) {
   const last = [...m.events].reverse().find((e) => e.kind === "goal" && e.side === side);
   const g: Goal = { matchKey: m.key, side, team: m[side], player: disallowed ? null : (last?.player ?? null), minute: last?.minute ?? m.clock, disallowed, at: Date.now() };
   goal.set(g);
+  if (!disallowed) playFor("goal");
   window.setTimeout(() => goal.get() === g && goal.set(null), GOAL_MS);
   // 365Scores lists scorers in the game detail; fetch it if the list didn't have it yet.
   if (m.source === "s365" && !disallowed && !last) {

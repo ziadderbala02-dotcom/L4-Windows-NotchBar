@@ -18,11 +18,12 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { content, fade, springs } from "../../design/motion";
-import { alarmSounds, playAlarm, stopAlarm, type AlarmDuration } from "../../lib/sound";
+import { alarmSounds, eventSounds, playAlarm, stopAlarm, type AlarmDuration } from "../../lib/sound";
+import { pickSoundFile, previewSound, useDnd } from "../../lib/sounds";
 import { nav } from "../../notch/nav";
 import { tabs } from "../../notch/tabs";
 import { autostart, display, secrets, unlockFps, type ChangelogEntry, type MonitorInfo, type SecretName, type UsageId } from "../../platform/services";
-import { settings, updateAsk, updateSettings, type AskProvider } from "../../settings/store";
+import { settings, updateAsk, updateSettings, type AskProvider, type SoundKind, type SoundPref } from "../../settings/store";
 import { BrandLogo, brandName } from "../../ui/brands";
 import { Button, Group, Row, Segmented, Select, Slider, Switch, TextField } from "../../ui/controls";
 import { effortLevels, providerInfo } from "../ask/providers";
@@ -43,7 +44,7 @@ const pages: { id: PageId; label: string; icon: Icon }[] = [
   { id: "general", label: "Allgemein", icon: SlidersHorizontal },
   { id: "display", label: "Darstellung", icon: Monitor },
   { id: "tools", label: "Tools", icon: SquaresFour },
-  { id: "timer", label: "Timer", icon: Timer },
+  { id: "timer", label: "Töne & Timer", icon: Timer },
   { id: "ai", label: "AI", icon: Sparkle },
   { id: "accounts", label: "Verbindungen", icon: Plugs },
 ];
@@ -55,6 +56,7 @@ const sectionPage: Record<string, PageId> = {
   display: "display",
   presentation: "display",
   alarm: "timer",
+  sounds: "timer",
   ask: "ai",
   usage: "ai",
   discord: "accounts",
@@ -140,7 +142,12 @@ export function SettingsView() {
                 <VaultSettings />
               </>
             )}
-            {page === "timer" && <Alarm />}
+            {page === "timer" && (
+              <>
+                <Alarm />
+                <Sounds />
+              </>
+            )}
             {page === "ai" && (
               <>
                 <Ask />
@@ -680,6 +687,70 @@ function Alarm() {
       <Row label={t("Dauer")} hint={t("Wie lange der Alarm klingelt")}>
         <Segmented id="alarm-duration" size="sm" value={String(a.duration)} onChange={(v) => set({ duration: Number(v) as AlarmDuration })} options={durations.map((o) => ({ ...o, label: t(o.label) }))} />
       </Row>
+    </Group>
+  );
+}
+
+const soundKinds: { id: SoundKind; label: string; hint: string }[] = [
+  { id: "notif", label: "Benachrichtigungen", hint: "WhatsApp, Mails …" },
+  { id: "news", label: "Nachrichten", hint: "Neue Fußball-Schlagzeilen" },
+  { id: "task", label: "Aufgaben-Erinnerungen", hint: "Wecker an To-dos" },
+  { id: "goal", label: "Tore", hint: "Live-Spiele im Notch" },
+];
+
+/** Sound per kind of popup; silent while Windows' Do not disturb is on. */
+function Sounds() {
+  const s = settings.use().sounds;
+  const dnd = useDnd();
+  const set = (kind: SoundKind, patch: Partial<SoundPref>) =>
+    updateSettings((cur) => ({ sounds: { ...cur.sounds, items: { ...cur.sounds.items, [kind]: { ...cur.sounds.items[kind], ...patch } } } }));
+  return (
+    <Group title={t("Töne")} id="settings-sounds">
+      <Row label={t("Alle Töne stumm")} hint={dnd ? t("„Nicht stören“ ist an – gerade sind alle Töne aus") : t("Bei „Nicht stören“ bleiben sie automatisch still")}>
+        <Switch label={t("Alle Töne stumm")} checked={s.muteAll} onChange={(muteAll) => updateSettings((cur) => ({ sounds: { ...cur.sounds, muteAll } }))} />
+      </Row>
+      {soundKinds.map((k) => {
+        const p = s.items[k.id];
+        const fileName = p.file?.split(/[\\/]/).pop();
+        return (
+          <div key={k.id} className={s.muteAll ? "opacity-40" : ""}>
+            <Row label={t(k.label)} hint={t(k.hint)}>
+              <Switch label={t(k.label)} checked={p.on} onChange={(on) => set(k.id, { on })} />
+            </Row>
+            {p.on && (
+              <div className="-mt-1 mb-2.5 flex items-center gap-1.5 px-6">
+                <button
+                  aria-label={t("Probehören")}
+                  title={t("Probehören")}
+                  onClick={() => void previewSound(p)}
+                  className="pressable pressable-fill flex size-7 shrink-0 items-center justify-center rounded-full bg-fill-2 text-label"
+                >
+                  <Play size={11} weight="fill" />
+                </button>
+                <Select
+                  width="w-40"
+                  value={p.sound}
+                  onChange={(sound) => {
+                    if (sound === "custom") return void pickSoundFile(k.id);
+                    set(k.id, { sound });
+                    void previewSound({ ...p, sound });
+                  }}
+                  options={eventSounds.map((o) => ({ value: o.value, label: o.value === "custom" && fileName ? fileName : t(o.label) }))}
+                />
+                {p.sound === "custom" && (
+                  <button className="text-caption text-link" onClick={() => void pickSoundFile(k.id)}>
+                    {t("Andere Datei")}
+                  </button>
+                )}
+                <div className="ml-auto flex w-36 items-center gap-2">
+                  <Slider label={t("Lautstärke")} value={Math.round(p.volume * 100)} min={5} max={100} step={5} onChange={(v) => set(k.id, { volume: v / 100 })} />
+                  <span className="tabular w-7 text-right text-caption text-label-2">{Math.round(p.volume * 100)}</span>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </Group>
   );
 }

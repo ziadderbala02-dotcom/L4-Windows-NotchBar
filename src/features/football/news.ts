@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createStore } from "../../lib/store";
 import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
+import { playFor } from "../../lib/sounds";
 import { getText } from "./espn";
 import { news365, type NewsItem } from "./s365";
 import { follow } from "./store";
@@ -140,6 +141,7 @@ function showNext() {
   if (newsNotice.get() || !queue.length) return;
   const n = queue.shift()!;
   newsNotice.set(n);
+  playFor("news");
   window.setTimeout(() => {
     if (newsNotice.get() === n) newsNotice.set(null);
     window.setTimeout(showNext, 1500);

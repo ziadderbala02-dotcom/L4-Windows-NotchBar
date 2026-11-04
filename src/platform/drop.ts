@@ -34,6 +34,17 @@ export async function pasteFiles(): Promise<boolean> {
   return true;
 }
 
+/**
+ * The Windows "Open" dialog: picked files land in the active tool like a drop.
+ * Doesn't depend on drag and drop or on the notch having keyboard focus.
+ */
+export async function pickFiles(): Promise<boolean> {
+  const paths = isNative ? await invoke<string[]>("pick_files").catch(() => [] as string[]) : ["C:\\Users\\Demo\\Documents\\Angebot.docx"];
+  if (paths.length === 0) return false;
+  drop.set({ dragging: false, dropped: paths });
+  return true;
+}
+
 /** Ctrl+V outside text fields → `pasteFiles`. For Shelf and Converter. */
 export function usePasteFiles(onEmpty?: () => void) {
   useEffect(() => {

@@ -19,7 +19,7 @@ import {
 import { content, fade, spin, springs } from "../../design/motion";
 import { formatBytes } from "../../lib/format";
 import { drop, takeDropped, usePasteFiles } from "../../platform/drop";
-import { PasteHint } from "../shelf/ShelfView";
+import { grabKeys, PasteHint } from "../shelf/ShelfView";
 import { convertFiles, probeFiles, revealFile, type ConvertResult, type DroppedFile, type FileKind } from "../../platform/services";
 import { Button, Segmented, Slider } from "../../ui/controls";
 import { UnitsPanel } from "./units";
@@ -52,7 +52,7 @@ type Mode = "files" | "units";
 export function ConvertView() {
   const [mode, setMode] = useState<Mode>("files");
   return (
-    <div className="flex h-full flex-col px-4 pt-1 pb-1">
+    <div className="flex h-full flex-col px-4 pt-1 pb-1" onPointerDown={grabKeys}>
       <HeaderActions>
         <Segmented
           id="convert-mode"
@@ -92,6 +92,7 @@ function FilesPanel() {
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<ConvertResult[] | null>(null);
   const [nothing, setNothing] = useState(false);
+  const [intakeError, setIntakeError] = useState<string | null>(null);
   usePasteFiles(() => {
     setNothing(true);
     setTimeout(() => setNothing(false), 1600);
@@ -102,14 +103,18 @@ function FilesPanel() {
   useEffect(() => {
     const paths = takeDropped();
     if (!paths?.length) return;
-    void probeFiles(paths).then((p) => {
-      setFiles(p.files);
-      setFfmpeg(p.ffmpeg);
-      setResults(null);
-      const kind = commonKind(p.files);
-      // Preselect a format none of the files has yet.
-      setTarget(kind ? (targets[kind].find((t) => !p.files.some((f) => sameFormat(f.ext, t))) ?? targets[kind][0]) : null);
-    });
+    setIntakeError(null);
+    probeFiles(paths)
+      .then((p) => {
+        if (!p.files.length) return setIntakeError(t("Diese Dateien wurden nicht erkannt"));
+        setFiles(p.files);
+        setFfmpeg(p.ffmpeg);
+        setResults(null);
+        const kind = commonKind(p.files);
+        // Preselect a format none of the files has yet.
+        setTarget(kind ? (targets[kind].find((t) => !p.files.some((f) => sameFormat(f.ext, t))) ?? targets[kind][0]) : null);
+      })
+      .catch((e) => setIntakeError(t("Dateien konnten nicht gelesen werden: {e}", { e: tBackend(String(e)) })));
   }, [dropped]);
 
   const kind = commonKind(files);
@@ -145,6 +150,7 @@ function FilesPanel() {
         <UploadSimple size={22} weight="bold" className={dragging ? "text-label" : "text-label-3"} />
         <span className="text-body text-label-2">{dragging ? t("Loslassen zum Umwandeln") : t("Bilder, Audio, Video, Dokumente oder Tabellen hierher ziehen")}</span>
         <PasteHint nothing={nothing} />
+        {intakeError && <span className="max-w-[90%] text-center text-caption text-red">{intakeError}</span>}
       </motion.div>
     );
   }

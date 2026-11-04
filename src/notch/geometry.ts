@@ -34,6 +34,8 @@ export const geometry = {
   clock: { w: 248, h: 30, r: 10, ear: 6 },
   /** Football notice (kickoff soon, lineups out): crests and two lines of text. */
   notice: { w: 380, h: 54, r: 18, ear: 8 },
+  /** Task reminder: the task plus Done / +10 min / +1 h buttons. */
+  taskAlarm: { w: 440, h: 54, r: 18, ear: 8 },
   /** Live football: crest, code and score on each side, the minute in the middle. */
   score: { w: 312, h: 30, r: 10, ear: 6 },
   /** Goal celebration: grows wide and tall enough for the shout, scorer and score. */

@@ -14,6 +14,8 @@ import { newsNotice, openNews, type TeamNews } from "../features/football/news";
 import { notifNotice, openApp, type Notif } from "../features/notifications/store";
 import { NotifExpanded } from "../features/notifications/NotificationsView";
 import { RecordButton } from "../features/record/LiveRecord";
+import { dueToday, todos } from "../features/todos/store";
+import { unread } from "../features/notifications/store";
 import { DOCK_HEIGHT, HEADER_HEIGHT, geometry, openGeometry, type NotchGeometry } from "./geometry";
 import { HeaderButton, headerSlot } from "./header";
 import { sizeOverride } from "./size";
@@ -55,7 +57,14 @@ export function Notch() {
   const live = useLiveActivity();
   const goalNow = goal.use();
   // The tool a live activity opens (a football notice opens the football tool).
-  const liveTab = live.id === "notice" || live.id === "news" ? "football" : live.id === "notif" ? "notifications" : live.id;
+  const liveTab =
+    live.id === "notice" || live.id === "news"
+      ? "football"
+      : live.id === "notif"
+        ? "notifications"
+        : live.id === "taskAlarm" || live.id === "taskSoon"
+          ? "todos"
+          : live.id;
 
   // Like the Dynamic Island: opening jumps to the running activity's tool,
   // but only after a pause. Closed briefly (copying a key, grabbing a file) → you
@@ -68,7 +77,7 @@ export function Notch() {
   // Opened while a headline or a message was showing: the notch shows it in full, not the tools.
   const [expanded, setExpanded] = useState<{ kind: "news"; n: TeamNews } | { kind: "notif"; n: Notif } | null>(null);
   useLayoutEffect(() => {
-    if (status === "open" && prevStatus.current !== "open") {
+    if (status === "open" && prevStatus.current !== "open" && !drop.get().dragging) {
       const news = live.id === "news" ? newsNotice.get() : null;
       const msg = live.id === "notif" ? notifNotice.get() : null;
       if (news) setExpanded({ kind: "news", n: news });
@@ -84,7 +93,8 @@ export function Notch() {
     if (status === "open" && prevStatus.current !== "open") {
       const resumed = Date.now() - closedAt.current < RESUME_MS;
       if (trayTab.current) navigate(trayTab.current);
-      else if (!resumed && liveTab && visible.some((t) => t.id === liveTab)) navigate(liveTab);
+      // Opened by dragging files: stay on the file tool useQuickDrop picked.
+      else if (!resumed && liveTab && !drop.get().dragging && visible.some((t) => t.id === liveTab)) navigate(liveTab);
       trayTab.current = null;
     }
     if (status !== "open" && prevStatus.current === "open") closedAt.current = Date.now();
@@ -301,11 +311,20 @@ function Dock({ tabs, activeId }: { tabs: NotchTab[]; activeId: string }) {
   // Dot on the gear = update ready or unseen changes → jump straight to that section.
   const unseen = useUnseen().length > 0;
   const badge = updateReady || unseen;
+  const todoCount = dueToday(todos.use());
+  const notifCount = unread.use();
 
   return (
     <div className="flex shrink-0 items-start justify-center gap-0.5 px-4 pt-1" style={{ height: DOCK_HEIGHT }}>
       {tabs.map((tab) => (
-        <DockButton key={tab.id} label={t(tab.label)} icon={tab.icon} active={tab.id === activeId} onClick={() => navigate(tab.id)} />
+        <DockButton
+          key={tab.id}
+          label={t(tab.label)}
+          icon={tab.icon}
+          active={tab.id === activeId}
+          onClick={() => navigate(tab.id)}
+          count={tab.id === "todos" ? todoCount : tab.id === "notifications" ? notifCount : 0}
+        />
       ))}
       <span aria-hidden className="mx-1.5 mt-2 h-4 w-px bg-separator" />
       <DockButton
@@ -319,7 +338,7 @@ function Dock({ tabs, activeId }: { tabs: NotchTab[]; activeId: string }) {
   );
 }
 
-function DockButton(props: { label: string; icon: NotchTab["icon"]; active: boolean; onClick: () => void; badge?: boolean }) {
+function DockButton(props: { label: string; icon: NotchTab["icon"]; active: boolean; onClick: () => void; badge?: boolean; count?: number }) {
   const I = props.icon;
   return (
     <button
@@ -332,6 +351,12 @@ function DockButton(props: { label: string; icon: NotchTab["icon"]; active: bool
     >
       {props.active && <motion.span layoutId="dock-pill" className="absolute inset-0 rounded-[10px] bg-fill-2" transition={springs.snappy} />}
       <I size={16} weight={props.active ? "fill" : "bold"} className="relative" />
+      {/* Number badge (tasks due today, unread notifications). */}
+      {!!props.count && !props.active && (
+        <span className="tabular absolute -top-0.5 -right-0.5 flex h-[15px] min-w-[15px] items-center justify-center rounded-full bg-red px-[3px] text-[9px] leading-none font-bold text-white ring-2 ring-notch">
+          {props.count > 9 ? "9+" : props.count}
+        </span>
+      )}
       {/* Badge dot (e.g. update available) at the icon's top right. */}
       <AnimatePresence>
         {props.badge && (
@@ -387,7 +412,9 @@ function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h
         ? geometry.score
         : live === "clock"
           ? geometry.clock
-          : live === "notice" || live === "news" || live === "notif"
+          : live === "taskAlarm"
+            ? geometry.taskAlarm
+            : live === "notice" || live === "news" || live === "notif"
             ? geometry.notice
           : live
             ? geometry.live

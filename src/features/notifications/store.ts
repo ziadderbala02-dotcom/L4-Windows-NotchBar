@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { createStore } from "../../lib/store";
 import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
+import { playFor } from "../../lib/sounds";
 
 /*
  * Windows notifications (WhatsApp, Outlook, Gmail in the browser, …) in the notch.
@@ -68,6 +69,7 @@ function showNext() {
   if (notifNotice.get() || !queue.length) return;
   const n = queue.shift()!;
   notifNotice.set(n);
+  playFor("notif");
   window.setTimeout(() => {
     if (notifNotice.get() === n) notifNotice.set(null);
     window.setTimeout(showNext, 400);
