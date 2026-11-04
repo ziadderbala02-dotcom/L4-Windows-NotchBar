@@ -270,6 +270,17 @@ export function probeFiles(paths: string[]): Promise<{ files: DroppedFile[]; ffm
   return Promise.resolve({ files, ffmpeg: false });
 }
 
+/** Several images → one PDF (one page each). Every input reports the same output file. */
+export async function imagesToPdf(paths: string[]): Promise<ConvertResult[]> {
+  if (!isNative) return paths.map((input) => ({ input, output: "C:\\Users\\Demo\\Pictures\\Bilder.pdf", error: null }));
+  try {
+    const output = await invoke<string>("images_to_pdf", { paths });
+    return paths.map((input) => ({ input, output, error: null }));
+  } catch (e) {
+    return paths.map((input) => ({ input, output: null, error: String(e) }));
+  }
+}
+
 export function convertFiles(paths: string[], target: string, quality: number, maxSize: number | null): Promise<ConvertResult[]> {
   if (isNative) return invoke("convert_files", { paths, target, quality, maxSize });
   return new Promise((r) =>

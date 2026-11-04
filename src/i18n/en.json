@@ -607,5 +607,15 @@
  "Ohne Termin": "No date",
  "Erinnern": "Remind me",
  "Keine Erinnerung": "No reminder",
- "Notiz …": "Note …"
+ "Notiz …": "Note …",
+ "Alle Bilder in eine PDF, eine Seite pro Bild": "All images into one PDF, one page each",
+ "Eine Seite, A4": "One A4 page",
+ "Mit Word/Excel, falls installiert – sonst über Edge": "Uses Word/Excel if installed – otherwise Edge",
+ "PDF erstellen": "Create PDF",
+ "Word ist nicht installiert": "Word isn't installed",
+ "Excel ist nicht installiert": "Excel isn't installed",
+ "Office antwortet nicht": "Office isn't responding",
+ "Office-Export fehlgeschlagen": "Office export failed",
+ "Keine Bilder": "No images",
+ "Bild konnte nicht gelesen werden: {f}": "Couldn't read image: {f}"
 }

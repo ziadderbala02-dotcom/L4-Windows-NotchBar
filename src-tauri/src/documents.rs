@@ -11,7 +11,7 @@ use std::process::Command;
 
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-pub const DOC_IN: &[&str] = &["txt", "md", "markdown", "html", "htm", "pdf", "docx"];
+pub const DOC_IN: &[&str] = &["txt", "md", "markdown", "html", "htm", "pdf", "docx", "doc", "rtf", "odt"];
 pub const TABLE_IN: &[&str] = &["xlsx", "xlsm", "xls", "ods", "csv", "tsv"];
 
 /// Parsed content: Markdown keeps headings/lists, text is just lines.
@@ -21,6 +21,10 @@ enum Source {
 }
 
 pub fn convert_document(input: &Path, output: &Path, ext: &str, target: &str) -> Result<(), String> {
+    // Word straight to PDF before reading anything ourselves (old .doc/.rtf only work this way).
+    if target == "pdf" && matches!(ext, "doc" | "rtf" | "odt") {
+        return office_export(input, output, Office::WordPdf);
+    }
     let source = read_document(input, ext)?;
     let title = input.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     match target {
@@ -31,6 +35,11 @@ pub fn convert_document(input: &Path, output: &Path, ext: &str, target: &str) ->
         }),
         "html" => write_text(output, &to_html(&source, &title)),
         "docx" => write_docx(output, &source),
+        // Word keeps the real layout (fonts, tables, Arabic right-to-left); without Word
+        // the text is printed through Edge.
+        "pdf" if ext == "docx" => office_export(input, output, Office::WordPdf).or_else(|word| {
+            print_pdf(&to_html(&source, &title), output).map_err(|edge| format!("{edge} ({word})"))
+        }),
         "pdf" => print_pdf(&to_html(&source, &title), output),
         _ => Err("Zielformat für Dokumente nicht verfügbar".into()),
     }
@@ -47,6 +56,10 @@ pub fn convert_table(input: &Path, output: &Path, ext: &str, target: &str) -> Re
         "xlsx" => write_xlsx(output, &rows),
         "json" => write_json(output, &rows),
         "html" => write_text(output, &table_html(&rows, &title)),
+        "docx" => write_table_docx(output, &rows),
+        "pdf" if ext != "csv" && ext != "tsv" => office_export(input, output, Office::ExcelPdf).or_else(|excel| {
+            print_pdf(&table_html(&rows, &title), output).map_err(|edge| format!("{edge} ({excel})"))
+        }),
         "pdf" => print_pdf(&table_html(&rows, &title), output),
         _ => Err("Zielformat für Tabellen nicht verfügbar".into()),
     }
@@ -445,8 +458,14 @@ fn write_docx(output: &Path, source: &Source) -> Result<(), String> {
         }
     }
 
+    write_docx_body(output, &body, false)
+}
+
+/// Wraps body XML into a .docx package (styles included). `landscape` for wide tables.
+fn write_docx_body(output: &Path, body: &str, landscape: bool) -> Result<(), String> {
     const NS: &str = "xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"";
-    let document = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document {NS}><w:body>{body}<w:sectPr><w:pgSz w:w=\"11906\" w:h=\"16838\"/><w:pgMar w:top=\"1134\" w:right=\"1134\" w:bottom=\"1134\" w:left=\"1134\" w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>");
+    let size = if landscape { "<w:pgSz w:w=\"16838\" w:h=\"11906\" w:orient=\"landscape\"/>" } else { "<w:pgSz w:w=\"11906\" w:h=\"16838\"/>" };
+    let document = format!("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?><w:document {NS}><w:body>{body}<w:sectPr>{size}<w:pgMar w:top=\"1134\" w:right=\"1134\" w:bottom=\"1134\" w:left=\"1134\" w:header=\"708\" w:footer=\"708\" w:gutter=\"0\"/></w:sectPr></w:body></w:document>");
     let style = |id: &str, size: u32, bold: bool, extra: &str| {
         format!("<w:style w:type=\"paragraph\" w:styleId=\"{id}\"><w:name w:val=\"{id}\"/><w:basedOn w:val=\"Normal\"/><w:pPr><w:spacing w:before=\"240\" w:after=\"120\"/>{extra}</w:pPr><w:rPr>{}<w:sz w:val=\"{size}\"/></w:rPr></w:style>", if bold { "<w:b/>" } else { "" })
     };
@@ -487,29 +506,140 @@ fn write_docx(output: &Path, source: &Source) -> Result<(), String> {
 /// Prints HTML to PDF with headless Edge (ships with Windows) or Chrome.
 fn print_pdf(html: &str, output: &Path) -> Result<(), String> {
     let browser = pdf_browser().ok_or("Für PDF wird Microsoft Edge oder Chrome benötigt")?;
-    let dir = std::env::temp_dir().join(format!("notch-pdf-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("notch-pdf-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let page = dir.join("page.html");
     std::fs::write(&page, html).map_err(|e| e.to_string())?;
+    // Edge writes into the temp folder first (no spaces or Arabic in the path), then the
+    // file is moved to its place: odd characters in the target path made printing fail.
+    let tmp_pdf = dir.join("out.pdf");
+    let url = format!("file:///{}", page.display().to_string().replace('\\', "/").replace(' ', "%20"));
 
-    let mut cmd = Command::new(browser);
-    cmd.arg("--headless")
-        .arg("--disable-gpu")
-        .arg("--no-pdf-header-footer")
-        .arg("--no-first-run")
-        // Separate profile, otherwise an already open Edge takes over and nothing is written.
-        .arg(format!("--user-data-dir={}", dir.join("profile").display()))
-        .arg(format!("--print-to-pdf={}", output.display()))
-        .arg(format!("file:///{}", page.display().to_string().replace('\\', "/")));
-    crate::convert::hide_console(&mut cmd);
-    let status = cmd.output().map_err(|e| format!("PDF-Druck startet nicht: {e}"))?;
-    let _ = std::fs::remove_dir_all(&dir);
-    if status.status.success() && output.metadata().is_ok_and(|m| m.len() > 0) {
-        Ok(())
-    } else {
-        let _ = std::fs::remove_file(output);
-        Err("PDF konnte nicht erstellt werden".into())
+    let mut last_err = String::new();
+    // New headless first; older Edge/Chrome builds only know the plain flag.
+    for headless in ["--headless=new", "--headless"] {
+        let _ = std::fs::remove_file(&tmp_pdf);
+        let mut cmd = Command::new(&browser);
+        cmd.arg(headless)
+            .arg("--disable-gpu")
+            .arg("--disable-extensions")
+            .arg("--no-first-run")
+            .arg("--no-default-browser-check")
+            .arg("--no-pdf-header-footer")
+            .arg("--print-to-pdf-no-header")
+            // Separate profile, otherwise an already open Edge takes over and nothing is written.
+            .arg(format!("--user-data-dir={}", dir.join("profile").display()))
+            .arg(format!("--print-to-pdf={}", tmp_pdf.display()))
+            .arg(&url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped());
+        crate::convert::hide_console(&mut cmd);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                last_err = format!("PDF-Druck startet nicht: {e}");
+                continue;
+            }
+        };
+        // Never hang the converter: give up after 60 s.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(150)),
+                _ => {
+                    let _ = child.kill();
+                    break;
+                }
+            }
+        }
+        let mut stderr = String::new();
+        if let Some(mut e) = child.stderr.take() {
+            let _ = e.read_to_string(&mut stderr);
+        }
+        if tmp_pdf.metadata().is_ok_and(|m| m.len() > 0) {
+            let moved = std::fs::rename(&tmp_pdf, output).or_else(|_| std::fs::copy(&tmp_pdf, output).map(|_| ()));
+            let _ = std::fs::remove_dir_all(&dir);
+            return moved.map_err(|e| format!("Kann nicht speichern: {e}"));
+        }
+        last_err = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(120).collect();
     }
+    let _ = std::fs::remove_dir_all(&dir);
+    Err(if last_err.is_empty() { "PDF konnte nicht erstellt werden".into() } else { format!("PDF konnte nicht erstellt werden: {last_err}") })
+}
+
+/// What Office should do with the file.
+#[derive(Clone, Copy)]
+enum Office {
+    WordPdf,
+    ExcelPdf,
+}
+
+/// Export through the installed Word / Excel (exact layout). Err when Office is missing.
+/// Paths go in through environment variables, so spaces and Arabic need no quoting.
+fn office_export(input: &Path, output: &Path, what: Office) -> Result<(), String> {
+    let script = match what {
+        Office::WordPdf => "$ErrorActionPreference='Stop'; $w=New-Object -ComObject Word.Application; $w.Visible=$false; $w.DisplayAlerts=0; \
+             try { $d=$w.Documents.Open($env:NOTCH_IN, $false, $true, $false); $d.ExportAsFixedFormat($env:NOTCH_OUT, 17); $d.Close(0) } finally { $w.Quit() }",
+        Office::ExcelPdf => "$ErrorActionPreference='Stop'; $x=New-Object -ComObject Excel.Application; $x.Visible=$false; $x.DisplayAlerts=$false; \
+             try { $b=$x.Workbooks.Open($env:NOTCH_IN, 0, $true); $b.ExportAsFixedFormat(0, $env:NOTCH_OUT); $b.Close($false) } finally { $x.Quit() }",
+    };
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .env("NOTCH_IN", input)
+        .env("NOTCH_OUT", output)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped());
+    crate::convert::hide_console(&mut cmd);
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(200)),
+            _ => {
+                let _ = child.kill();
+                return Err("Office antwortet nicht".into());
+            }
+        }
+    }
+    if output.metadata().is_ok_and(|m| m.len() > 0) {
+        return Ok(());
+    }
+    let mut err = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    Err(if err.contains("80040154") || err.contains("Class not registered") || err.to_lowercase().contains("comobject") {
+        match what {
+            Office::WordPdf => "Word ist nicht installiert".into(),
+            Office::ExcelPdf => "Excel ist nicht installiert".into(),
+        }
+    } else {
+        err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Office-Export fehlgeschlagen").trim().chars().take(120).collect()
+    })
+}
+
+/// A spreadsheet as a Word table (first row bold, as the header).
+fn write_table_docx(output: &Path, rows: &[Vec<String>]) -> Result<(), String> {
+    let cols = rows.iter().map(|r| r.len()).max().unwrap_or(1).max(1);
+    let border = "<w:tblBorders><w:top w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/><w:left w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/><w:bottom w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/><w:right w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/><w:insideH w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/><w:insideV w:val=\"single\" w:sz=\"4\" w:color=\"BFBFBF\"/></w:tblBorders>";
+    let mut table = format!("<w:tbl><w:tblPr><w:tblW w:w=\"5000\" w:type=\"pct\"/>{border}</w:tblPr><w:tblGrid>{}</w:tblGrid>", "<w:gridCol/>".repeat(cols));
+    for (i, r) in rows.iter().enumerate() {
+        table.push_str("<w:tr>");
+        for c in 0..cols {
+            let text = r.get(c).map(|s| s.as_str()).unwrap_or("");
+            let bold = if i == 0 { "<w:rPr><w:b/></w:rPr>" } else { "" };
+            let shade = if i == 0 { "<w:tcPr><w:shd w:val=\"clear\" w:fill=\"F2F2F4\"/></w:tcPr>" } else { "" };
+            // Right-to-left paragraph for Arabic cells.
+            let rtl = if text.chars().any(|ch| ('\u{0600}'..='\u{06FF}').contains(&ch)) { "<w:pPr><w:bidi/></w:pPr>" } else { "" };
+            table.push_str(&format!("<w:tc>{shade}<w:p>{rtl}<w:r>{bold}<w:t xml:space=\"preserve\">{}</w:t></w:r></w:p></w:tc>", escape(text)));
+        }
+        table.push_str("</w:tr>");
+    }
+    table.push_str("</w:tbl><w:p/>");
+    // Reuse the document writer for the package; the table goes in as raw body XML.
+    write_docx_body(output, &table, cols > 6)
 }
 
 fn pdf_browser() -> Option<PathBuf> {

@@ -20,7 +20,7 @@ import { content, fade, spin, springs } from "../../design/motion";
 import { formatBytes } from "../../lib/format";
 import { drop, takeDropped, usePasteFiles } from "../../platform/drop";
 import { grabKeys, PasteHint } from "../shelf/ShelfView";
-import { convertFiles, probeFiles, revealFile, type ConvertResult, type DroppedFile, type FileKind } from "../../platform/services";
+import { convertFiles, imagesToPdf, probeFiles, revealFile, type ConvertResult, type DroppedFile, type FileKind } from "../../platform/services";
 import { Button, Segmented, Slider } from "../../ui/controls";
 import { UnitsPanel } from "./units";
 import { HeaderActions } from "../../notch/header";
@@ -33,11 +33,11 @@ const kindIcon: Record<FileKind, Icon> = { image: ImageSquare, audio: FileAudio,
  * (BC3 with mipmaps). Documents: PDF input only gives the text; PDF output prints via Edge.
  */
 const targets: Record<Exclude<FileKind, "other">, string[]> = {
-  image: ["png", "jpg", "webp", "ico", "bmp", "dds"],
+  image: ["pdf", "png", "jpg", "webp", "ico", "bmp", "dds"],
   audio: ["mp3", "m4a", "wav", "flac"],
   video: ["mp4", "webm", "gif", "mp3"],
   document: ["pdf", "docx", "txt", "md", "html"],
-  table: ["xlsx", "csv", "pdf", "json", "html"],
+  table: ["pdf", "docx", "xlsx", "csv", "json", "html"],
 };
 
 const sizes = [
@@ -128,7 +128,12 @@ function FilesPanel() {
   const run = async () => {
     if (!target || pending.length === 0) return;
     setBusy(true);
-    setResults(await convertFiles(pending.map((f) => f.path), target, quality, kind === "image" && size !== "0" ? Number(size) : null));
+    // Images → PDF: all of them into one file, in the listed order.
+    setResults(
+      kind === "image" && target === "pdf"
+        ? await imagesToPdf(pending.map((f) => f.path))
+        : await convertFiles(pending.map((f) => f.path), target, quality, kind === "image" && size !== "0" ? Number(size) : null),
+    );
     setBusy(false);
   };
 
@@ -234,9 +239,13 @@ function FilesPanel() {
             )}
 
             <div className="flex items-center gap-3">
-              {kind === "image" && (
+              {kind === "image" && target === "pdf" ? (
+                <span className="text-caption text-label-3">{pending.length > 1 ? t("Alle Bilder in eine PDF, eine Seite pro Bild") : t("Eine Seite, A4")}</span>
+              ) : kind === "image" ? (
                 <Segmented id="convert-size" size="sm" value={size} onChange={setSize} options={sizes.map((o) => ({ ...o, label: t(o.label) }))} />
-              )}
+              ) : (kind === "document" || kind === "table") && target === "pdf" ? (
+                <span className="text-caption text-label-3">{t("Mit Word/Excel, falls installiert – sonst über Edge")}</span>
+              ) : null}
               {showQuality && (
                 <div className="flex flex-1 items-center gap-2">
                   <span className="text-caption text-label-3">{t("Qualität")}</span>
@@ -249,7 +258,7 @@ function FilesPanel() {
                   <X size={12} weight="bold" />
                 </button>
                 <Button primary disabled={!target || busy || pending.length === 0 || (needsFfmpeg && !ffmpeg)} onClick={() => void run()}>
-                  {busy ? t("Wandle um …") : pending.length > 1 ? t("{n} umwandeln", { n: pending.length }) : t("Umwandeln")}
+                  {busy ? t("Wandle um …") : kind === "image" && target === "pdf" ? t("PDF erstellen") : pending.length > 1 ? t("{n} umwandeln", { n: pending.length }) : t("Umwandeln")}
                 </Button>
               </div>
             </div>

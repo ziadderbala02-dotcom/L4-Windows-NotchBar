@@ -15,6 +15,7 @@ mod media;
 mod memory;
 mod mixer;
 mod notifications;
+mod pdf_images;
 mod power;
 mod record;
 mod privacy;
@@ -115,6 +116,7 @@ pub fn run() {
             display_extra::nightlight_toggle,
             display_extra::pick_files,
             display_extra::sound_read,
+            pdf_images::images_to_pdf,
             system::system_stats,
             convert::convert_probe,
             convert::convert_files,
