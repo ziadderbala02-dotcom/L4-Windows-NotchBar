@@ -47,7 +47,7 @@ export function Notch() {
   const live = useLiveActivity();
   const goalNow = goal.use();
   // The tool a live activity opens (a football notice opens the football tool).
-  const liveTab = live.id === "notice" ? "football" : live.id;
+  const liveTab = live.id === "notice" || live.id === "news" ? "football" : live.id;
 
   // Like the Dynamic Island: opening jumps to the running activity's tool,
   // but only after a pause. Closed briefly (copying a key, grabbing a file) → you
@@ -343,7 +343,7 @@ function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h
         ? geometry.score
         : live === "clock"
           ? geometry.clock
-          : live === "notice"
+          : live === "notice" || live === "news"
             ? geometry.notice
           : live
             ? geometry.live

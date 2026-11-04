@@ -45,7 +45,8 @@ function useBattery(): Battery | null | undefined {
     let alive = true;
     const load = () => void readBattery().then((v) => alive && setB(v)).catch(() => alive && setB(null));
     load();
-    const id = window.setInterval(load, 30_000);
+    // A cheap system call: often enough that plugging in shows within a few seconds.
+    const id = window.setInterval(load, 3_000);
     return () => {
       alive = false;
       window.clearInterval(id);
@@ -101,13 +102,27 @@ export function LiveClock() {
 
 function BatteryReadout({ b }: { b: Battery }) {
   const p = b.percent ?? 0;
-  const Icon = b.charging ? BatteryCharging : p >= 90 ? BatteryFull : p >= 60 ? BatteryHigh : p >= 35 ? BatteryMedium : p >= 12 ? BatteryLow : BatteryEmpty;
-  const color = b.charging ? "var(--color-green)" : p < 20 ? "var(--color-red)" : "var(--color-label)";
+  // Plugged in counts as charging for the look: Windows often reports "on AC, not
+  // charging" (full, or held at 80 % by the battery saver), which should still glow.
+  const power = b.charging || b.plugged;
+  const Icon = power ? BatteryCharging : p >= 90 ? BatteryFull : p >= 60 ? BatteryHigh : p >= 35 ? BatteryMedium : p >= 12 ? BatteryLow : BatteryEmpty;
+  const color = power ? "var(--color-green)" : p < 20 ? "var(--color-red)" : "var(--color-label)";
+  // Plug in / out: a short pop, like the iPhone charging chime (keyed so it replays).
   return (
-    <>
-      {b.percent !== null && <span className="tabular text-caption font-semibold text-label-2">{b.percent}%</span>}
-      <Icon size={18} weight={b.charging || p < 20 ? "fill" : "regular"} style={{ color }} />
-    </>
+    <motion.span
+      key={power ? "on" : "off"}
+      className="flex items-center gap-1"
+      initial={{ scale: 1 }}
+      animate={{ scale: [1, 1.35, 0.95, 1] }}
+      transition={{ duration: 0.55, ease: "easeOut" }}
+    >
+      {b.percent !== null && (
+        <span className="tabular text-caption font-semibold" style={{ color: power ? "var(--color-green)" : "var(--color-label-2)" }}>
+          {b.percent}%
+        </span>
+      )}
+      <Icon size={18} weight={power || p < 20 ? "fill" : "regular"} style={{ color }} />
+    </motion.span>
   );
 }
 

@@ -5,6 +5,7 @@ import { content } from "../../design/motion";
 import { createStore } from "../../lib/store";
 import { t } from "../../i18n";
 import { fetchStandings, liveTable } from "./espn";
+import { competitionGames365, standings365 } from "./s365";
 import { Crest } from "./LiveScore";
 import { leagueMatches, loadLineups, scores } from "./store";
 import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
@@ -207,11 +208,11 @@ function TablePane({ m, side }: { m: Match; side?: SideKey }) {
   const [groups, setGroups] = useState<TableGroup[] | "loading" | "error">("loading");
   useEffect(() => {
     let alive = true;
-    if (m.source !== "espn") {
+    if (m.source === "sofa") {
       setGroups("error");
       return;
     }
-    fetchStandings(m.league)
+    (m.source === "s365" ? standings365(m.league) : fetchStandings(m.league))
       .then((g) => alive && setGroups(g))
       .catch(() => alive && setGroups("error"));
     return () => {
@@ -220,13 +221,28 @@ function TablePane({ m, side }: { m: Match; side?: SideKey }) {
   }, [m.key]);
   // Re-render with every score update, so the live table moves with the goals.
   scores.use();
+  // 365Scores: the other games of the competition today, refreshed while the table is open.
+  const [others, setOthers] = useState<Match[]>([]);
+  useEffect(() => {
+    if (m.source !== "s365") return;
+    let alive = true;
+    const load = () => void competitionGames365(m.league).then((g) => alive && setOthers(g)).catch(() => {});
+    load();
+    const id = window.setInterval(load, 20_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [m.key]);
 
   if (groups === "loading") return <Empty text={t("Lade Tabelle …")} />;
   if (groups === "error") return <Empty text={t("Keine Tabelle für diesen Wettbewerb")} />;
   // A cup with groups: only the group of this match.
   const group = groups.find((g) => g.rows.some((r) => r.teamId === m.home.id || r.teamId === m.away.id)) ?? groups[0];
   if (!group) return <Empty text={t("Keine Tabelle für diesen Wettbewerb")} />;
-  const live = liveTable(group, leagueMatches(m.league));
+  // This match from the live feed (freshest score), the rest of the round from the competition.
+  const round = m.source === "s365" ? [m, ...others.filter((o) => o.key !== m.key)] : leagueMatches(m.league);
+  const live = liveTable(group, round);
   const isLive = live.rows.some((r) => r.live);
 
   return (

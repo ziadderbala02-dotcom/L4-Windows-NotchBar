@@ -97,6 +97,7 @@ pub fn run() {
             trading::trading_fetch,
             usage::usage_fetch,
             football::football_get,
+            football::football_open,
             power::battery_get,
             system::system_stats,
             convert::convert_probe,

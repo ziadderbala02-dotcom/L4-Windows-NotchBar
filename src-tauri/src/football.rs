@@ -14,6 +14,7 @@ const ALLOWED_HOSTS: &[&str] = &[
     "api.sofascore.com",
     "www.sofascore.com",
     "news.google.com",
+    "webws.365scores.com",
 ];
 
 fn client() -> Result<&'static reqwest::Client, String> {
@@ -55,6 +56,23 @@ pub async fn football_get(url: String) -> Result<String, String> {
         return Err(format!("http:{}", status.as_u16()));
     }
     res.text().await.map_err(|e| e.to_string())
+}
+
+/// Open a news article or match page in the default browser (https only).
+#[tauri::command]
+pub fn football_open(url: String) -> Result<(), String> {
+    if !url.starts_with("https://") {
+        return Err("only https".into());
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("explorer").arg(&url).spawn().map(|_| ()).map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = url;
+        Ok(())
+    }
 }
 
 #[cfg(test)]

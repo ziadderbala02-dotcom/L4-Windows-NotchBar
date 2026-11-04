@@ -3,7 +3,7 @@
  * tournaments; SofaScore (./sofa.ts) fills the gaps ESPN doesn't cover (Egyptian league).
  */
 
-export type Source = "espn" | "sofa";
+export type Source = "espn" | "sofa" | "s365";
 
 export interface Side {
   /** Provider team ID ("83"). With the source it identifies a team: "espn:83". */
@@ -68,12 +68,19 @@ const FALLBACK = "#d1d1d6";
  * Of a team's two colors the more colorful one wins; grey, black or white → soft white.
  */
 export function glowColor(hex: string | null | undefined, alt?: string | null): string {
-  const pick = [hex, alt].map(norm).filter((c): c is string => !!c).map(hsl);
-  if (!pick.length) return FALLBACK;
-  const colorful = pick.filter((c) => c[1] >= 0.2 && c[2] > 0.06 && c[2] < 0.97);
-  if (!colorful.length) return FALLBACK;
-  const [h, s, l] = colorful.sort((a, b) => b[1] - a[1])[0];
-  return fromHsl(h, Math.max(s, 0.6), Math.min(Math.max(l, 0.55), 0.7));
+  const main = norm(hex);
+  const second = norm(alt);
+  const colorful = (c: [number, number, number]) => c[1] >= 0.2 && c[2] > 0.06 && c[2] < 0.97;
+  const lift = ([h, s, l]: [number, number, number]) => fromHsl(h, Math.max(s, 0.6), Math.min(Math.max(l, 0.55), 0.7));
+  if (main) {
+    const c = hsl(main);
+    if (colorful(c)) return lift(c);
+    // White kit (Real Madrid): a white glow, not the trim color.
+    if (c[2] >= 0.85) return "#f2f2f7";
+  }
+  // Black or grey first color: the second one if it has color.
+  if (second && colorful(hsl(second))) return lift(hsl(second));
+  return FALLBACK;
 }
 
 function norm(c: string | null | undefined): string | null {

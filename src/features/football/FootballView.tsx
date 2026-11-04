@@ -1,15 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowClockwise, Check, MagnifyingGlass, Plus, SlidersHorizontal, SoccerBall, X } from "@phosphor-icons/react";
-import { content, fade } from "../../design/motion";
+import { ArrowClockwise, Check, MagnifyingGlass, Newspaper, Plus, SlidersHorizontal, SoccerBall, X } from "@phosphor-icons/react";
+import { news, newsMode, openNews, refreshNews } from "./news";
+import { content } from "../../design/motion";
 import { locale, t } from "../../i18n";
-import { formatTime } from "../../lib/format";
-import { COMPETITIONS, competitionName, fetchTeams, fetchTeamSchedule, type TeamOption } from "./espn";
-import { sofaLogo, sofaSearchTeams, sofaTeamMatches, type SofaTeamOption } from "./sofa";
+import { formatAgo, formatTime } from "../../lib/format";
+import { COMPETITIONS, competitionName, fetchTeamSchedule } from "./espn";
+import { sofaTeamMatches } from "./sofa";
+import { search365, teamGames365, type TeamOption365 } from "./s365";
 import { Crest } from "./LiveScore";
 import { MatchDetail, clickOrDouble, detail, onTeamClick, openDetail } from "./MatchDetail";
 import { cycleCompetition, follow, refreshScores, scores, toggleTeam, updateFollow } from "./store";
-import type { FollowedTeam, Match } from "./types";
+import type { Match } from "./types";
 
 /*
  * Football tool:
@@ -18,26 +20,44 @@ import type { FollowedTeam, Match } from "./types";
  *   Follow   competitions (off / my teams / all matches), teams, stream delay.
  */
 export function FootballView() {
-  const [panel, setPanel] = useState<"matches" | "follow">("matches");
+  const [panel, setPanel] = useState<"matches" | "news" | "follow">("matches");
   const open = detail.use();
   if (open) return <MatchDetail />;
   return (
     <div className="relative flex h-full flex-col px-5 pt-1 pb-2">
       <div className="mb-2 flex items-center gap-2">
-        <SoccerBall size={15} weight="fill" className="text-label-2" />
-        <span className="text-footnote font-semibold text-label">{panel === "matches" ? t("Spiele") : t("Folgen")}</span>
+        {panel === "follow" ? (
+          <span className="text-footnote font-semibold text-label">{t("Folgen")}</span>
+        ) : (
+          <div className="flex rounded-full bg-fill-1 p-0.5">
+            {(["matches", "news"] as const).map((k) => (
+              <button
+                key={k}
+                onClick={() => setPanel(k)}
+                className={`flex h-6 items-center gap-1.5 rounded-full px-3 text-caption font-medium ${panel === k ? "bg-fill-3 text-label" : "text-label-3 hover:text-label-2"}`}
+              >
+                {k === "matches" ? <SoccerBall size={12} weight="fill" /> : <Newspaper size={12} weight="fill" />}
+                {k === "matches" ? t("Spiele") : t("Nachrichten")}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="flex-1" />
-        {panel === "matches" && (
-          <button className="pressable flex size-7 items-center justify-center rounded-full text-label-3 hover:text-label" title={t("Aktualisieren")} onClick={refreshScores}>
+        {panel !== "follow" && (
+          <button
+            className="pressable flex size-7 items-center justify-center rounded-full text-label-3 hover:text-label"
+            title={t("Aktualisieren")}
+            onClick={panel === "news" ? refreshNews : refreshScores}
+          >
             <ArrowClockwise size={14} weight="bold" />
           </button>
         )}
         <button
           className="pressable flex h-7 items-center gap-1.5 rounded-full bg-fill-1 px-3 text-caption font-medium text-label-2 hover:text-label"
-          onClick={() => setPanel(panel === "matches" ? "follow" : "matches")}
+          onClick={() => setPanel(panel === "follow" ? "matches" : "follow")}
         >
-          {panel === "matches" ? <SlidersHorizontal size={12} weight="bold" /> : <Check size={12} weight="bold" />}
-          {panel === "matches" ? t("Teams & Ligen") : t("Fertig")}
+          {panel !== "follow" ? <SlidersHorizontal size={12} weight="bold" /> : <Check size={12} weight="bold" />}
+          {panel !== "follow" ? t("Teams & Ligen") : t("Fertig")}
         </button>
       </div>
       <AnimatePresence mode="popLayout" initial={false}>
@@ -48,9 +68,31 @@ export function FootballView() {
           animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
           exit={{ opacity: 0, transition: content.exit }}
         >
-          {panel === "matches" ? <Matches /> : <Follow />}
+          {panel === "matches" ? <Matches /> : panel === "news" ? <NewsList /> : <Follow />}
         </motion.div>
       </AnimatePresence>
+    </div>
+  );
+}
+
+/* ---------- news ---------- */
+
+function NewsList() {
+  const list = news.use();
+  if (!list.length) return <div className="flex h-full items-center justify-center text-body text-label-3">{t("Noch keine Nachrichten – kommt gleich")}</div>;
+  return (
+    <div className="-mx-1 flex h-full flex-col overflow-y-auto px-1 pb-1" dir="rtl">
+      {list.map((n) => (
+        <button key={n.id} onClick={() => openNews(n.url)} className="flex min-h-11 items-center gap-2.5 rounded-[10px] px-2 py-1.5 text-right hover:bg-fill-1">
+          {n.team?.logo ? <img src={n.team.logo} alt="" className="size-5 shrink-0 object-contain" /> : <Newspaper size={16} weight="fill" className="shrink-0 text-label-3" />}
+          <span className="min-w-0 flex-1">
+            <span className="line-clamp-2 text-footnote text-label">{n.title}</span>
+            <span className="text-caption text-label-3">
+              {n.source} · {formatAgo(Date.now() - n.at)}
+            </span>
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -59,7 +101,7 @@ export function FootballView() {
 
 const upcomingCache: { at: number; key: string; list: Match[] } = { at: 0, key: "", list: [] };
 
-/** Next fixtures of the followed teams (ESPN schedules + SofaScore), cached for 30 min. */
+/** Next fixtures of the followed teams (ESPN schedules, 365Scores, SofaScore), cached for 30 min. */
 function useUpcoming(): Match[] {
   const { teams } = follow.use();
   const key = teams.map((t) => t.key).join(",");
@@ -67,9 +109,13 @@ function useUpcoming(): Match[] {
   useEffect(() => {
     if (upcomingCache.key === key && Date.now() - upcomingCache.at < 30 * 60_000) return;
     let alive = true;
-    const jobs = teams.map((tm) =>
-      tm.source === "espn" && tm.league ? fetchTeamSchedule(tm.league, tm.id) : tm.source === "sofa" ? sofaTeamMatches(tm.id) : Promise.resolve([]),
-    );
+    const ids365 = teams.filter((tm) => tm.source === "s365").map((tm) => tm.id);
+    const jobs = [
+      teamGames365(ids365),
+      ...teams.map((tm) =>
+        tm.source === "espn" && tm.league ? fetchTeamSchedule(tm.league, tm.id) : tm.source === "sofa" ? sofaTeamMatches(tm.id) : Promise.resolve([] as Match[]),
+      ),
+    ];
     void Promise.allSettled(jobs).then((rs) => {
       const now = Date.now();
       const seen = new Set<string>();
@@ -92,7 +138,13 @@ function Matches() {
   const { matches, error, updated } = scores.use();
   const upcoming = useUpcoming();
   const live = matches.filter((m) => m.state === "in");
-  const today = matches.filter((m) => m.state !== "in").sort((a, b) => a.kickoff - b.kickoff);
+  // "Today" = kicked off or kicking off today (365Scores also sends the last weeks' results).
+  const todayStr = new Date().toDateString();
+  const today = matches.filter((m) => m.state !== "in" && new Date(m.kickoff).toDateString() === todayStr).sort((a, b) => a.kickoff - b.kickoff);
+  const recent = matches
+    .filter((m) => m.state === "post" && new Date(m.kickoff).toDateString() !== todayStr && Date.now() - m.kickoff < 4 * 86_400_000)
+    .sort((a, b) => b.kickoff - a.kickoff)
+    .slice(0, 5);
   const later = upcoming.filter((u) => !matches.some((m) => m.key === u.key));
 
   if (!updated && !upcoming.length)
@@ -105,7 +157,8 @@ function Matches() {
       ))}
       {today.length > 0 && <Section title={t("Heute")} list={today} />}
       {later.length > 0 && <Section title={t("Demnächst")} list={later} />}
-      {!live.length && !today.length && !later.length && (
+      {recent.length > 0 && <Section title={t("Letzte Ergebnisse")} list={recent} />}
+      {!live.length && !today.length && !later.length && !recent.length && (
         <div className="flex flex-1 items-center justify-center text-body text-label-3">{t("Gerade keine Spiele deiner Teams")}</div>
       )}
     </div>
@@ -219,7 +272,7 @@ function Follow() {
   return (
     <div className="-mx-1 flex h-full flex-col gap-3 overflow-y-auto px-1 pb-1">
       <div>
-        <Label text={t("Wettbewerbe")} hint={t("Tippen: aus → meine Teams → alle Spiele")} />
+        <Label text={t("Alle Spiele zeigen von")} hint={t("Spiele deiner Teams kommen immer, auch ohne Auswahl")} />
         <div className="flex flex-wrap gap-1.5">
           {COMPETITIONS.map((c) => {
             const mode = f.competitions.find((x) => x.slug === c.slug)?.mode;
@@ -228,12 +281,12 @@ function Follow() {
                 key={c.slug}
                 onClick={() => cycleCompetition(c.slug)}
                 className={`pressable flex h-7 items-center gap-1 rounded-full px-3 text-caption font-medium ${
-                  mode === "all" ? "bg-accent text-black" : mode === "teams" ? "bg-fill-3 text-label" : "bg-fill-1 text-label-3"
+                  mode === "all" ? "bg-fill-3 text-label ring-1 ring-label-3" : "bg-fill-1 text-label-3"
                 }`}
                 title={c.name}
               >
                 {c.short}
-                {mode === "all" && <span className="opacity-70">· {t("alle")}</span>}
+                {mode === "all" && <Check size={10} weight="bold" />}
               </button>
             );
           })}
@@ -246,8 +299,8 @@ function Follow() {
           {f.teams.map((tm) => (
             <span key={tm.key} className="flex h-7 items-center gap-1.5 rounded-full bg-fill-2 pr-1 pl-2 text-caption text-label">
               {tm.logo && <img src={tm.logo} alt="" className="size-4 object-contain" />}
-              {tm.name}
-              {tm.source === "sofa" && <span className="text-label-3">· SofaScore</span>}
+              <span dir="auto">{tm.name}</span>
+              {tm.source === "espn" && <span className="text-label-3">· ESPN</span>}
               <button className="flex size-5 items-center justify-center rounded-full text-label-3 hover:text-label" onClick={() => toggleTeam(tm)} aria-label={t("Entfernen")}>
                 <X size={10} weight="bold" />
               </button>
@@ -255,6 +308,21 @@ function Follow() {
           ))}
         </div>
         <TeamSearch />
+      </div>
+
+      <div>
+        <Label text={t("Nachrichten im Notch")} hint={t("Alle Schlagzeilen erscheinen im Tab Nachrichten")} />
+        <div className="flex gap-1.5">
+          {(["all", "teams", "off"] as const).map((k) => (
+            <button
+              key={k}
+              onClick={() => updateFollow({ newsMode: k })}
+              className={`pressable h-7 rounded-full px-3 text-caption font-medium ${newsMode() === k ? "bg-fill-3 text-label ring-1 ring-label-3" : "bg-fill-1 text-label-3 hover:text-label-2"}`}
+            >
+              {k === "all" ? t("Alle Fußball-News") : k === "teams" ? t("Nur meine Teams") : t("Aus")}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div>
@@ -277,103 +345,57 @@ function Label({ text, hint }: { text: string; hint?: string }) {
   );
 }
 
-/** Search the teams of the followed competitions (ESPN), plus SofaScore for everything else. */
+/** Team search on 365Scores (Arabic or English names, every league incl. Egypt). */
 function TeamSearch() {
   const f = follow.use();
   const [q, setQ] = useState("");
-  const [pool, setPool] = useState<TeamOption[]>([]);
-  const [sofa, setSofa] = useState<SofaTeamOption[] | "loading" | "error" | null>(null);
+  const [hits, setHits] = useState<TeamOption365[] | "loading" | "error">([]);
 
   useEffect(() => {
-    let alive = true;
-    const slugs = [...new Set(f.competitions.map((c) => c.slug))];
-    void Promise.allSettled(slugs.map(fetchTeams)).then((rs) => {
-      const seen = new Set<string>();
-      const all = rs.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).filter((x) => !seen.has(x.id) && seen.add(x.id));
-      if (alive) setPool(all);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [f.competitions]);
+    const query = q.trim();
+    if (query.length < 2) return setHits([]);
+    setHits("loading");
+    const id = window.setTimeout(() => {
+      search365(query)
+        .then(setHits)
+        .catch(() => setHits("error"));
+    }, 350);
+    return () => window.clearTimeout(id);
+  }, [q]);
 
-  useEffect(() => setSofa(null), [q]);
-
-  const query = q.trim().toLowerCase();
-  const hits = useMemo(() => (query.length < 2 ? [] : pool.filter((x) => x.name.toLowerCase().includes(query)).slice(0, 6)), [pool, query]);
   const followed = new Set(f.teams.map((x) => x.key));
-
-  const add = (team: FollowedTeam) => {
-    toggleTeam(team);
-    setQ("");
-  };
-
   return (
     <div className="mt-2 flex flex-col gap-1">
       <div className="flex h-8 items-center gap-2 rounded-[10px] bg-fill-1 px-3">
         <MagnifyingGlass size={13} weight="bold" className="text-label-3" />
         <input
           value={q}
+          dir="auto"
           onChange={(e) => setQ(e.target.value)}
-          placeholder={t("Team hinzufügen, z. B. Arsenal")}
+          placeholder={t("Team hinzufügen, z. B. الزمالك oder Arsenal")}
           className="min-w-0 flex-1 bg-transparent text-footnote text-label outline-none placeholder:text-label-4"
         />
       </div>
-      {hits.map((x) => (
-        <button
-          key={x.id}
-          disabled={followed.has(`espn:${x.id}`)}
-          onClick={() => add({ key: `espn:${x.id}`, source: "espn", id: x.id, name: x.name, logo: x.logo, league: x.league })}
-          className="flex h-8 items-center gap-2 rounded-[8px] px-2 text-left text-footnote text-label hover:bg-fill-1 disabled:opacity-40"
-        >
-          {x.logo ? <img src={x.logo} alt="" className="size-4 object-contain" /> : <SoccerBall size={14} />}
-          {x.name}
-          <span className="text-caption text-label-3">{competitionName(x.league)}</span>
-          <span className="flex-1" />
-          <Plus size={12} weight="bold" className="text-label-3" />
-        </button>
-      ))}
-      {query.length >= 2 && (
-        <AnimatePresence mode="popLayout" initial={false}>
-          {sofa === null ? (
-            <motion.button
-              key="ask"
-              className="h-8 rounded-[8px] px-2 text-left text-caption text-link hover:bg-fill-1"
-              onClick={() => {
-                setSofa("loading");
-                sofaSearchTeams(q.trim())
-                  .then((r) => setSofa(r))
-                  .catch(() => setSofa("error"));
-              }}
-              transition={fade}
-            >
-              {t("Nicht dabei? Auf SofaScore suchen (z. B. ägyptische Liga)")}
-            </motion.button>
-          ) : sofa === "loading" ? (
-            <motion.span key="loading" className="px-2 text-caption text-label-3">{t("Suche …")}</motion.span>
-          ) : sofa === "error" ? (
-            <motion.span key="error" className="px-2 text-caption text-label-3">{t("SofaScore gerade nicht erreichbar")}</motion.span>
-          ) : (
-            <motion.div key="list" className="flex flex-col">
-              {sofa.length === 0 && <span className="px-2 text-caption text-label-3">{t("Nichts gefunden")}</span>}
-              {sofa.map((x) => (
-                <button
-                  key={x.id}
-                  disabled={followed.has(`sofa:${x.id}`)}
-                  onClick={() => add({ key: `sofa:${x.id}`, source: "sofa", id: x.id, name: x.name, logo: sofaLogo(x.id), league: null })}
-                  className="flex h-8 items-center gap-2 rounded-[8px] px-2 text-left text-footnote text-label hover:bg-fill-1 disabled:opacity-40"
-                >
-                  <img src={sofaLogo(x.id)} alt="" className="size-4 object-contain" />
-                  {x.name}
-                  <span className="text-caption text-label-3">{x.country} · SofaScore</span>
-                  <span className="flex-1" />
-                  <Plus size={12} weight="bold" className="text-label-3" />
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
-      )}
+      {hits === "loading" && <span className="px-2 text-caption text-label-3">{t("Suche …")}</span>}
+      {hits === "error" && <span className="px-2 text-caption text-label-3">{t("Suche gerade nicht erreichbar")}</span>}
+      {Array.isArray(hits) && q.trim().length >= 2 && hits.length === 0 && <span className="px-2 text-caption text-label-3">{t("Nichts gefunden")}</span>}
+      {Array.isArray(hits) &&
+        hits.map((x) => (
+          <button
+            key={x.id}
+            disabled={followed.has(`s365:${x.id}`)}
+            onClick={() => {
+              toggleTeam({ key: `s365:${x.id}`, source: "s365", id: x.id, name: x.name, logo: x.logo, league: null });
+              setQ("");
+            }}
+            className="flex h-8 items-center gap-2 rounded-[8px] px-2 text-left text-footnote text-label hover:bg-fill-1 disabled:opacity-40"
+          >
+            <img src={x.logo} alt="" className="size-4 object-contain" />
+            <span dir="auto">{x.name}</span>
+            <span className="flex-1" />
+            <Plus size={12} weight="bold" className="text-label-3" />
+          </button>
+        ))}
     </div>
   );
 }

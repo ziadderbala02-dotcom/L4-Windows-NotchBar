@@ -4,6 +4,7 @@ import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
 import { fetchLineups, fetchScoreboard } from "./espn";
 import { sofaIncidents, sofaLineups, sofaMatch, sofaTeamMatches } from "./sofa";
+import { crest365, game365, teamGames365 } from "./s365";
 import { teamKey, type FollowedTeam, type Lineups, type Match, type Side } from "./types";
 
 /*
@@ -22,35 +23,49 @@ export interface FollowState {
   competitions: { slug: string; mode: "teams" | "all" }[];
   /** Seconds the notch waits behind the live data (to match a delayed stream). */
   delay: number;
+  /** Old switch (1.9); newsMode replaces it. */
+  news?: boolean;
+  /** Which headlines pop up in the notch: all football news, the followed teams', or none. */
+  newsMode?: "all" | "teams" | "off";
 }
-
-const espnLogo = (id: string) => `https://a.espncdn.com/i/teamlogos/soccer/500/${id}.png`;
 
 const defaults: FollowState = {
   enabled: true,
   teams: [
-    { key: "espn:10207", source: "espn", id: "10207", name: "Al Ahly", logo: espnLogo("10207"), league: "caf.confed" },
-    { key: "espn:83", source: "espn", id: "83", name: "Barcelona", logo: espnLogo("83"), league: "esp.1" },
-    { key: "espn:86", source: "espn", id: "86", name: "Real Madrid", logo: espnLogo("86"), league: "esp.1" },
+    { key: "s365:8200", source: "s365", id: "8200", name: "الأهلي", logo: crest365(8200, 20), league: null },
+    { key: "s365:132", source: "s365", id: "132", name: "برشلونة", logo: crest365(132), league: null },
+    { key: "s365:131", source: "s365", id: "131", name: "ريال مدريد", logo: crest365(131), league: null },
   ],
   competitions: [
-    { slug: "uefa.champions", mode: "teams" },
-    { slug: "eng.1", mode: "teams" },
-    { slug: "esp.1", mode: "teams" },
-    { slug: "ita.1", mode: "teams" },
-    { slug: "ger.1", mode: "teams" },
-    { slug: "caf.champions", mode: "teams" },
-    { slug: "caf.confed", mode: "teams" },
     { slug: "caf.nations", mode: "all" },
     { slug: "fifa.world", mode: "all" },
-    { slug: "fifa.cwc", mode: "teams" },
-    { slug: "esp.copa_del_rey", mode: "teams" },
   ],
   delay: 0,
+  news: true,
 };
 
 export const follow = createStore<FollowState>(defaults, { persist: "football" });
 follow.set((s) => ({ ...defaults, ...s }));
+
+// 1.9: the starting teams move from ESPN to 365Scores (Arabic names, Egyptian league,
+// lineups and news for all three). Teams the user added themselves stay as they are.
+try {
+  if (!localStorage.getItem("notch:football-365")) {
+    localStorage.setItem("notch:football-365", "1");
+    const swap: Record<string, FollowedTeam> = {
+      "espn:10207": defaults.teams[0],
+      "espn:83": defaults.teams[1],
+      "espn:86": defaults.teams[2],
+    };
+    follow.set((s) => {
+      const teams: FollowedTeam[] = [];
+      for (const t of s.teams.map((x) => swap[x.key] ?? x)) if (!teams.some((y) => y.key === t.key)) teams.push(t);
+      return { ...s, teams };
+    });
+  }
+} catch {
+  // No storage: keep the list.
+}
 
 export function updateFollow(patch: Partial<FollowState> | ((s: FollowState) => Partial<FollowState>)) {
   follow.set((s) => ({ ...s, ...(typeof patch === "function" ? patch(s) : patch) }));
@@ -62,13 +77,12 @@ export function toggleTeam(team: FollowedTeam) {
   }));
 }
 
-/** Off → teams → all → off. */
+/** Every match of a competition on or off (your teams' matches show up anyway). */
 export function cycleCompetition(slug: string) {
   updateFollow((s) => {
     const cur = s.competitions.find((c) => c.slug === slug);
-    if (!cur) return { competitions: [...s.competitions, { slug, mode: "teams" }] };
-    if (cur.mode === "teams") return { competitions: s.competitions.map((c) => (c.slug === slug ? { slug, mode: "all" as const } : c)) };
-    return { competitions: s.competitions.filter((c) => c.slug !== slug) };
+    if (cur?.mode === "all") return { competitions: s.competitions.filter((c) => c.slug !== slug) };
+    return { competitions: [...s.competitions.filter((c) => c.slug !== slug), { slug, mode: "all" as const }] };
   });
 }
 
@@ -146,7 +160,7 @@ const lineupCheckedAt = new Map<string, number>();
 export async function loadLineups(m: Match): Promise<Lineups | null> {
   const have = lineups.get()[m.key];
   if (have) return have;
-  const l = m.source === "espn" ? await fetchLineups(m.league, m.id) : await sofaLineups(m.id);
+  const l = m.source === "espn" ? await fetchLineups(m.league, m.id) : m.source === "s365" ? (await game365(m.id)).lineups : await sofaLineups(m.id);
   if (l) lineups.set((s) => ({ ...s, [m.key]: l }));
   return l;
 }
@@ -179,6 +193,7 @@ export function leagueMatches(slug: string): Match[] {
 
 const espnCache = new Map<string, Match[]>();
 const sofaCache = new Map<string, Match[]>();
+let cache365: Match[] = [];
 const nextAt = new Map<string, number>();
 const failed = new Set<string>();
 const snapshots: { at: number; matches: Match[] }[] = [];
@@ -212,9 +227,14 @@ function hot(m: Match, now = Date.now()): boolean {
   return false;
 }
 
+/**
+ * ESPN competitions worth polling: those on "all matches", and (only when ESPN teams are
+ * followed) those on "my teams". 365Scores teams don't need any of them.
+ */
 function espnSlugs(): string[] {
   const f = follow.get();
-  const set = new Set(f.competitions.map((c) => c.slug));
+  const anyEspnTeam = f.teams.some((t) => t.source === "espn");
+  const set = new Set(f.competitions.filter((c) => c.mode === "all" || anyEspnTeam).map((c) => c.slug));
   for (const t of f.teams) if (t.source === "espn" && t.league) set.add(t.league);
   return [...set];
 }
@@ -249,6 +269,34 @@ async function pollSofa(team: FollowedTeam, now: number) {
   }
 }
 
+/**
+ * 365Scores: one request covers every followed team. While a game is live (or about to
+ * start) every 10 s, plus its detail for the scorers.
+ */
+async function poll365(now: number) {
+  const ids = follow.get().teams.filter((t) => t.source === "s365").map((t) => t.id);
+  if (!ids.length) {
+    cache365 = [];
+    return;
+  }
+  try {
+    let ms = await teamGames365(ids);
+    const live = ms.filter((m) => m.state === "in");
+    if (live.length) {
+      const details = await Promise.allSettled(live.map((m) => game365(m.id)));
+      const byKey = new Map(details.flatMap((d) => (d.status === "fulfilled" ? [[d.value.match.key, d.value.match] as const] : [])));
+      // Keep the competition label from the list (the detail has the long one).
+      ms = ms.map((m) => (byKey.has(m.key) ? { ...byKey.get(m.key)!, leagueName: m.leagueName } : m));
+    }
+    cache365 = ms;
+    failed.delete("s365");
+    nextAt.set("s365", now + (ms.some((m) => hot(m, now)) ? FAST_MS : SLOW_MS));
+  } catch {
+    failed.add("s365");
+    nextAt.set("s365", now + RETRY_MS);
+  }
+}
+
 /** Same match from two sources (Al Ahly in the CAF via ESPN and SofaScore): keep ESPN. */
 function dedupe(list: Match[]): Match[] {
   const norm = (s: string) => s.toLowerCase().replace(/\b(fc|sc|cf|al|el|club)\b|[^a-z]/g, "");
@@ -280,6 +328,7 @@ async function cycle() {
   const jobs: Promise<void>[] = [];
   for (const slug of espnSlugs()) if (due(`espn:${slug}`)) jobs.push(pollEspn(slug, now));
   for (const t of f.teams) if (t.source === "sofa" && due(`sofa:${t.id}`)) jobs.push(pollSofa(t, now));
+  if (due("s365")) jobs.push(poll365(now));
   await Promise.all(jobs);
   running = false;
 
@@ -289,7 +338,7 @@ async function cycle() {
   const sofaIds = new Set(f.teams.filter((t) => t.source === "sofa").map((t) => t.id));
   for (const k of [...sofaCache.keys()]) if (!sofaIds.has(k)) sofaCache.delete(k);
 
-  const all = dedupe([...[...espnCache.values()].flat(), ...[...sofaCache.values()].flat()]).filter(relevant);
+  const all = dedupe([...[...espnCache.values()].flat(), ...[...sofaCache.values()].flat(), ...cache365]).filter(relevant);
   snapshots.push({ at: Date.now(), matches: all });
   while (snapshots.length > 2 && snapshots[1].at <= Date.now() - follow.get().delay * 1000 - 60_000) snapshots.shift();
   publish(failed.size > 0);
@@ -324,6 +373,15 @@ function celebrate(m: Match, side: "home" | "away", disallowed: boolean) {
   const g: Goal = { matchKey: m.key, side, team: m[side], player: disallowed ? null : (last?.player ?? null), minute: last?.minute ?? m.clock, disallowed, at: Date.now() };
   goal.set(g);
   window.setTimeout(() => goal.get() === g && goal.set(null), GOAL_MS);
+  // 365Scores lists scorers in the game detail; fetch it if the list didn't have it yet.
+  if (m.source === "s365" && !disallowed && !last) {
+    void game365(m.id)
+      .then(({ match }) => {
+        const sc = [...match.events].reverse().find((e) => e.kind === "goal" && e.side === side);
+        if (sc && goal.get()?.at === g.at) goal.set({ ...g, player: sc.player, minute: sc.minute || g.minute });
+      })
+      .catch(() => {});
+  }
   // SofaScore sends scorers separately.
   if (m.source === "sofa" && !disallowed) {
     void sofaIncidents(m.id)

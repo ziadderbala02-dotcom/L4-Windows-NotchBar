@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { AlarmIcon as Whistle, SoccerBall, UsersThree } from "@phosphor-icons/react";
+import { AlarmIcon as Whistle, Newspaper, SoccerBall, UsersThree } from "@phosphor-icons/react";
+import { openNews, type TeamNews } from "./news";
 import { formatTime } from "../../lib/format";
 import { content } from "../../design/motion";
 import { LiveEdge } from "../../notch/liveEdges";
@@ -233,6 +234,41 @@ export function FootballNotice({ n }: { n: Notice }) {
       <motion.div className="flex" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1, transition: { type: "spring", visualDuration: 0.4, bounce: 0.4, delay: 0.3 } }}>
         <Crest side={m.away} size={26} />
       </motion.div>
+    </motion.div>
+  );
+}
+
+/**
+ * Closed notch, a new headline about a followed team (geometry.notice):
+ *
+ *   [crest]  الأهلي · أخبار365
+ *            عنوان الخبر …
+ *
+ * Clicking opens the notch (Notch) and the article in the browser.
+ */
+export function NewsNoticeView({ n }: { n: TeamNews }) {
+  return (
+    <motion.div
+      className="absolute inset-x-0 top-0 flex cursor-pointer items-center gap-3 px-4"
+      style={{ height: 54 }}
+      onClick={() => openNews(n.url)}
+      initial={{ opacity: 0, filter: "blur(4px)" }}
+      animate={{ opacity: 1, filter: "blur(0px)", transition: { ...content.enter, delay: 0.15 } }}
+      exit={{ opacity: 0, filter: "blur(4px)", transition: content.exit }}
+    >
+      <motion.div className="flex shrink-0" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1, transition: { type: "spring", visualDuration: 0.4, bounce: 0.4, delay: 0.2 } }}>
+        {n.team?.logo ? <img src={n.team.logo} alt="" className="size-7 object-contain" /> : <Newspaper size={22} weight="fill" className="text-label-2" />}
+      </motion.div>
+      <div className="min-w-0 flex-1" dir="rtl">
+        <div className="flex items-center gap-1.5 text-caption font-semibold text-link">
+          <Newspaper size={11} weight="fill" />
+          <span className="truncate">
+            {n.team ? `${n.team.name} · ` : ""}
+            {n.source}
+          </span>
+        </div>
+        <div className="truncate text-footnote font-medium text-label">{n.title}</div>
+      </div>
     </motion.div>
   );
 }
