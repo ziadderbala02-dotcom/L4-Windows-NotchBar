@@ -46,11 +46,15 @@ interface RawLineupMember {
 
 interface RawEvent {
   competitorId: number;
-  eventType: { id: number; subTypeId?: number; name?: string };
+  eventType: { id: number; subTypeId?: number; name?: string; subTypeName?: string };
   gameTime?: number;
   addedTime?: number;
   gameTimeDisplay?: string;
   playerId?: number;
+  /** Goal: the assist. Substitution: the player going off (playerId comes on). */
+  extraPlayers?: number[];
+  order?: number;
+  isMajor?: boolean;
 }
 
 interface RawGame {
@@ -59,6 +63,7 @@ interface RawGame {
   competitionDisplayName?: string;
   startTime: string;
   statusGroup: number;
+  statusId?: number;
   statusText?: string;
   shortStatusText?: string;
   gameTimeDisplay?: string;
@@ -81,29 +86,59 @@ function side(c: RawCompetitor): Side {
   };
 }
 
+/** The pause between halves (or before extra time / penalties), from the status. */
+function breakLabel(g: RawGame): string | null {
+  const st = `${g.statusText ?? ""} ${g.shortStatusText ?? ""}`;
+  if (g.statusId === 7 || /استراحة|بين الشوطين|half ?-?time|\bHT\b/i.test(st)) return "بين الشوطين";
+  if (/ترجيح|penalt/i.test(st) && /انتظار|قبل|نهاية|awaiting|before|end/i.test(st)) return "قبل الترجيح";
+  if (/انتظار|نهاية الوقت|awaiting|end of|break/i.test(st)) return /إضافي|extra/i.test(st) ? "قبل الترجيح" : "قبل الإضافي";
+  return null;
+}
+
+/** 365Scores names a running review in the status on some matches ("VAR"). */
+const isVarStatus = (g: RawGame) => /\bVAR\b|فار|فيديو/i.test(`${g.statusText ?? ""} ${g.shortStatusText ?? ""}`);
+
 function clockOf(g: RawGame, state: Match["state"]): string {
-  if (state === "post") return g.shortStatusText || "FT";
+  if (state === "post") return "انتهت";
   if (state !== "in") return "";
-  // During play the minute ("67'", "45'+2'"); at the break the status ("استراحة").
+  const pause = breakLabel(g);
+  if (pause) return pause;
   return g.gameTimeDisplay?.trim() || g.shortStatusText || "LIVE";
 }
 
+function phaseOf(g: RawGame, state: Match["state"]): Match["phase"] {
+  if (state !== "in") return undefined;
+  if (isVarStatus(g)) return "var";
+  return breakLabel(g) ? "break" : "play";
+}
+
+const VAR_RE = /\bVAR\b|فار|فيديو/i;
+const PEN_RE = /جزاء|penalt/i;
+
 function events(g: RawGame): MatchEvent[] {
   const name = (id?: number) => {
+    if (id === undefined) return null;
     const m = g.members?.find((x) => x.id === id || x.athleteId === id);
-    return m?.name ?? m?.shortName ?? null;
+    return m?.shortName || m?.name || null;
   };
   const out: MatchEvent[] = [];
-  for (const e of g.events ?? []) {
-    // 1 = goal (subtype 3 penalty, 2 own goal), 3 = red card.
-    if (e.eventType.id !== 1 && e.eventType.id !== 3) continue;
+  for (const [i, e] of (g.events ?? []).entries()) {
+    const t = e.eventType;
+    const label = [t.name, t.subTypeName].filter((x) => x && x !== "-1").join(" - ");
+    // 1 goal (sub 1 field, 2 own goal, 3 penalty), 2 yellow, 3 red (sub 21 second yellow), 1000 substitution.
+    const kind: MatchEvent["kind"] =
+      t.id === 1 ? "goal" : t.id === 2 ? "yellow" : t.id === 3 ? "red" : t.id === 1000 ? "sub" : VAR_RE.test(label) ? "var" : PEN_RE.test(label) ? "pen" : "other";
     out.push({
-      kind: e.eventType.id === 1 ? "goal" : "red",
+      kind,
       side: e.competitorId === g.homeCompetitor.id ? "home" : "away",
-      minute: e.gameTimeDisplay || (e.gameTime ? `${e.gameTime}'` : ""),
+      minute: e.gameTimeDisplay || (e.gameTime ? `${Math.round(e.gameTime)}'` : ""),
       player: name(e.playerId),
-      own: e.eventType.id === 1 && e.eventType.subTypeId === 2,
-      penalty: e.eventType.id === 1 && e.eventType.subTypeId === 3,
+      own: t.id === 1 && t.subTypeId === 2,
+      penalty: t.id === 1 && t.subTypeId === 3,
+      id: `${e.order ?? i}:${t.id}`,
+      extra: name(e.extraPlayers?.[0]),
+      label,
+      at: (e.gameTime ?? 0) + (e.addedTime ?? 0) / 100,
     });
   }
   return out;
@@ -123,6 +158,7 @@ export function parse365(g: RawGame, leagueName?: string): Match {
     home: side(g.homeCompetitor),
     away: side(g.awayCompetitor),
     events: events(g),
+    phase: phaseOf(g, state),
   };
 }
 
@@ -308,4 +344,39 @@ export async function teamFixtures365(id: string): Promise<Match[]> {
 export async function searchComps365(q: string): Promise<{ id: string; name: string }[]> {
   const r = await getJson<{ competitions?: { id: number; name: string; sportId?: number }[] }>(url(`search/?query=${encodeURIComponent(q)}`));
   return (r.competitions ?? []).filter((c) => c.sportId === 1).slice(0, 8).map((c) => ({ id: String(c.id), name: c.name }));
+}
+
+export interface MatchStat {
+  id: number;
+  name: string;
+  home: string;
+  away: string;
+  /** Home share of the bar, 0..1. */
+  homeShare: number;
+}
+
+/** The stats worth a glance, in this order: possession, xG, shots, on target, corners, fouls, offsides, cards. */
+const STAT_IDS = [10, 76, 3, 4, 8, 12, 9, 1, 2];
+
+/** Live match statistics (possession, shots …) for the match detail. */
+export async function stats365(gameId: string, homeId: string): Promise<MatchStat[]> {
+  const r = await getJson<{
+    statistics?: { id: number; name: string; competitorId: number; value?: string; valuePercentage?: number }[];
+  }>(url(`game/stats/?games=${gameId}`));
+  const all = r.statistics ?? [];
+  const out: MatchStat[] = [];
+  for (const id of STAT_IDS) {
+    const rows = all.filter((s) => s.id === id);
+    if (rows.length < 2) continue;
+    const h = rows.find((s) => String(s.competitorId) === homeId) ?? rows[0];
+    const a = rows.find((s) => s !== h) ?? rows[1];
+    const num = (v?: string) => parseFloat((v ?? "0").replace("%", "")) || 0;
+    const hn = num(h.value);
+    const an = num(a.value);
+    const share = h.valuePercentage !== undefined && a.valuePercentage !== undefined && h.valuePercentage + a.valuePercentage > 0
+      ? h.valuePercentage / (h.valuePercentage + a.valuePercentage)
+      : hn + an > 0 ? hn / (hn + an) : 0.5;
+    out.push({ id, name: h.name, home: h.value ?? "0", away: a.value ?? "0", homeShare: share });
+  }
+  return out;
 }

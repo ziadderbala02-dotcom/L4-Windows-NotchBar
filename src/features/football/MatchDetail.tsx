@@ -5,11 +5,11 @@ import { content } from "../../design/motion";
 import { createStore } from "../../lib/store";
 import { t } from "../../i18n";
 import { fetchStandings, liveTable } from "./espn";
-import { competitionGames365, standings365 } from "./s365";
+import { competitionGames365, game365, standings365, stats365, type MatchStat } from "./s365";
 import { Crest } from "./LiveScore";
 import { TeamMatches, openTeam } from "./TeamPage";
 import { leagueMatches, loadLineups, scores } from "./store";
-import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
+import type { Lineups, Match, MatchEvent, TableGroup, TeamLineup } from "./types";
 
 /*
  * One match, opened from the football tool: click → lineups, double click → table.
@@ -17,14 +17,16 @@ import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
  * ended now, marks the two teams of this match and shows who moved up or down.
  */
 
-type Tab = "lineups" | "table" | "matches";
+type Tab = "match" | "lineups" | "table" | "matches";
 type SideKey = "home" | "away";
 
 /** `side`: opened from one team (its lineup only, its row stands out in the table). */
 export const detail = createStore<{ match: Match; tab: Tab; side?: SideKey } | null>(null);
 
 export function openDetail(match: Match, tab: Tab, side?: SideKey) {
-  detail.set({ match, tab, side });
+  // A running or finished match opens on its events and stats (365Scores has them).
+  const t2 = tab === "lineups" && match.source === "s365" && match.state !== "pre" ? "match" : tab;
+  detail.set({ match, tab: t2, side });
 }
 
 /**
@@ -66,20 +68,20 @@ export function MatchDetail() {
           <ArrowLeft size={13} weight="bold" />
         </button>
         <Crest side={m.home} size={18} />
-        <span className="truncate text-footnote font-semibold text-label">{m.home.short}</span>
-        <span className="tabular text-footnote font-bold text-label">{m.state === "pre" ? "–" : `${m.home.score} – ${m.away.score}`}</span>
-        <span className="truncate text-footnote font-semibold text-label">{m.away.short}</span>
+        <span className="max-w-[110px] truncate text-footnote font-semibold text-label">{m.home.short}</span>
+        <span className="tabular shrink-0 text-footnote font-bold whitespace-nowrap text-label">{m.state === "pre" ? "–" : `${m.home.score} – ${m.away.score}`}</span>
+        <span className="max-w-[110px] truncate text-footnote font-semibold text-label">{m.away.short}</span>
         <Crest side={m.away} size={18} />
-        {m.state === "in" && <span className="tabular text-caption font-semibold text-red">{m.clock}</span>}
+        {m.state === "in" && <span className="tabular shrink-0 text-caption font-semibold whitespace-nowrap text-red" dir="auto">{m.clock}</span>}
         <span className="flex-1" />
         <div className="flex rounded-full bg-fill-1 p-0.5">
-          {(["lineups", "table", "matches"] as const).map((k) => (
+          {(m.source === "s365" && m.state !== "pre" ? (["match", "lineups", "table", "matches"] as const) : (["lineups", "table", "matches"] as const)).map((k) => (
             <button
               key={k}
               onClick={() => setTab(k)}
               className={`h-6 rounded-full px-3 text-caption font-medium ${d.tab === k ? "bg-fill-3 text-label" : "text-label-3 hover:text-label-2"}`}
             >
-              {k === "lineups" ? t("Aufstellung") : k === "table" ? t("Tabelle") : t("Spiele")}
+              {k === "match" ? t("Spiel") : k === "lineups" ? t("Aufstellung") : k === "table" ? t("Tabelle") : t("Spiele")}
             </button>
           ))}
         </div>
@@ -92,9 +94,119 @@ export function MatchDetail() {
           animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
           exit={{ opacity: 0, transition: content.exit }}
         >
-          {d.tab === "lineups" ? <LineupsPane m={m} side={d.side} /> : d.tab === "table" ? <TablePane m={m} side={d.side} /> : <MatchesPane m={m} side={d.side} />}
+          {d.tab === "match" ? <MatchPane m={m} /> : d.tab === "lineups" ? <LineupsPane m={m} side={d.side} /> : d.tab === "table" ? <TablePane m={m} side={d.side} /> : <MatchesPane m={m} side={d.side} />}
         </motion.div>
       </AnimatePresence>
+    </div>
+  );
+}
+
+/* ---------- match: events and stats ---------- */
+
+/**
+ * The match itself: what happened (goals with assist, cards, substitutions, VAR) in order,
+ * newest on top, and the key stats as bars in the team colors. Refreshes every 10 s live.
+ *
+ *   67'  ⚽  Salah  (Assist: Szoboszlai)                 |
+ *              |                      54'  🟨  Kimmich
+ */
+function MatchPane({ m }: { m: Match }) {
+  const [evs, setEvs] = useState<MatchEvent[] | null>(m.events.some((e) => e.id) ? m.events : null);
+  const [stats, setStats] = useState<MatchStat[] | null>(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () => {
+      game365(m.id)
+        .then(({ match }) => alive && (setEvs(match.events), setErr(false)))
+        .catch(() => alive && setErr(true));
+      stats365(m.id, m.home.id)
+        .then((x) => alive && setStats(x))
+        .catch(() => alive && setStats((s) => s ?? []));
+    };
+    load();
+    const id = m.state === "in" ? window.setInterval(load, 10_000) : undefined;
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [m.key, m.state]);
+  // The scoreboard's own copy (365 detail, every 10 s) when this pane's fetch fails.
+  useEffect(() => {
+    if (err && m.events.some((e) => e.id)) setEvs(m.events);
+  }, [err, m.events]);
+  if (!evs && err) return <Empty text={t("Spieldaten gerade nicht erreichbar")} />;
+  if (!evs) return <Empty text={t("Lade Spiel …")} />;
+  const list = [...evs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+  return (
+    <div className="-mx-1 grid h-full grid-cols-[1fr_190px] gap-4 overflow-hidden px-1">
+      <div className="min-h-0 overflow-y-auto pb-1" dir="rtl">
+        {!list.length && <Empty text={t("Noch keine Ereignisse")} />}
+        {list.map((e, i) => (
+          <EventRow key={e.id ?? i} e={e} m={m} />
+        ))}
+      </div>
+      <div className="min-h-0 overflow-y-auto pb-1">
+        {stats?.length ? stats.map((s) => <StatBar key={s.id} s={s} m={m} />) : <div className="pt-6 text-center text-caption text-label-3">{stats ? t("Keine Statistiken") : "…"}</div>}
+      </div>
+    </div>
+  );
+}
+
+function EventIcon({ e }: { e: MatchEvent }) {
+  if (e.kind === "goal") return <span className="text-[13px]">⚽</span>;
+  if (e.kind === "red") return <span className="block h-[13px] w-[9px] rounded-[1.5px] bg-red" />;
+  if (e.kind === "yellow") return <span className="block h-[13px] w-[9px] rounded-[1.5px]" style={{ background: "#ffd60a" }} />;
+  if (e.kind === "sub") return <span className="text-[12px] text-green">⇅</span>;
+  if (e.kind === "var") return <span className="rounded-[4px] px-1 text-[9px] leading-[14px] font-extrabold text-white" style={{ background: "#7c5cff" }}>VAR</span>;
+  if (e.kind === "pen") return <span className="text-[12px] text-orange">✗</span>;
+  return <span className="text-[12px] text-label-3">•</span>;
+}
+
+/** Home events on the right (Arabic reading order), away on the left. */
+function EventRow({ e, m }: { e: MatchEvent; m: Match }) {
+  const main =
+    e.kind === "sub" ? e.player : e.kind === "goal" ? `${e.player ?? t("Tor")}${e.penalty ? " (ج)" : e.own ? " (ع.م)" : ""}` : e.player ?? e.label ?? "";
+  const second =
+    e.kind === "sub"
+      ? e.extra ? `↓ ${e.extra}` : ""
+      : e.kind === "goal"
+        ? e.extra ? `${t("Vorlage")}: ${e.extra}` : ""
+        : e.kind === "var" || e.kind === "pen" || e.kind === "other"
+          ? e.player ? e.label ?? "" : ""
+          : "";
+  const home = e.side === "home";
+  return (
+    <div className={`flex items-center gap-2 border-b border-fill-1 py-1.5 ${home ? "" : "flex-row-reverse text-left"}`}>
+      <span className="tabular w-9 shrink-0 text-center text-caption font-semibold text-label-2" dir="ltr">{e.minute}</span>
+      <span className="flex w-5 shrink-0 justify-center">
+        <EventIcon e={e} />
+      </span>
+      <Crest side={m[e.side]} size={14} />
+      <div className={`min-w-0 flex-1 ${home ? "" : "text-left"}`}>
+        <div className={`truncate text-footnote ${e.kind === "goal" ? "font-bold text-label" : "font-medium text-label"}`}>
+          {e.kind === "sub" && <span className="text-green">↑ </span>}
+          {main}
+        </div>
+        {second && <div className="truncate text-caption text-label-3">{second}</div>}
+      </div>
+    </div>
+  );
+}
+
+function StatBar({ s, m }: { s: MatchStat; m: Match }) {
+  const h = Math.round(s.homeShare * 100);
+  return (
+    <div className="mb-2">
+      <div className="flex items-center justify-between text-caption">
+        <span className="tabular font-semibold text-label">{s.home}</span>
+        <span className="truncate px-1 text-label-3" dir="auto">{s.name}</span>
+        <span className="tabular font-semibold text-label">{s.away}</span>
+      </div>
+      <div className="mt-0.5 flex h-[5px] gap-[2px] overflow-hidden rounded-full">
+        <div className="rounded-full" style={{ width: `${h}%`, background: m.home.color }} />
+        <div className="flex-1 rounded-full" style={{ background: m.away.color, opacity: 0.85 }} />
+      </div>
     </div>
   );
 }

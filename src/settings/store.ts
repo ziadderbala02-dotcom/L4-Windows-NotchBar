@@ -11,7 +11,7 @@ export interface AskProviderConfig {
   baseUrl: string;
 }
 
-export type SoundKind = "notif" | "news" | "task" | "goal";
+export type SoundKind = "notif" | "news" | "task" | "goal" | "incident";
 export interface SoundPref {
   on: boolean;
   /** Built-in id ("pop", "alarm:bell", …) or "custom" with `file`. */
@@ -135,6 +135,7 @@ const defaults: Settings = {
       news: { on: false, sound: "tap", file: null, volume: 0.5 },
       task: { on: true, sound: "alarm:marimba", file: null, volume: 0.7 },
       goal: { on: true, sound: "goal", file: null, volume: 0.7 },
+      incident: { on: true, sound: "whistle", file: null, volume: 0.7 },
     },
   },
 };

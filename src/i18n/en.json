@@ -617,5 +617,17 @@
  "Office antwortet nicht": "Office isn't responding",
  "Office-Export fehlgeschlagen": "Office export failed",
  "Keine Bilder": "No images",
- "Bild konnte nicht gelesen werden: {f}": "Couldn't read image: {f}"
+ "Bild konnte nicht gelesen werden: {f}": "Couldn't read image: {f}",
+ "Rote Karte, VAR, Elfmeter": "Red cards, VAR, penalties",
+ "Nach VAR-Prüfung": "After VAR review",
+ "Überprüfung läuft": "Review in progress",
+ "Still während Spielen": "Quiet during matches",
+ "Schlagzeilen landen nur in der Liste, solange ein Spiel läuft": "Headlines only go to the list while a match is live",
+ "Spiel": "Match",
+ "Spieldaten gerade nicht erreichbar": "Match data unavailable right now",
+ "Lade Spiel …": "Loading match …",
+ "Noch keine Ereignisse": "Nothing has happened yet",
+ "Keine Statistiken": "No stats",
+ "Tor": "Goal",
+ "Vorlage": "Assist"
 }

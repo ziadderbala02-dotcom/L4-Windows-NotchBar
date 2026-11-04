@@ -8,7 +8,7 @@ import { PrivacyDots } from "../features/privacy/PrivacyDots";
 import { FOCUS_CLICKS, focusMode, setFocusMode } from "./focus";
 import { useDragToMove } from "./drag";
 import { LiveSlot, useLiveActivity } from "./live";
-import { goal } from "../features/football/store";
+import { goal, incident, useFeaturedMatch } from "../features/football/store";
 import { NewsExpanded } from "../features/football/LiveScore";
 import { newsNotice, openNews, type TeamNews } from "../features/football/news";
 import { notifNotice, openApp, type Notif } from "../features/notifications/store";
@@ -56,6 +56,10 @@ export function Notch() {
   const np = useNowPlaying();
   const live = useLiveActivity();
   const goalNow = goal.use();
+  const incidentNow = incident.use();
+  const featuredMatch = useFeaturedMatch();
+  // A goal, red card, VAR or penalty on the shown match: the closed notch grows and glows.
+  const moment = footballMoment(goalNow, incidentNow, featuredMatch);
   // The tool a live activity opens (a football notice opens the football tool).
   const liveTab =
     live.id === "notice" || live.id === "news"
@@ -115,9 +119,10 @@ export function Notch() {
       ? geometry.line
       : lineIdle && status === "peek"
         ? geometry.linePeek
-        : shapeFor(status, shownLive, size, !!goalNow);
-  // Goal: the closed notch glows in the scoring team's color while it celebrates.
-  const glow = status !== "open" && shownLive === "football" && goalNow && !goalNow.disallowed ? goalNow.team.color : null;
+        : shapeFor(status, shownLive, size, moment.big);
+  // Goal: the closed notch glows in the scoring team's color while it celebrates
+  // (red for a sending off, purple during a review, green / red for the VAR decision).
+  const glow = status !== "open" && shownLive === "football" ? moment.glow : null;
   const tightHit = shape === geometry.line || shape === geometry.linePeek;
   const sticky = useStickyHitZone(status, size.h);
   const transition = useTransitionFor(status, shape);
@@ -401,6 +406,19 @@ function useStickyHitZone(status: NotchStatus, height: number) {
 
 /** pb-3 of the hit zone. */
 const HIT_PAD_BOTTOM = 12;
+
+function footballMoment(
+  g: ReturnType<typeof goal.get>,
+  inc: ReturnType<typeof incident.get>,
+  m: ReturnType<typeof useFeaturedMatch>,
+): { big: boolean; glow: string | null } {
+  if (!m) return { big: false, glow: null };
+  if (g && g.matchKey === m.key) return { big: true, glow: g.disallowed ? null : g.team.color };
+  if (inc && inc.matchKey === m.key)
+    return { big: true, glow: inc.kind === "red" ? "#ff453a" : inc.kind === "pen" ? "#ff9f0a" : inc.ok ? "#30d158" : "#ff453a" };
+  if (m.phase === "var") return { big: true, glow: "#8e7bff" };
+  return { big: false, glow: null };
+}
 
 function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h: number }, goal = false): NotchGeometry {
   if (status === "open") return openGeometry(size.w, size.h);

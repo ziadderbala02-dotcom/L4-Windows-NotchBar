@@ -13,7 +13,7 @@ import { notifNotice } from "../features/notifications/store";
 import { LiveRecord, SavedNotice, useRecordLive } from "../features/record/LiveRecord";
 import { saved } from "../features/record/store";
 import { NotifNotice } from "../features/notifications/NotificationsView";
-import { goal, notice, useFeaturedMatch } from "../features/football/store";
+import { goal, incident, notice, useFeaturedMatch } from "../features/football/store";
 import { LiveClock, useClockLive } from "./LiveClock";
 import { LiveTaskAlarm, LiveTaskSoon, useSoonTask, useTaskAlarm } from "../features/todos/LiveTask";
 import { geometry } from "./geometry";
@@ -31,6 +31,7 @@ export function useLiveActivity(): { id: string | null } {
   const np = useNowPlaying();
   const match = useFeaturedMatch();
   const g = goal.use();
+  const inc = incident.use();
   const clock = useClockLive();
   const note = notice.use();
   const headline = newsNotice.use();
@@ -43,10 +44,12 @@ export function useLiveActivity(): { id: string | null } {
   // Recording: always visible, so it's never forgotten running.
   if (recording) return { id: "record" };
   if (justSaved) return { id: "saved" };
+  // A goal, red card, VAR decision or penalty (or a review still running) on the shown match.
+  const moment = !!match && ((!!g && g.matchKey === match.key) || (!!inc && inc.matchKey === match.key) || match.phase === "var");
   // A task due now waits for an answer (Done / snooze); a goal still cuts in.
-  if (taskAlarm && !(match && g && g.matchKey === match.key)) return { id: "taskAlarm" };
+  if (taskAlarm && !moment) return { id: "taskAlarm" };
   // A goal interrupts everything except gaming mode, for the few seconds it lasts.
-  if (match && g && g.matchKey === match.key) return { id: "football" };
+  if (moment) return { id: "football" };
   if (note) return { id: "notice" };
   if (message) return { id: "notif" };
   if (headline && !timerLive && !call) return { id: "news" };

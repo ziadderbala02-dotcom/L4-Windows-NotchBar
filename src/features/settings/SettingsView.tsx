@@ -696,6 +696,7 @@ const soundKinds: { id: SoundKind; label: string; hint: string }[] = [
   { id: "news", label: "Nachrichten", hint: "Neue Fußball-Schlagzeilen" },
   { id: "task", label: "Aufgaben-Erinnerungen", hint: "Wecker an To-dos" },
   { id: "goal", label: "Tore", hint: "Live-Spiele im Notch" },
+  { id: "incident", label: "Rote Karte, VAR, Elfmeter", hint: "Live-Spiele im Notch" },
 ];
 
 /** Sound per kind of popup; silent while Windows' Do not disturb is on. */

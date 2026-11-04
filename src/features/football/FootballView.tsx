@@ -422,6 +422,14 @@ function Follow() {
               {k === "all" ? t("Alle Fußball-News") : k === "teams" ? t("Nur meine Teams") : t("Aus")}
             </button>
           ))}
+          <button
+            onClick={() => updateFollow({ quietNews: !f.quietNews })}
+            title={t("Schlagzeilen landen nur in der Liste, solange ein Spiel läuft")}
+            className={`pressable ml-auto h-7 rounded-full px-3 text-caption font-medium ${f.quietNews ? "bg-fill-3 text-label ring-1 ring-label-3" : "bg-fill-1 text-label-3 hover:text-label-2"}`}
+          >
+            {f.quietNews ? "✓ " : ""}
+            {t("Still während Spielen")}
+          </button>
         </div>
       </div>
 

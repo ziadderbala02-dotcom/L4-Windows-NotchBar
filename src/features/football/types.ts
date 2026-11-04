@@ -18,12 +18,21 @@ export interface Side {
 }
 
 export interface MatchEvent {
-  kind: "goal" | "red";
+  /** goal, red / yellow card, substitution, VAR decision, missed penalty, anything else. */
+  kind: "goal" | "red" | "yellow" | "sub" | "var" | "pen" | "other";
   side: "home" | "away";
   minute: string;
   player: string | null;
   own: boolean;
   penalty: boolean;
+  /** Stable per match (provider order), to spot new events between polls. */
+  id?: string;
+  /** Assist (goal) or the player going off (substitution). */
+  extra?: string | null;
+  /** Provider wording ("ركلة جزاء ضائعة", "VAR - هدف ملغي"), for kinds without a fixed text. */
+  label?: string;
+  /** Minute as a number (for sorting). */
+  at?: number;
 }
 
 export interface Match {
@@ -42,6 +51,11 @@ export interface Match {
   home: Side;
   away: Side;
   events: MatchEvent[];
+  /**
+   * While live: "play", "break" (half time and other pauses, the clock shows the status),
+   * or "var" (the provider says a review is on). Unset = play.
+   */
+  phase?: "play" | "break" | "var";
 }
 
 /** A team the user follows. */

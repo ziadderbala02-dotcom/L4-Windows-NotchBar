@@ -37,6 +37,8 @@ export interface FollowState {
   mainKey?: string | null;
   /** Competitions listed under "All", in this order (unset = the default list). */
   allComps?: { id: string; name: string }[];
+  /** Headlines don't pop up (or sound) while a followed match is live; they still land in the list. */
+  quietNews?: boolean;
 }
 
 const defaults: FollowState = {
@@ -219,6 +221,82 @@ export interface Goal {
 /** The goal being celebrated right now (cleared after GOAL_MS). */
 export const goal = createStore<Goal | null>(null);
 export const GOAL_MS = 6500;
+
+/**
+ * Everything else worth stopping for during a match, shown like a goal (wide notch, team
+ * color glow) for INCIDENT_MS:
+ *   red   – sending off: crest, player, minute
+ *   var   – a VAR decision (ok = stands / given, !ok = cancelled / overturned)
+ *   pen   – a penalty that didn't go in (missed / saved), or awarded if the provider says so
+ * A review still running (Match.phase "var") isn't an incident: it shows as long as it lasts.
+ */
+export interface Incident {
+  matchKey: string;
+  kind: "red" | "var" | "pen";
+  side: "home" | "away";
+  team: Side;
+  player: string | null;
+  minute: string;
+  /** Headline ("طرد", "الجون اتلغى"); the provider's wording when it has its own. */
+  title: string;
+  ok: boolean;
+  at: number;
+}
+
+export const incident = createStore<Incident | null>(null);
+export const INCIDENT_MS = 6500;
+const incidentQueue: Incident[] = [];
+
+function showIncident() {
+  if (incident.get() || goal.get() || !incidentQueue.length) return;
+  const n = { ...incidentQueue.shift()!, at: Date.now() };
+  incident.set(n);
+  playFor("incident");
+  window.setTimeout(() => {
+    if (incident.get() === n) incident.set(null);
+    window.setTimeout(showIncident, 500);
+  }, INCIDENT_MS);
+}
+
+function pushIncident(n: Omit<Incident, "at">) {
+  // The provider may send a VAR event and the lowered score in the same round: show it once.
+  if (n.kind === "var" && [incident.get(), ...incidentQueue].some((x) => x && x.matchKey === n.matchKey && x.kind === "var" && Date.now() - (x.at || Date.now()) < 30_000)) return;
+  incidentQueue.push({ ...n, at: 0 });
+  showIncident();
+}
+
+/** Event IDs already seen per match, so a reconnect or a failed detail never replays them. */
+const seenEvents = new Map<string, Set<string>>();
+
+/** Red cards a side has now (a card VAR takes back disappears from the events). */
+export function redCards(m: Match, side: "home" | "away"): number {
+  return m.events.filter((e) => e.kind === "red" && e.side === side).length;
+}
+
+const CANCELLED = /ملغ|إلغاء|الغاء|لا يوجد|لا ركلة|cancel|disallow|overturn|no penalty|no goal|rescind/i;
+
+function spotIncidents(m: Match) {
+  if (m.state !== "in" || m.source !== "s365") return;
+  const seen = seenEvents.get(m.key);
+  const ids = m.events.flatMap((e) => (e.id ? [e.id] : []));
+  // No events yet: only trust that at the very start (otherwise the detail just failed).
+  if (!ids.length) {
+    if (!seen && (parseInt(m.clock) || 99) <= 3) seenEvents.set(m.key, new Set());
+    return;
+  }
+  if (!seen) {
+    seenEvents.set(m.key, new Set(ids));
+    return;
+  }
+  for (const e of m.events) {
+    if (!e.id || seen.has(e.id)) continue;
+    seen.add(e.id);
+    const base = { matchKey: m.key, side: e.side, team: m[e.side], player: e.player, minute: e.minute };
+    if (e.kind === "red") pushIncident({ ...base, kind: "red", title: "طرد", ok: true });
+    else if (e.kind === "var") pushIncident({ ...base, kind: "var", title: e.label || "قرار الفار", ok: !CANCELLED.test(e.label ?? "") });
+    else if (e.kind === "pen") pushIncident({ ...base, kind: "pen", title: e.label || "ضربة جزاء", ok: !/ضائع|أهدر|اهدر|تصد|miss|saved/i.test(e.label ?? "") });
+  }
+}
 
 /** A finished match stays in the notch this long with its final score. */
 const FINAL_MS = 3 * 60_000;
@@ -516,16 +594,24 @@ function publish(error = scores.get().error) {
       if (diff !== 0 && m.state !== "pre") celebrate(m, s, diff < 0);
     }
   }
+  for (const m of snap.matches) spotIncidents(m);
   shown = next;
   scores.set({ matches: snap.matches, updated: snap.at, error });
 }
 
 function celebrate(m: Match, side: "home" | "away", disallowed: boolean) {
+  if (disallowed) {
+    pushIncident({ matchKey: m.key, kind: "var", side, team: m[side], player: null, minute: m.clock, title: "الجون اتلغى", ok: false });
+    return;
+  }
   const last = [...m.events].reverse().find((e) => e.kind === "goal" && e.side === side);
   const g: Goal = { matchKey: m.key, side, team: m[side], player: disallowed ? null : (last?.player ?? null), minute: last?.minute ?? m.clock, disallowed, at: Date.now() };
   goal.set(g);
   if (!disallowed) playFor("goal");
-  window.setTimeout(() => goal.get() === g && goal.set(null), GOAL_MS);
+  window.setTimeout(() => {
+    if (goal.get() === g) goal.set(null);
+    window.setTimeout(showIncident, 500);
+  }, GOAL_MS);
   // 365Scores lists scorers in the game detail; fetch it if the list didn't have it yet.
   if (m.source === "s365" && !disallowed && !last) {
     void game365(m.id)
@@ -574,7 +660,7 @@ window.setInterval(() => {
 
 // Browser preview: `?football` shows a demo match, `?football=goal` scores every 8 s.
 const demoParam = typeof location !== "undefined" ? new URLSearchParams(location.search).get("football") : null;
-if (demoParam !== null && !isNative) void import("./demo").then((d) => d.runDemo(demoParam === "goal", (list) => {
+if (demoParam !== null && !isNative) void import("./demo").then((d) => d.runDemo(demoParam, (list) => {
   snapshots.push({ at: Date.now(), matches: list });
   publish(false);
 }));
@@ -605,11 +691,17 @@ export const ROTATE_MS = 10_000;
  *   3. otherwise the running matches take turns every ROTATE_MS
  *   4. a match that just ended, with its final score
  */
-export function featured(list: Match[], g: Goal | null, now = Date.now()): Match | null {
+export function featured(list: Match[], g: Goal | null, now = Date.now(), inc: Incident | null = incident.get()): Match | null {
   const live = list.filter((m) => m.state === "in" || (m.state === "post" && now - (endedAt.get(m.key) ?? 0) < FINAL_MS));
   if (!live.length) return null;
   const byGoal = g && live.find((m) => m.key === g.matchKey);
   if (byGoal) return byGoal;
+  // A red card, VAR decision or penalty anywhere: that match, until it's over; then back to ⭐.
+  const byIncident = inc && live.find((m) => m.key === inc.matchKey);
+  if (byIncident) return byIncident;
+  // A review still running: stays on that match until the decision.
+  const reviewing = live.find((m) => m.phase === "var");
+  if (reviewing) return reviewing;
   const running = live.filter((m) => m.state === "in").sort((a, b) => a.kickoff - b.kickoff || a.key.localeCompare(b.key));
   const main = follow.get().mainKey;
   const star = main && running.find((m) => m.key === main);
@@ -621,13 +713,14 @@ export function featured(list: Match[], g: Goal | null, now = Date.now()): Match
 export function useFeaturedMatch(): Match | null {
   const { matches } = scores.use();
   const g = goal.use();
+  const inc = incident.use();
   const { enabled } = follow.use();
   const on = settings.use().tools.some((t) => t.id === "football" && t.enabled);
   // Taking turns needs a tick at the rotation pace; otherwise a slow one is enough.
   const running = matches.filter((m) => m.state === "in").length;
   useTick(running > 1 ? 1000 : 30_000);
   if (!enabled || !on) return null;
-  return featured(matches, g);
+  return featured(matches, g, Date.now(), inc);
 }
 
 /* ---------- competitions under "All" ---------- */

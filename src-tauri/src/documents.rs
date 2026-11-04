@@ -517,9 +517,13 @@ fn print_pdf(html: &str, output: &Path) -> Result<(), String> {
 
     let mut last_err = String::new();
     // New headless first; older Edge/Chrome builds only know the plain flag.
-    for headless in ["--headless=new", "--headless"] {
+    // Last try without the sandbox: some managed PCs block the sandboxed renderer.
+    for (headless, sandbox) in [("--headless=new", true), ("--headless", true), ("--headless=new", false)] {
         let _ = std::fs::remove_file(&tmp_pdf);
         let mut cmd = Command::new(&browser);
+        if !sandbox {
+            cmd.arg("--no-sandbox");
+        }
         cmd.arg(headless)
             .arg("--disable-gpu")
             .arg("--disable-extensions")
@@ -543,9 +547,13 @@ fn print_pdf(html: &str, output: &Path) -> Result<(), String> {
         };
         // Never hang the converter: give up after 60 s.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut code = None;
         loop {
             match child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(st)) => {
+                    code = st.code();
+                    break;
+                }
                 Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(150)),
                 _ => {
                     let _ = child.kill();
@@ -563,6 +571,12 @@ fn print_pdf(html: &str, output: &Path) -> Result<(), String> {
             return moved.map_err(|e| format!("Kann nicht speichern: {e}"));
         }
         last_err = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(120).collect();
+        if last_err.is_empty() {
+            last_err = match code {
+                Some(c) => format!("Edge beendet mit Code {c}"),
+                None => "Edge antwortet nicht".into(),
+            };
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
     Err(if last_err.is_empty() { "PDF konnte nicht erstellt werden".into() } else { format!("PDF konnte nicht erstellt werden: {last_err}") })
@@ -577,16 +591,83 @@ enum Office {
 
 /// Export through the installed Word / Excel (exact layout). Err when Office is missing.
 /// Paths go in through environment variables, so spaces and Arabic need no quoting.
+///
+/// First through a small VBScript (late binding over IDispatch): it works even when
+/// Office's type library registration is broken (TYPE_E_CANTLOADLIBRARY 0x80029C4A,
+/// left behind by an older Office), which breaks PowerShell's way of calling Office.
+/// PowerShell stays as the second try.
 fn office_export(input: &Path, output: &Path, what: Office) -> Result<(), String> {
-    let script = match what {
+    let vbs = match what {
+        Office::WordPdf => "On Error Resume Next\r\n\
+Set env = CreateObject(\"WScript.Shell\").Environment(\"PROCESS\")\r\n\
+Set app = CreateObject(\"Word.Application\")\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"NOAPP \" & Hex(Err.Number) & \" \" & Err.Description : WScript.Quit 2\r\n\
+app.Visible = False\r\n\
+app.DisplayAlerts = 0\r\n\
+Set doc = app.Documents.Open(env(\"NOTCH_IN\"), False, True, False)\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"OPEN \" & Hex(Err.Number) & \" \" & Err.Description : app.Quit 0 : WScript.Quit 3\r\n\
+doc.ExportAsFixedFormat env(\"NOTCH_OUT\"), 17\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"EXPORT \" & Hex(Err.Number) & \" \" & Err.Description\r\n\
+doc.Close 0\r\n\
+app.Quit 0\r\n",
+        Office::ExcelPdf => "On Error Resume Next\r\n\
+Set env = CreateObject(\"WScript.Shell\").Environment(\"PROCESS\")\r\n\
+Set app = CreateObject(\"Excel.Application\")\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"NOAPP \" & Hex(Err.Number) & \" \" & Err.Description : WScript.Quit 2\r\n\
+app.Visible = False\r\n\
+app.DisplayAlerts = False\r\n\
+Set wb = app.Workbooks.Open(env(\"NOTCH_IN\"), 0, True)\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"OPEN \" & Hex(Err.Number) & \" \" & Err.Description : app.Quit : WScript.Quit 3\r\n\
+wb.ExportAsFixedFormat 0, env(\"NOTCH_OUT\")\r\n\
+If Err.Number <> 0 Then WScript.StdErr.WriteLine \"EXPORT \" & Hex(Err.Number) & \" \" & Err.Description\r\n\
+wb.Close False\r\n\
+app.Quit\r\n",
+    };
+    let script = std::env::temp_dir().join(format!("notch-office-{}.vbs", std::process::id()));
+    let vbs_result = std::fs::write(&script, vbs).map_err(|e| e.to_string()).and_then(|_| {
+        let mut cmd = Command::new("cscript");
+        cmd.arg("//NoLogo").arg(&script);
+        run_office(cmd, input, output)
+    });
+    let _ = std::fs::remove_file(&script);
+    let vbs_err = match vbs_result {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    if vbs_err == "Office antwortet nicht" {
+        return Err(vbs_err);
+    }
+
+    let ps = match what {
         Office::WordPdf => "$ErrorActionPreference='Stop'; $w=New-Object -ComObject Word.Application; $w.Visible=$false; $w.DisplayAlerts=0; \
              try { $d=$w.Documents.Open($env:NOTCH_IN, $false, $true, $false); $d.ExportAsFixedFormat($env:NOTCH_OUT, 17); $d.Close(0) } finally { $w.Quit() }",
         Office::ExcelPdf => "$ErrorActionPreference='Stop'; $x=New-Object -ComObject Excel.Application; $x.Visible=$false; $x.DisplayAlerts=$false; \
              try { $b=$x.Workbooks.Open($env:NOTCH_IN, 0, $true); $b.ExportAsFixedFormat(0, $env:NOTCH_OUT); $b.Close($false) } finally { $x.Quit() }",
     };
     let mut cmd = Command::new("powershell");
-    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script])
-        .env("NOTCH_IN", input)
+    cmd.args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", ps]);
+    match run_office(cmd, input, output) {
+        Ok(()) => Ok(()),
+        Err(ps_err) => {
+            // Office really missing: both ways say the program can't be created.
+            let missing = vbs_err.starts_with("NOAPP") && (vbs_err.contains("1AD") || vbs_err.contains("80040154") || ps_err.contains("80040154"));
+            Err(if missing {
+                match what {
+                    Office::WordPdf => "Word ist nicht installiert".into(),
+                    Office::ExcelPdf => "Excel ist nicht installiert".into(),
+                }
+            } else {
+                // The first way's message is the clearer one (no PowerShell noise).
+                let e = vbs_err.trim_start_matches("NOAPP ").trim_start_matches("OPEN ").trim_start_matches("EXPORT ");
+                format!("Office: {}", e.chars().take(110).collect::<String>())
+            })
+        }
+    }
+}
+
+/// Runs one Office export command (paths in NOTCH_IN / NOTCH_OUT), 120 s at most.
+fn run_office(mut cmd: Command, input: &Path, output: &Path) -> Result<(), String> {
+    cmd.env("NOTCH_IN", input)
         .env("NOTCH_OUT", output)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::piped());
@@ -610,14 +691,15 @@ fn office_export(input: &Path, output: &Path, what: Office) -> Result<(), String
     if let Some(mut e) = child.stderr.take() {
         let _ = e.read_to_string(&mut err);
     }
-    Err(if err.contains("80040154") || err.contains("Class not registered") || err.to_lowercase().contains("comobject") {
-        match what {
-            Office::WordPdf => "Word ist nicht installiert".into(),
-            Office::ExcelPdf => "Excel ist nicht installiert".into(),
-        }
-    } else {
-        err.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or("Office-Export fehlgeschlagen").trim().chars().take(120).collect()
-    })
+    Err(err
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('+') && !l.starts_with("At line"))
+        .next()
+        .unwrap_or("Office-Export fehlgeschlagen")
+        .chars()
+        .take(160)
+        .collect())
 }
 
 /// A spreadsheet as a Word table (first row bold, as the header).

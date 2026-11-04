@@ -5,7 +5,7 @@ import { settings } from "../../settings/store";
 import { playFor } from "../../lib/sounds";
 import { getText } from "./espn";
 import { news365, type NewsItem } from "./s365";
-import { follow } from "./store";
+import { follow, scores } from "./store";
 import type { FollowedTeam } from "./types";
 
 /*
@@ -119,7 +119,7 @@ async function pollNews() {
   const unseen = all.filter((n) => !seen.get()[n.id]);
   seen.set((s) => ({ ...s, ...Object.fromEntries(unseen.map((n) => [n.id, Date.now()])) }));
   // First run: what's already out counts as seen, no burst of popups.
-  if (firstRun || launch || mode === "off") return;
+  if (firstRun || launch || mode === "off" || quietNow()) return;
   const pop = unseen
     .filter((n) => mode === "all" || n.team)
     .filter((n) => Date.now() - n.at < 3 * 3600_000 && n.at > highWater)
@@ -136,9 +136,18 @@ export function newsMode(): "all" | "teams" | "off" {
   return f.newsMode ?? (f.news === false ? "off" : "all");
 }
 
+/** "Quiet during matches": a followed match is live, so headlines only go to the list. */
+function quietNow(): boolean {
+  return !!follow.get().quietNews && scores.get().matches.some((m) => m.state === "in");
+}
+
 const queue: TeamNews[] = [];
 function showNext() {
   if (newsNotice.get() || !queue.length) return;
+  if (quietNow()) {
+    queue.length = 0;
+    return;
+  }
   const n = queue.shift()!;
   newsNotice.set(n);
   playFor("news");
