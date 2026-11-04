@@ -3,9 +3,11 @@ import { AnimatePresence, motion } from "motion/react";
 import { ArrowClockwise, Check, MagnifyingGlass, Plus, SlidersHorizontal, SoccerBall, X } from "@phosphor-icons/react";
 import { content, fade } from "../../design/motion";
 import { locale, t } from "../../i18n";
+import { formatTime } from "../../lib/format";
 import { COMPETITIONS, competitionName, fetchTeams, fetchTeamSchedule, type TeamOption } from "./espn";
 import { sofaLogo, sofaSearchTeams, sofaTeamMatches, type SofaTeamOption } from "./sofa";
 import { Crest } from "./LiveScore";
+import { MatchDetail, clickOrDouble, detail, onTeamClick, openDetail } from "./MatchDetail";
 import { cycleCompetition, follow, refreshScores, scores, toggleTeam, updateFollow } from "./store";
 import type { FollowedTeam, Match } from "./types";
 
@@ -17,6 +19,8 @@ import type { FollowedTeam, Match } from "./types";
  */
 export function FootballView() {
   const [panel, setPanel] = useState<"matches" | "follow">("matches");
+  const open = detail.use();
+  if (open) return <MatchDetail />;
   return (
     <div className="relative flex h-full flex-col px-5 pt-1 pb-2">
       <div className="mb-2 flex items-center gap-2">
@@ -111,7 +115,11 @@ function Matches() {
 function LiveCard({ m }: { m: Match }) {
   const goals = m.events.filter((e) => e.kind === "goal");
   return (
-    <div className="rounded-[16px] bg-fill-1 px-4 py-3">
+    <div
+      className="cursor-pointer rounded-[16px] bg-fill-1 px-4 py-3 hover:bg-fill-2"
+      onClick={() => clickOrDouble(() => openDetail(m, "lineups"), () => openDetail(m, "table"))}
+      title={t("Klick: Aufstellungen · Doppelklick: Tabelle")}
+    >
       <div className="mb-2 flex items-center justify-between text-caption text-label-3">
         <span>{m.leagueName}</span>
         <span className="flex items-center gap-1 font-semibold text-red">
@@ -120,11 +128,11 @@ function LiveCard({ m }: { m: Match }) {
         </span>
       </div>
       <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-        <TeamCell side={m.home} align="left" />
+        <TeamCell side={m.home} align="left" onClick={() => onTeamClick(m, "home")} />
         <span className="tabular text-[30px] leading-none font-bold tracking-tight text-label">
           {m.home.score} <span className="text-label-3">–</span> {m.away.score}
         </span>
-        <TeamCell side={m.away} align="right" />
+        <TeamCell side={m.away} align="right" onClick={() => onTeamClick(m, "away")} />
       </div>
       {goals.length > 0 && (
         <div className="mt-2 grid grid-cols-2 gap-x-6 text-caption text-label-2">
@@ -147,9 +155,16 @@ function Scorer({ player, minute, own, penalty }: { player: string | null; minut
   );
 }
 
-function TeamCell({ side, align }: { side: Match["home"]; align: "left" | "right" }) {
+function TeamCell({ side, align, onClick }: { side: Match["home"]; align: "left" | "right"; onClick: () => void }) {
   return (
-    <div className={`flex min-w-0 items-center gap-2 ${align === "right" ? "flex-row-reverse text-right" : ""}`}>
+    <div
+      className={`-m-1 flex min-w-0 items-center gap-2 rounded-[10px] p-1 hover:bg-fill-2 ${align === "right" ? "flex-row-reverse text-right" : ""}`}
+      onClick={(e) => {
+        // The card itself also opens the detail: the team wins.
+        e.stopPropagation();
+        onClick();
+      }}
+    >
       <Crest side={side} size={30} />
       <span className="truncate text-body font-semibold text-label">{side.short}</span>
     </div>
@@ -168,7 +183,6 @@ function Section({ title, list }: { title: string; list: Match[] }) {
 }
 
 const day = () => new Intl.DateTimeFormat(locale(), { weekday: "short", day: "numeric", month: "short" });
-const time = () => new Intl.DateTimeFormat(locale(), { hour: "2-digit", minute: "2-digit" });
 
 function Row({ m }: { m: Match }) {
   const isToday = new Date(m.kickoff).toDateString() === new Date().toDateString();
@@ -178,10 +192,14 @@ function Row({ m }: { m: Match }) {
         {m.home.score} – {m.away.score} <span className="ml-1 font-normal text-label-3">{m.clock}</span>
       </span>
     ) : (
-      <span className="tabular text-label-2">{isToday ? time().format(m.kickoff) : `${day().format(m.kickoff)} · ${time().format(m.kickoff)}`}</span>
+      <span className="tabular text-label-2">{isToday ? formatTime(m.kickoff) : `${day().format(m.kickoff)} · ${formatTime(m.kickoff)}`}</span>
     );
   return (
-    <div className="flex h-8 items-center gap-2 rounded-[8px] px-1 text-footnote">
+    <div
+      className="flex h-8 cursor-pointer items-center gap-2 rounded-[8px] px-1 text-footnote hover:bg-fill-1"
+      onClick={() => clickOrDouble(() => openDetail(m, "lineups"), () => openDetail(m, "table"))}
+      title={t("Klick: Aufstellungen · Doppelklick: Tabelle")}
+    >
       <Crest side={m.home} size={16} />
       <span className="truncate text-label">{m.home.short}</span>
       <span className="text-label-4">–</span>

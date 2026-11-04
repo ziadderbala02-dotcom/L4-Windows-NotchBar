@@ -1,5 +1,5 @@
 import { getJson } from "./espn";
-import { glowColor, type Match, type MatchEvent, type Side } from "./types";
+import { glowColor, type Lineups, type Match, type MatchEvent, type Side, type TeamLineup } from "./types";
 
 /*
  * SofaScore: covers the leagues ESPN doesn't (Egyptian Premier League). The API is
@@ -137,4 +137,27 @@ export async function sofaSearchTeams(q: string): Promise<SofaTeamOption[]> {
     .filter((t) => !t.sport?.slug || t.sport.slug === "football")
     .slice(0, 8)
     .map((t) => ({ id: String(t.id), name: t.name, country: t.country?.name ?? "" }));
+}
+
+interface RawSofaSide {
+  formation?: string;
+  players?: { substitute?: boolean; shirtNumber?: number; position?: string; player?: { name?: string; shortName?: string } }[];
+}
+
+/** Lineups once SofaScore has them ("confirmed"), else null. */
+export async function sofaLineups(eventId: string): Promise<Lineups | null> {
+  const r = await getJson<{ confirmed?: boolean; home?: RawSofaSide; away?: RawSofaSide }>(`${BASE}/event/${eventId}/lineups`);
+  if (!r.confirmed) return null;
+  const side = (s: RawSofaSide | undefined): TeamLineup | null => {
+    const ps = (s?.players ?? []).map((p) => ({
+      sub: !!p.substitute,
+      p: { name: p.player?.name ?? p.player?.shortName ?? "?", number: p.shirtNumber ? String(p.shirtNumber) : "", pos: p.position ?? "" },
+    }));
+    const starters = ps.filter((x) => !x.sub).map((x) => x.p);
+    if (starters.length < 11) return null;
+    return { formation: s?.formation ?? null, starters, subs: ps.filter((x) => x.sub).map((x) => x.p) };
+  };
+  const home = side(r.home);
+  const away = side(r.away);
+  return home && away ? { home, away } : null;
 }

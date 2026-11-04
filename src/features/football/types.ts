@@ -109,3 +109,46 @@ function fromHsl(h: number, s: number, l: number): string {
   };
   return `#${ch(h + 1 / 3)}${ch(h)}${ch(h - 1 / 3)}`;
 }
+
+export interface Player {
+  name: string;
+  number: string;
+  pos: string;
+}
+
+export interface TeamLineup {
+  formation: string | null;
+  starters: Player[];
+  subs: Player[];
+}
+
+export interface Lineups {
+  home: TeamLineup;
+  away: TeamLineup;
+}
+
+export interface TableRow {
+  teamId: string;
+  name: string;
+  abbr: string;
+  logo: string | null;
+  rank: number;
+  played: number;
+  won: number;
+  drawn: number;
+  lost: number;
+  gf: number;
+  ga: number;
+  points: number;
+  /** Qualification zone from the provider ("Champions League", "Relegation"). */
+  note: { color: string; text: string } | null;
+  /** Live table: places gained (+) or lost (−) by the running matches. */
+  move?: number;
+  /** Live table: this team is playing right now. */
+  live?: boolean;
+}
+
+export interface TableGroup {
+  name: string;
+  rows: TableRow[];
+}

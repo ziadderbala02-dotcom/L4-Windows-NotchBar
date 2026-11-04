@@ -13,6 +13,7 @@ mod hit_test;
 mod media;
 mod memory;
 mod mixer;
+mod power;
 mod privacy;
 pub mod secrets;
 mod system;
@@ -96,6 +97,7 @@ pub fn run() {
             trading::trading_fetch,
             usage::usage_fetch,
             football::football_get,
+            power::battery_get,
             system::system_stats,
             convert::convert_probe,
             convert::convert_files,

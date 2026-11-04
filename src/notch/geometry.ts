@@ -30,6 +30,10 @@ export const geometry = {
   peek: { w: 204, h: 34, r: 12, ear: 7 },
   /** Closed with a live activity (music): side slots for cover + equalizer. */
   live: { w: 284, h: 30, r: 10, ear: 6 },
+  /** Idle with the clock: time on the left, battery on the right. */
+  clock: { w: 248, h: 30, r: 10, ear: 6 },
+  /** Football notice (kickoff soon, lineups out): crests and two lines of text. */
+  notice: { w: 380, h: 54, r: 18, ear: 8 },
   /** Live football: crest, code and score on each side, the minute in the middle. */
   score: { w: 312, h: 30, r: 10, ear: 6 },
   /** Goal celebration: grows wide and tall enough for the shout, scorer and score. */

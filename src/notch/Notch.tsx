@@ -46,6 +46,8 @@ export function Notch() {
   const np = useNowPlaying();
   const live = useLiveActivity();
   const goalNow = goal.use();
+  // The tool a live activity opens (a football notice opens the football tool).
+  const liveTab = live.id === "notice" ? "football" : live.id;
 
   // Like the Dynamic Island: opening jumps to the running activity's tool,
   // but only after a pause. Closed briefly (copying a key, grabbing a file) → you
@@ -59,7 +61,7 @@ export function Notch() {
     if (status === "open" && prevStatus.current !== "open") {
       const resumed = Date.now() - closedAt.current < RESUME_MS;
       if (trayTab.current) navigate(trayTab.current);
-      else if (!resumed && live.id && visible.some((t) => t.id === live.id)) navigate(live.id);
+      else if (!resumed && liveTab && visible.some((t) => t.id === liveTab)) navigate(liveTab);
       trayTab.current = null;
     }
     if (status !== "open" && prevStatus.current === "open") closedAt.current = Date.now();
@@ -334,7 +336,18 @@ const HIT_PAD_BOTTOM = 12;
 function shapeFor(status: NotchStatus, live: string | null, size: { w: number; h: number }, goal = false): NotchGeometry {
   if (status === "open") return openGeometry(size.w, size.h);
   if (live === "football" && goal) return geometry.goal;
-  const base = live === "system" ? geometry.gaming : live === "football" ? geometry.score : live ? geometry.live : geometry.closed;
+  const base =
+    live === "system"
+      ? geometry.gaming
+      : live === "football"
+        ? geometry.score
+        : live === "clock"
+          ? geometry.clock
+          : live === "notice"
+            ? geometry.notice
+          : live
+            ? geometry.live
+            : geometry.closed;
   if (status === "peek") {
     // Hover nudge relative to the current width so it also fits the live state.
     const bump = geometry.peek.w - geometry.closed.w;

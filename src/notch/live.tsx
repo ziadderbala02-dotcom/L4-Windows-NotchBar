@@ -7,8 +7,9 @@ import { LiveDiscord } from "../features/discord/LiveDiscord";
 import { useDiscordCall } from "../features/discord/store";
 import { LiveGaming } from "../features/system/LiveGaming";
 import { useGamingLive } from "../features/system/gaming";
-import { LiveScore } from "../features/football/LiveScore";
-import { goal, useFeaturedMatch } from "../features/football/store";
+import { FootballNotice, LiveScore } from "../features/football/LiveScore";
+import { goal, notice, useFeaturedMatch } from "../features/football/store";
+import { LiveClock, useClockLive } from "./LiveClock";
 import { geometry } from "./geometry";
 import { LiveSpread, ShapeWidth } from "./liveEdges";
 
@@ -24,13 +25,17 @@ export function useLiveActivity(): { id: string | null } {
   const np = useNowPlaying();
   const match = useFeaturedMatch();
   const g = goal.use();
+  const clock = useClockLive();
+  const note = notice.use();
   if (gaming) return { id: "system" };
   // A goal interrupts everything except gaming mode, for the few seconds it lasts.
   if (match && g && g.matchKey === match.key) return { id: "football" };
+  if (note) return { id: "notice" };
   if (timerLive) return { id: "timer" };
   if (call) return { id: "discord" };
   if (match) return { id: "football" };
   if (np?.isPlaying) return { id: "media" };
+  if (clock) return { id: "clock" };
   return { id: null };
 }
 
@@ -43,10 +48,20 @@ export function LiveSlot({ id }: { id: string | null }) {
   const np = useNowPlaying();
   const call = useDiscordCall();
   const match = useFeaturedMatch();
+  const note = notice.use();
   // Keep the last size while an activity fades out (id is null when the notch opens).
   const last = useRef(id);
   if (id) last.current = id;
-  const box = last.current === "system" ? geometry.gaming : last.current === "football" ? geometry.score : geometry.live;
+  const box =
+    last.current === "system"
+      ? geometry.gaming
+      : last.current === "football"
+        ? geometry.score
+        : last.current === "clock"
+          ? geometry.clock
+          : last.current === "notice"
+            ? geometry.notice
+          : geometry.live;
   const boxW = useRef(box.w);
   boxW.current = box.w;
   const spread = useTransform(useContext(ShapeWidth), (w) =>
@@ -65,7 +80,9 @@ export function LiveSlot({ id }: { id: string | null }) {
             <LiveDiscord key="discord" call={call} />
           )}
           {id === "football" && match && <LiveScore key="football" match={match} />}
+          {id === "notice" && note && <FootballNotice key={`notice-${note.at}`} n={note} />}
           {id === "media" && np && <LiveActivity key="media" np={np} />}
+          {id === "clock" && <LiveClock key="clock" />}
         </AnimatePresence>
       </div>
     </LiveSpread.Provider>

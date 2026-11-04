@@ -56,6 +56,8 @@ export interface Settings {
   presentation: { manual: boolean; auto: boolean };
   /** Check for a new version once a day, anonymously (installs only on click). */
   updates: { auto: boolean };
+  /** Idle closed notch shows the time and battery instead of staying black. */
+  idleClock: boolean;
 }
 
 /** All tool IDs in default order. Must match `src/notch/tabs.ts`. */
@@ -105,6 +107,7 @@ const defaults: Settings = {
   units: regionUnits(),
   presentation: { manual: false, auto: true },
   updates: { auto: true },
+  idleClock: true,
 };
 
 /** °F and 12 h where the Windows region uses them (US & co.), otherwise °C and 24 h. */
@@ -164,6 +167,16 @@ settings.set((s) => {
     ask: migrateAsk(s.ask),
   };
 });
+
+// This fork defaults to the 12 h clock (10:30 PM), once, for installs that started on 24 h.
+try {
+  if (!localStorage.getItem("notch:clock12")) {
+    localStorage.setItem("notch:clock12", "1");
+    settings.set((s) => ({ ...s, units: { ...s.units, clock: "12" } }));
+  }
+} catch {
+  // No storage: keep what the region says.
+}
 
 /** Migrates the old shape ({ provider: "demo", model }) and adds missing providers. */
 function migrateAsk(old: Partial<Settings["ask"]> | undefined): Settings["ask"] {

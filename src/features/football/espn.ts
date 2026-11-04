@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { isNative } from "../../platform/native";
-import { glowColor, type Match, type MatchEvent, type Side } from "./types";
+import { glowColor, type Lineups, type Match, type MatchEvent, type Player, type Side, type TableGroup, type TableRow, type TeamLineup } from "./types";
 
 /*
  * ESPN's public site API (no key). Covers the European leagues, UEFA, CAF club
@@ -199,4 +199,126 @@ export async function fetchTeamSchedule(slug: string, teamId: string): Promise<M
   const r = await getJson<{ events?: RawEvent[] }>(`${BASE}/${slug}/teams/${teamId}/schedule?fixture=true`);
   const name = competitionName(slug);
   return (r.events ?? []).map((e) => parseEvent(e, e.league?.slug ?? slug, name)).filter((m): m is Match => !!m);
+}
+
+/* ---------- lineups ---------- */
+
+interface RawRosterEntry {
+  starter?: boolean;
+  jersey?: string;
+  athlete?: { displayName?: string; shortName?: string };
+  position?: { abbreviation?: string };
+  formationPlace?: string;
+}
+
+/** Starting elevens once announced (usually about an hour before kickoff), else null. */
+export async function fetchLineups(slug: string, eventId: string): Promise<Lineups | null> {
+  const r = await getJson<{ rosters?: { homeAway: "home" | "away"; formation?: string; roster?: RawRosterEntry[] }[] }>(
+    `${BASE}/${slug}/summary?event=${eventId}`,
+  );
+  const pick = (ha: "home" | "away"): TeamLineup | null => {
+    const ro = r.rosters?.find((x) => x.homeAway === ha);
+    const list = ro?.roster ?? [];
+    const starters = list
+      .filter((p) => p.starter)
+      .sort((a, b) => Number(a.formationPlace ?? 99) - Number(b.formationPlace ?? 99))
+      .map(player);
+    if (starters.length < 11) return null;
+    return { formation: ro?.formation ?? null, starters, subs: list.filter((p) => !p.starter).map(player) };
+  };
+  const home = pick("home");
+  const away = pick("away");
+  return home && away ? { home, away } : null;
+}
+
+function player(p: RawRosterEntry): Player {
+  return { name: p.athlete?.displayName ?? p.athlete?.shortName ?? "?", number: p.jersey ?? "", pos: p.position?.abbreviation ?? "" };
+}
+
+/* ---------- standings ---------- */
+
+interface RawStandingEntry {
+  team: RawTeam;
+  stats?: { name: string; value?: number }[];
+  note?: { color?: string; description?: string };
+}
+
+interface RawStandingsNode {
+  name?: string;
+  standings?: { entries?: RawStandingEntry[] };
+  children?: RawStandingsNode[];
+}
+
+const tableCache = new Map<string, { at: number; groups: TableGroup[] }>();
+
+/** League table (or the groups of a tournament). Cached for 10 minutes. */
+export async function fetchStandings(slug: string): Promise<TableGroup[]> {
+  const hit = tableCache.get(slug);
+  if (hit && Date.now() - hit.at < 10 * 60_000) return hit.groups;
+  const r = await getJson<RawStandingsNode>(`https://site.api.espn.com/apis/v2/sports/soccer/${slug}/standings`);
+  const groups: TableGroup[] = [];
+  const walk = (n: RawStandingsNode) => {
+    const entries = n.standings?.entries;
+    if (entries?.length) groups.push({ name: n.name ?? "", rows: entries.map(row).sort((a, b) => a.rank - b.rank) });
+    for (const c of n.children ?? []) walk(c);
+  };
+  walk(r);
+  tableCache.set(slug, { at: Date.now(), groups });
+  return groups;
+}
+
+function row(e: RawStandingEntry): TableRow {
+  const stat = (n: string) => e.stats?.find((s) => s.name === n)?.value ?? 0;
+  const color = e.note?.color?.replace(/^#+/, "#");
+  return {
+    teamId: String(e.team.id),
+    name: e.team.shortDisplayName ?? e.team.displayName ?? "?",
+    abbr: (e.team.abbreviation ?? "").toUpperCase(),
+    logo: e.team.logos?.[0]?.href ?? e.team.logo ?? null,
+    rank: stat("rank"),
+    played: stat("gamesPlayed"),
+    won: stat("wins"),
+    drawn: stat("ties"),
+    lost: stat("losses"),
+    gf: stat("pointsFor"),
+    ga: stat("pointsAgainst"),
+    points: stat("points"),
+    note: color && e.note?.description ? { color, text: e.note.description } : null,
+  };
+}
+
+/**
+ * The table as it would stand if the running matches ended now: adds each live result,
+ * re-sorts (points, goal difference, goals scored) and notes how many places teams moved.
+ */
+export function liveTable(group: TableGroup, live: Match[]): TableGroup {
+  const rows = group.rows.map((r) => ({ ...r, move: 0, live: false }));
+  const byId = new Map(rows.map((r) => [r.teamId, r]));
+  let changed = false;
+  for (const m of live) {
+    if (m.state !== "in") continue;
+    const h = byId.get(m.home.id);
+    const a = byId.get(m.away.id);
+    if (!h || !a) continue;
+    changed = true;
+    for (const [r, f, ag] of [
+      [h, m.home.score, m.away.score],
+      [a, m.away.score, m.home.score],
+    ] as const) {
+      r.live = true;
+      r.played += 1;
+      r.gf += f;
+      r.ga += ag;
+      if (f > ag) (r.won += 1), (r.points += 3);
+      else if (f === ag) (r.drawn += 1), (r.points += 1);
+      else r.lost += 1;
+    }
+  }
+  if (!changed) return { ...group, rows };
+  const sorted = [...rows].sort((x, y) => y.points - x.points || y.gf - y.ga - (x.gf - x.ga) || y.gf - x.gf || x.rank - y.rank);
+  sorted.forEach((r, i) => {
+    r.move = r.rank - (i + 1);
+    r.rank = i + 1;
+  });
+  return { ...group, rows: sorted };
 }

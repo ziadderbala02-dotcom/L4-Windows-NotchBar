@@ -2,9 +2,9 @@ import { useEffect, useState } from "react";
 import { createStore } from "../../lib/store";
 import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
-import { fetchScoreboard } from "./espn";
-import { sofaIncidents, sofaMatch, sofaTeamMatches } from "./sofa";
-import { teamKey, type FollowedTeam, type Match, type Side } from "./types";
+import { fetchLineups, fetchScoreboard } from "./espn";
+import { sofaIncidents, sofaLineups, sofaMatch, sofaTeamMatches } from "./sofa";
+import { teamKey, type FollowedTeam, type Lineups, type Match, type Side } from "./types";
 
 /*
  * Live scores for the teams and competitions the user follows.
@@ -104,6 +104,76 @@ const FINAL_MS = 3 * 60_000;
 const FAST_MS = 10_000;
 const SLOW_MS = 5 * 60_000;
 const RETRY_MS = 60_000;
+
+/* ---------- notices: kickoff soon, lineups out ---------- */
+
+export interface Notice {
+  kind: "kickoff" | "lineups";
+  match: Match;
+  at: number;
+}
+
+/** Shown in the closed notch for NOTICE_MS, one at a time. */
+export const notice = createStore<Notice | null>(null);
+export const NOTICE_MS = 9000;
+const queue: Notice[] = [];
+
+function showNext() {
+  if (notice.get() || !queue.length) return;
+  const n = { ...queue.shift()!, at: Date.now() };
+  notice.set(n);
+  window.setTimeout(() => {
+    if (notice.get() === n) notice.set(null);
+    window.setTimeout(showNext, 600);
+  }, NOTICE_MS);
+}
+
+/** Remembered across restarts so a reminder never fires twice. */
+const notified = createStore<Record<string, number>>({}, { persist: "football-notified" });
+notified.set((s) => Object.fromEntries(Object.entries(s).filter(([, at]) => Date.now() - at < 2 * 86_400_000)));
+
+function notifyOnce(id: string, n: Omit<Notice, "at">) {
+  if (notified.get()[id]) return;
+  notified.set((s) => ({ ...s, [id]: Date.now() }));
+  queue.push({ ...n, at: 0 });
+  showNext();
+}
+
+/** Lineups by match key, once announced. */
+export const lineups = createStore<Record<string, Lineups>>({});
+const lineupCheckedAt = new Map<string, number>();
+
+export async function loadLineups(m: Match): Promise<Lineups | null> {
+  const have = lineups.get()[m.key];
+  if (have) return have;
+  const l = m.source === "espn" ? await fetchLineups(m.league, m.id) : await sofaLineups(m.id);
+  if (l) lineups.set((s) => ({ ...s, [m.key]: l }));
+  return l;
+}
+
+/**
+ * For followed teams only (not every World Cup match): "starts in 10 min" once, and
+ * from 75 min before kickoff a lineup check every 4 min until the elevens are out.
+ */
+function checkReminders(list: Match[], now = Date.now()) {
+  const keys = followedKeys();
+  for (const m of list) {
+    if (m.state !== "pre" || !involvesFollowed(m, keys)) continue;
+    const until = m.kickoff - now;
+    if (until > 0 && until <= 10 * 60_000) notifyOnce(`kick:${m.key}`, { kind: "kickoff", match: m });
+    if (until <= 75 * 60_000 && until > -30 * 60_000 && !lineups.get()[m.key] && now - (lineupCheckedAt.get(m.key) ?? 0) > 4 * 60_000) {
+      lineupCheckedAt.set(m.key, now);
+      void loadLineups(m)
+        .then((l) => l && notifyOnce(`xi:${m.key}`, { kind: "lineups", match: m }))
+        .catch(() => {});
+    }
+  }
+}
+
+/** Every match of a competition today (all of them, not just followed): for the live table. */
+export function leagueMatches(slug: string): Match[] {
+  return espnCache.get(slug) ?? [];
+}
 
 /* ---------- polling ---------- */
 
@@ -223,6 +293,7 @@ async function cycle() {
   snapshots.push({ at: Date.now(), matches: all });
   while (snapshots.length > 2 && snapshots[1].at <= Date.now() - follow.get().delay * 1000 - 60_000) snapshots.shift();
   publish(failed.size > 0);
+  checkReminders(all);
 
   const waits = [...nextAt.values()].map((t) => t - Date.now());
   timer = window.setTimeout(() => void cycle(), Math.max(2000, Math.min(SLOW_MS, ...waits)));

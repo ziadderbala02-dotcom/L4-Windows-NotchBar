@@ -543,6 +543,9 @@ function Display() {
       <Row label={t("Aufnahme-Punkte")} hint={t("Grün: Mikrofon/Kamera aktiv · Rot: Bildschirm wird aufgenommen")}>
         <Switch label={t("Aufnahme-Punkte")} checked={s.privacyDots} onChange={(privacyDots) => updateSettings({ privacyDots })} />
       </Row>
+      <Row label={t("Uhr und Akku")} hint={t("Im geschlossenen Notch, wenn nichts anderes läuft")}>
+        <Switch label={t("Uhr und Akku")} checked={s.idleClock} onChange={(idleClock) => updateSettings({ idleClock })} />
+      </Row>
     </Group>
   );
 }

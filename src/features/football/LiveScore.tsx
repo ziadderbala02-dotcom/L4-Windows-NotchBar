@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { SoccerBall } from "@phosphor-icons/react";
+import { AlarmIcon as Whistle, SoccerBall, UsersThree } from "@phosphor-icons/react";
+import { formatTime } from "../../lib/format";
 import { content } from "../../design/motion";
 import { LiveEdge } from "../../notch/liveEdges";
 import { t } from "../../i18n";
-import { goal, type Goal } from "./store";
+import { goal, type Goal, type Notice } from "./store";
+import { onTeamClick } from "./MatchDetail";
+import { navigate } from "../../notch/nav";
 import type { Match, Side } from "./types";
 
 /*
@@ -33,6 +36,15 @@ export function LiveScore({ match }: { match: Match }) {
   );
 }
 
+/**
+ * Tap a crest in the closed bar: the notch opens (Notch handles the click) straight on
+ * the football tool, with that team's lineup, or the table on a double tap.
+ */
+function teamTap(match: Match, side: "home" | "away") {
+  navigate("football");
+  onTeamClick(match, side);
+}
+
 function Bar({ match }: { match: Match }) {
   const live = match.state === "in";
   return (
@@ -42,8 +54,10 @@ function Bar({ match }: { match: Match }) {
       animate={{ opacity: 1, filter: "blur(0px)", transition: { ...content.enter, delay: 0.25 } }}
       exit={{ opacity: 0, filter: "blur(3px)", transition: content.exit }}
     >
-      <LiveEdge side="left" className="flex items-center gap-1.5">
-        <Crest side={match.home} size={18} />
+      <LiveEdge side="left" className="flex cursor-pointer items-center gap-1.5">
+        <span className="flex" onClick={() => teamTap(match, "home")}>
+          <Crest side={match.home} size={18} />
+        </span>
         <span className="text-caption font-semibold text-label-2">{match.home.abbr}</span>
         <Score value={match.home.score} />
       </LiveEdge>
@@ -60,7 +74,9 @@ function Bar({ match }: { match: Match }) {
       <LiveEdge side="right" className="flex items-center gap-1.5">
         <Score value={match.away.score} />
         <span className="text-caption font-semibold text-label-2">{match.away.abbr}</span>
-        <Crest side={match.away} size={18} />
+        <span className="flex cursor-pointer" onClick={() => teamTap(match, "away")}>
+          <Crest side={match.away} size={18} />
+        </span>
       </LiveEdge>
     </motion.div>
   );
@@ -174,6 +190,49 @@ function GoalBurst({ match, g }: { match: Match; g: Goal }) {
         <span className="text-[18px] font-bold text-label-3">–</span>
         <Score value={shownScore("away")} big color={g.side === "away" && !g.disallowed ? c : undefined} />
       </div>
+    </motion.div>
+  );
+}
+
+/**
+ * Closed notch, before a match of a followed team (geometry.notice):
+ *
+ *   [crest]  Starts in 9 min · 10:00 PM   [crest]
+ *            Al Ahly vs Zamalek
+ */
+export function FootballNotice({ n }: { n: Notice }) {
+  const m = n.match;
+  const mins = Math.max(1, Math.round((m.kickoff - Date.now()) / 60_000));
+  const title =
+    n.kind === "kickoff"
+      ? m.kickoff > Date.now()
+        ? t("Anstoß in {n} Min.", { n: mins })
+        : t("Anstoß!")
+      : t("Aufstellungen sind da");
+  return (
+    <motion.div
+      className="absolute inset-x-0 top-0 flex items-center gap-3 px-4"
+      style={{ height: 54 }}
+      initial={{ opacity: 0, filter: "blur(4px)" }}
+      animate={{ opacity: 1, filter: "blur(0px)", transition: { ...content.enter, delay: 0.15 } }}
+      exit={{ opacity: 0, filter: "blur(4px)", transition: content.exit }}
+    >
+      <motion.div className="flex" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1, transition: { type: "spring", visualDuration: 0.4, bounce: 0.4, delay: 0.2 } }}>
+        <Crest side={m.home} size={26} />
+      </motion.div>
+      <div className="min-w-0 flex-1 text-center">
+        <div className="flex items-center justify-center gap-1.5 text-footnote font-semibold" style={{ color: n.kind === "kickoff" ? "var(--color-green)" : "var(--color-yellow)" }}>
+          {n.kind === "kickoff" ? <Whistle size={13} weight="fill" /> : <UsersThree size={13} weight="fill" />}
+          <span>{title}</span>
+          {n.kind === "kickoff" && <span className="text-label-3">· {formatTime(m.kickoff)}</span>}
+        </div>
+        <div className="truncate text-caption text-label-2" dir="auto">
+          {m.home.short} – {m.away.short}
+        </div>
+      </div>
+      <motion.div className="flex" initial={{ scale: 0.4, opacity: 0 }} animate={{ scale: 1, opacity: 1, transition: { type: "spring", visualDuration: 0.4, bounce: 0.4, delay: 0.3 } }}>
+        <Crest side={m.away} size={26} />
+      </motion.div>
     </motion.div>
   );
 }
