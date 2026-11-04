@@ -11,6 +11,7 @@ import { clipboard } from "./platform/clipboard";
 import { settings } from "./settings/store";
 import { applyDisplay } from "./notch/drag";
 import { startFocusMode } from "./notch/focus";
+import { startHotkeys } from "./notch/hotkeys";
 import { startSystemPolling } from "./features/system/store";
 import { startGamingWatch } from "./features/system/gaming";
 import { startDiscord } from "./features/discord/store";
@@ -22,6 +23,7 @@ if (showcase) startShowcase();
 
 startDropListener();
 startFocusMode();
+startHotkeys();
 startSystemPolling();
 startGamingWatch();
 startDiscord();

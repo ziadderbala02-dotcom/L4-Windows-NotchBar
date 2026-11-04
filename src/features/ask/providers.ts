@@ -13,6 +13,7 @@ export const providerInfo: Record<AskProvider, { label: string; modelHint: strin
   openrouter: { label: "OpenRouter", modelHint: "z. B. anthropic/claude-opus-5-5" },
   openai: { label: "ChatGPT", modelHint: "Modell-ID von OpenAI" },
   anthropic: { label: "Claude", modelHint: "claude-opus-5-5" },
+  gemini: { label: "Gemini", modelHint: "z. B. gemini-2.5-flash" },
   custom: { label: "Custom", modelHint: "z. B. grok-4.7" },
 };
 
@@ -63,4 +64,10 @@ async function demoStream(messages: ChatMessage[], onDelta: (text: string) => vo
     await new Promise((r) => setTimeout(r, showcase ? 34 : 25 + Math.random() * 35));
     onDelta(chunk);
   }
+}
+
+/** Models the stored key can use (empty in the browser preview). */
+export async function listModels(provider: AskProvider, baseUrl: string): Promise<string[]> {
+  if (!isNative) return [];
+  return invoke<string[]>("ai_models", { provider, baseUrl });
 }

@@ -11,7 +11,7 @@ import { showcase, showcaseCall, showcaseCash, showcaseDayChange, showcaseFileSi
 
 // ---------- Secrets (Credential Manager) ----------
 
-export type SecretName = "t212.key" | "t212.secret" | "ai.anthropic" | "ai.openai" | "ai.openrouter" | "ai.custom" | "discord.secret";
+export type SecretName = "t212.key" | "t212.secret" | "ai.anthropic" | "ai.openai" | "ai.openrouter" | "ai.custom" | "ai.gemini" | "discord.secret";
 
 const mockSecrets = new Map<SecretName, string>();
 

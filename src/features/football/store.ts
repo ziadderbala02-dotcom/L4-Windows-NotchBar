@@ -265,6 +265,46 @@ function pushIncident(n: Omit<Incident, "at">) {
   showIncident();
 }
 
+/* ---------- the clock in added time ---------- */
+
+/**
+ * 365Scores stops its clock at 45:00 / 90:00 (and 105 / 120) for the whole added time.
+ * From the moment it sits there, the notch counts on itself: 90' → 90+1' → 90+2' …
+ */
+const stoppageSince = new Map<string, { base: number; since: number }>();
+const PERIOD_ENDS = [45, 90, 105, 120];
+
+function trackStoppage(m: Match) {
+  const min = m.state === "in" && m.phase === "play" ? /^(\d+)'?$/.exec(m.clock.trim())?.[1] : undefined;
+  const n = min ? Number(min) : NaN;
+  if (!PERIOD_ENDS.includes(n)) {
+    stoppageSince.delete(m.key);
+    return;
+  }
+  const cur = stoppageSince.get(m.key);
+  if (!cur || cur.base !== n) stoppageSince.set(m.key, { base: n, since: Date.now() });
+}
+
+/** What the notch shows as the minute: "67'", "90+3'", or the status in a pause. */
+export function clockText(m: Match, now = Date.now()): string {
+  const st = stoppageSince.get(m.key);
+  if (!st || m.state !== "in" || m.phase !== "play") return m.clock;
+  // The feed's own added minute ("90'+2'") if it has one, else ours.
+  const feed = /\+\s*(\d+)/.exec(m.clock)?.[1];
+  const ours = Math.floor((now - st.since) / 60_000);
+  const extra = Math.max(feed ? Number(feed) : 0, ours);
+  return extra > 0 ? `${st.base}+${extra}'` : `${st.base}'`;
+}
+
+/** "Second half is on": the break ended (one notice, then the score is back). */
+function watchSecondHalf(m: Match, before: Match | undefined) {
+  if (!before || before.phase !== "break" || m.phase !== "play" || m.state !== "in") return;
+  const label = before.clock;
+  if (label !== "بين الشوطين") return;
+  queue.push({ kind: "second", match: m, at: 0 });
+  showNext();
+}
+
 /** Event IDs already seen per match, so a reconnect or a failed detail never replays them. */
 const seenEvents = new Map<string, Set<string>>();
 
@@ -299,7 +339,7 @@ function spotIncidents(m: Match) {
 }
 
 /** A finished match stays in the notch this long with its final score. */
-const FINAL_MS = 3 * 60_000;
+const FINAL_MS = 30_000;
 const FAST_MS = 10_000;
 const SLOW_MS = 5 * 60_000;
 const RETRY_MS = 60_000;
@@ -307,7 +347,7 @@ const RETRY_MS = 60_000;
 /* ---------- notices: kickoff soon, lineups out ---------- */
 
 export interface Notice {
-  kind: "kickoff" | "lineups";
+  kind: "kickoff" | "lineups" | "second";
   match: Match;
   at: number;
 }
@@ -321,6 +361,7 @@ function showNext() {
   if (notice.get() || !queue.length) return;
   const n = { ...queue.shift()!, at: Date.now() };
   notice.set(n);
+  playFor(n.kind === "lineups" ? "lineups" : "kickoff");
   window.setTimeout(() => {
     if (notice.get() === n) notice.set(null);
     window.setTimeout(showNext, 600);
@@ -398,6 +439,14 @@ function followedKeys(): Set<string> {
     if (e) keys.add(teamKey("espn", e.id));
   }
   return keys;
+}
+
+/**
+ * The closed notch only shows matches with a favourite team in them, or pinned (📌).
+ * Every other match of a followed competition stays in the list under "All", silently.
+ */
+export function inNotch(m: Match): boolean {
+  return involvesFollowed(m) || isPinned(m);
 }
 
 export function involvesFollowed(m: Match, keys = followedKeys()): boolean {
@@ -589,12 +638,19 @@ function publish(error = scores.get().error) {
     const before = shown.get(m.key);
     if (!before) continue;
     if (before.state === "in" && m.state === "post") endedAt.set(m.key, Date.now());
+    // Goals only for matches the notch shows (a favourite team in it, or 📌).
+    if (!inNotch(m)) continue;
     for (const s of ["home", "away"] as const) {
       const diff = m[s].score - before[s].score;
       if (diff !== 0 && m.state !== "pre") celebrate(m, s, diff < 0);
     }
   }
-  for (const m of snap.matches) spotIncidents(m);
+  for (const m of snap.matches) {
+    if (!inNotch(m)) continue;
+    spotIncidents(m);
+    trackStoppage(m);
+    watchSecondHalf(m, shown.get(m.key));
+  }
   shown = next;
   scores.set({ matches: snap.matches, updated: snap.at, error });
 }
@@ -692,7 +748,7 @@ export const ROTATE_MS = 10_000;
  *   4. a match that just ended, with its final score
  */
 export function featured(list: Match[], g: Goal | null, now = Date.now(), inc: Incident | null = incident.get()): Match | null {
-  const live = list.filter((m) => m.state === "in" || (m.state === "post" && now - (endedAt.get(m.key) ?? 0) < FINAL_MS));
+  const live = list.filter((m) => inNotch(m) && (m.state === "in" || (m.state === "post" && now - (endedAt.get(m.key) ?? 0) < FINAL_MS)));
   if (!live.length) return null;
   const byGoal = g && live.find((m) => m.key === g.matchKey);
   if (byGoal) return byGoal;
@@ -717,7 +773,7 @@ export function useFeaturedMatch(): Match | null {
   const { enabled } = follow.use();
   const on = settings.use().tools.some((t) => t.id === "football" && t.enabled);
   // Taking turns needs a tick at the rotation pace; otherwise a slow one is enough.
-  const running = matches.filter((m) => m.state === "in").length;
+  const running = matches.filter((m) => m.state === "in" && inNotch(m)).length;
   useTick(running > 1 ? 1000 : 30_000);
   if (!enabled || !on) return null;
   return featured(matches, g, Date.now(), inc);

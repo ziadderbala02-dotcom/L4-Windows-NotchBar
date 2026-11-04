@@ -1,7 +1,7 @@
 import { createStore } from "../lib/store";
 import type { AlarmDuration, AlarmSound } from "../lib/sound";
 
-export type AskProvider = "openrouter" | "openai" | "anthropic" | "custom";
+export type AskProvider = "openrouter" | "openai" | "anthropic" | "gemini" | "custom";
 export type AskEffort = "low" | "medium" | "high" | "xhigh";
 
 export interface AskProviderConfig {
@@ -11,7 +11,7 @@ export interface AskProviderConfig {
   baseUrl: string;
 }
 
-export type SoundKind = "notif" | "news" | "task" | "goal" | "incident";
+export type SoundKind = "notif" | "news" | "task" | "goal" | "incident" | "kickoff" | "lineups";
 export interface SoundPref {
   on: boolean;
   /** Built-in id ("pop", "alarm:bell", …) or "custom" with `file`. */
@@ -67,6 +67,8 @@ export interface Settings {
   updates: { auto: boolean };
   /** Idle closed notch shows the time and battery instead of staying black. */
   idleClock: boolean;
+  /** Global shortcuts: put the notch back in the middle, hide / show it ("" = off). */
+  hotkeys: { center: string; hide: string };
   /** Windows notifications (WhatsApp, mail …) pop up in the notch. */
   notifications: boolean;
   /** How long a notification / a headline stays in the closed notch, in seconds. */
@@ -86,15 +88,13 @@ export const TOOL_IDS = [
   "todos",
   "notes",
   "clipboard",
-  "shelf",
   "ask",
   "convert",
   "trading",
   "usage",
   "weather",
-  "system",
-  "discord",
-  "vault",
+  // Removed in 2.5 (this fork): Shelf, Hardware, Discord, Vault. Their views stay in the
+  // code (gaming mode still uses the hardware view) but they're no longer tools.
 ] as const;
 
 const DEFAULT_OFF = new Set<string>(["system", "discord", "trading", "vault"]);
@@ -111,6 +111,7 @@ const defaults: Settings = {
       openrouter: { model: "", effort: "medium", baseUrl: "" },
       openai: { model: "", effort: "medium", baseUrl: "" },
       anthropic: { model: "claude-opus-5-5", effort: "medium", baseUrl: "" },
+      gemini: { model: "", effort: "medium", baseUrl: "" },
       custom: { model: "", effort: "medium", baseUrl: "" },
     },
   },
@@ -125,6 +126,7 @@ const defaults: Settings = {
   presentation: { manual: false, auto: true },
   updates: { auto: true },
   idleClock: true,
+  hotkeys: { center: "Ctrl+Alt+C", hide: "Ctrl+Alt+H" },
   notifications: true,
   notifSeconds: 5,
   newsSeconds: 9,
@@ -136,6 +138,8 @@ const defaults: Settings = {
       task: { on: true, sound: "alarm:marimba", file: null, volume: 0.7 },
       goal: { on: true, sound: "goal", file: null, volume: 0.7 },
       incident: { on: true, sound: "whistle", file: null, volume: 0.7 },
+      kickoff: { on: true, sound: "ding", file: null, volume: 0.6 },
+      lineups: { on: true, sound: "tap", file: null, volume: 0.6 },
     },
   },
 };

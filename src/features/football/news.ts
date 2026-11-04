@@ -5,7 +5,7 @@ import { settings } from "../../settings/store";
 import { playFor } from "../../lib/sounds";
 import { getText } from "./espn";
 import { news365, type NewsItem } from "./s365";
-import { follow, scores } from "./store";
+import { follow, inNotch, scores } from "./store";
 import type { FollowedTeam } from "./types";
 
 /*
@@ -138,7 +138,7 @@ export function newsMode(): "all" | "teams" | "off" {
 
 /** "Quiet during matches": a followed match is live, so headlines only go to the list. */
 function quietNow(): boolean {
-  return !!follow.get().quietNews && scores.get().matches.some((m) => m.state === "in");
+  return !!follow.get().quietNews && scores.get().matches.some((m) => m.state === "in" && inNotch(m));
 }
 
 const queue: TeamNews[] = [];

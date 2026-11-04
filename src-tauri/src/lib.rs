@@ -57,13 +57,26 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, pressed, event| {
-                    if pressed == &shortcut && event.state() == ShortcutState::Pressed {
+                    if event.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    if pressed == &shortcut {
                         let _ = app.emit("notch://shortcut", ());
+                        return;
+                    }
+                    // User shortcuts (Settings): center the notch, hide / show it.
+                    let keys = app.state::<HotkeyState>();
+                    let keys = keys.0.lock().unwrap();
+                    for (id, sc) in keys.iter() {
+                        if sc == pressed {
+                            let _ = app.emit("notch://hotkey", id.clone());
+                        }
                     }
                 })
                 .build(),
         )
         .manage(hit_test::HitState::default())
+        .manage(HotkeyState::default())
         .manage(record::RecordState::default())
         .manage(media::MediaState::default())
         .manage(mixer::MixerState::default())
@@ -79,6 +92,7 @@ pub fn run() {
         .manage(discord::DiscordState::default())
         .manage(vault::VaultState::default())
         .invoke_handler(tauri::generate_handler![
+            hotkeys_set,
             hit_test::set_hit_rect,
             hit_test::set_pinned,
             hit_test::set_passthrough,
@@ -95,6 +109,7 @@ pub fn run() {
             keyboard_focus,
             audio::audio_levels,
             ai::ai_chat,
+            ai::ai_models,
             ai::ai_cancel,
             secrets::secret_set,
             secrets::secret_delete,
@@ -183,6 +198,33 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("failed to start L4-Notchbar");
+}
+
+/// Shortcuts the user picked in Settings, by action ("center", "hide").
+#[derive(Default)]
+struct HotkeyState(Mutex<Vec<(String, Shortcut)>>);
+
+/// Registers the user's shortcuts ("Ctrl+Alt+C"), replacing the previous ones. An empty
+/// string turns that one off. Returns the actions whose keys couldn't be registered
+/// (taken by another app or not a valid combination).
+#[tauri::command]
+fn hotkeys_set(keys: Vec<(String, String)>, app: AppHandle, state: State<'_, HotkeyState>) -> Vec<String> {
+    let mut cur = state.0.lock().unwrap();
+    for (_, sc) in cur.drain(..) {
+        let _ = app.global_shortcut().unregister(sc);
+    }
+    let mut failed = vec![];
+    for (id, combo) in keys {
+        if combo.trim().is_empty() {
+            continue;
+        }
+        let parsed = combo.replace("Strg", "Ctrl").replace(' ', "").parse::<Shortcut>();
+        match parsed {
+            Ok(sc) if app.global_shortcut().register(sc).is_ok() => cur.push((id, sc)),
+            _ => failed.push(id),
+        }
+    }
+    failed
 }
 
 /// Window that was in the foreground before the shortcut opened the notch.

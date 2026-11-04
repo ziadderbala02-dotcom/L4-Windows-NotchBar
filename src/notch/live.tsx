@@ -55,7 +55,8 @@ export function useLiveActivity(): { id: string | null } {
   if (headline && !timerLive && !call) return { id: "news" };
   if (timerLive) return { id: "timer" };
   if (call) return { id: "discord" };
-  if (match) return { id: "football" };
+  // At half time the notch goes back to the clock (with a small score), not a frozen bar.
+  if (match && match.phase !== "break") return { id: "football" };
   if (soonTask) return { id: "taskSoon" };
   if (np?.isPlaying) return { id: "media" };
   if (clock) return { id: "clock" };

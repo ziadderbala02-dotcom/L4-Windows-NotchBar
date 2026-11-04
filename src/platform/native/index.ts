@@ -36,6 +36,19 @@ export function onShortcut(handler: () => void): () => void {
   return () => void off.then((f) => f());
 }
 
+/** A user shortcut from Settings was pressed ("center" / "hide"). */
+export function onHotkey(handler: (id: string) => void): () => void {
+  if (!isNative) return () => {};
+  const off = listen<string>("notch://hotkey", (e) => handler(e.payload));
+  return () => void off.then((f) => f());
+}
+
+/** Registers the user shortcuts; returns the ones that couldn't be registered. */
+export async function setHotkeys(keys: [string, string][]): Promise<string[]> {
+  if (!isNative) return [];
+  return invoke<string[]>("hotkeys_set", { keys });
+}
+
 /** Tray: left click / "Open" (tab = null) or "Settings" (tab = "settings"). */
 export function onTrayOpen(handler: (tab: string | null) => void): () => void {
   if (!isNative) return () => {};

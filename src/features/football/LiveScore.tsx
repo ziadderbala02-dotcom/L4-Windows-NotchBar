@@ -6,7 +6,7 @@ import { formatAgo, formatTime } from "../../lib/format";
 import { content } from "../../design/motion";
 import { LiveEdge } from "../../notch/liveEdges";
 import { t } from "../../i18n";
-import { goal, incident, redCards, type Goal, type Incident, type Notice } from "./store";
+import { clockText, goal, incident, redCards, scores, type Goal, type Incident, type Notice } from "./store";
 import { onTeamClick } from "./MatchDetail";
 import { navigate } from "../../notch/nav";
 import type { Match, Side } from "./types";
@@ -94,6 +94,12 @@ function RedMark({ n }: { n: number }) {
  */
 function Bar({ match }: { match: Match }) {
   const live = match.state === "in";
+  // Added time counts on between polls (90+1', 90+2' …).
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const id = window.setInterval(() => tick((n) => n + 1), 15_000);
+    return () => window.clearInterval(id);
+  }, []);
   const ticking = live && match.phase !== "break";
   return (
     <motion.div
@@ -124,7 +130,7 @@ function Bar({ match }: { match: Match }) {
             />
           ) : null}
           <span className={`tabular text-[9.5px] leading-[11px] font-semibold ${ticking ? "text-red" : "text-label-3"}`} dir="auto">
-            {match.clock || "–"}
+            {clockText(match) || "–"}
           </span>
         </span>
       </span>
@@ -370,11 +376,13 @@ export function FootballNotice({ n }: { n: Notice }) {
   const m = n.match;
   const mins = Math.max(1, Math.round((m.kickoff - Date.now()) / 60_000));
   const title =
-    n.kind === "kickoff"
-      ? m.kickoff > Date.now()
-        ? t("Anstoß in {n} Min.", { n: mins })
-        : t("Anstoß!")
-      : t("Aufstellungen sind da");
+    n.kind === "second"
+      ? "بدأ الشوط التاني"
+      : n.kind === "kickoff"
+        ? m.kickoff > Date.now()
+          ? t("Anstoß in {n} Min.", { n: mins })
+          : t("Anstoß!")
+        : t("Aufstellungen sind da");
   return (
     <motion.div
       className="absolute inset-x-0 top-0 flex items-center gap-3 px-4"
@@ -387,10 +395,11 @@ export function FootballNotice({ n }: { n: Notice }) {
         <Crest side={m.home} size={26} />
       </motion.div>
       <div className="min-w-0 flex-1 text-center">
-        <div className="flex items-center justify-center gap-1.5 text-footnote font-semibold" style={{ color: n.kind === "kickoff" ? "var(--color-green)" : "var(--color-yellow)" }}>
-          {n.kind === "kickoff" ? <Whistle size={13} weight="fill" /> : <UsersThree size={13} weight="fill" />}
+        <div className="flex items-center justify-center gap-1.5 text-footnote font-semibold" style={{ color: n.kind === "lineups" ? "var(--color-yellow)" : "var(--color-green)" }}>
+          {n.kind !== "lineups" ? <Whistle size={13} weight="fill" /> : <UsersThree size={13} weight="fill" />}
           <span>{title}</span>
           {n.kind === "kickoff" && <span className="text-label-3">· {formatTime(m.kickoff)}</span>}
+          {n.kind === "second" && <span className="tabular text-label-2">· {m.home.score}-{m.away.score}</span>}
         </div>
         <div className="truncate text-caption text-label-2" dir="auto">
           {m.home.short} – {m.away.short}
@@ -460,5 +469,52 @@ export function NewsExpanded({ n, onOpen }: { n: TeamNews; onOpen: () => void })
         <ArrowUpRight size={11} weight="bold" />
       </div>
     </div>
+  );
+}
+
+/**
+ * The notch is open (you're working in a tool) and something happens in a match: a strip
+ * over the header for as long as the moment lasts, in the team's color; nothing else moves.
+ *
+ *   [crest]  جووول! بيلينجهام 32'                     1 – 1
+ */
+export function OpenMomentBanner() {
+  const g = goal.use();
+  const inc = incident.use();
+  const { matches } = scores.use();
+  const key = g?.matchKey ?? inc?.matchKey;
+  const m = key ? matches.find((x) => x.key === key) : null;
+  const item = !m ? null : g && !g.disallowed
+    ? { id: `g${g.at}`, team: g.team, color: g.team.color, title: "جووول!", sub: [g.player, g.minute].filter(Boolean).join(" · ") }
+    : inc
+      ? {
+          id: `i${inc.at}`,
+          team: inc.team,
+          color: inc.kind === "red" ? "#ff453a" : inc.kind === "pen" ? "#ff9f0a" : inc.ok ? "#30d158" : "#ff453a",
+          title: inc.kind === "var" ? `VAR · ${inc.title}` : inc.title,
+          sub: [inc.player, inc.minute].filter(Boolean).join(" · "),
+        }
+      : null;
+  return (
+    <AnimatePresence>
+      {m && item && (
+        <motion.div
+          key={item.id}
+          className="absolute inset-x-3 top-1 bottom-0 z-20 flex items-center gap-2.5 rounded-full px-3"
+          style={{ background: `color-mix(in srgb, ${item.color} 22%, #000)`, boxShadow: `inset 0 0 0 1px ${item.color}` }}
+          initial={{ opacity: 0, y: -14, scale: 0.96 }}
+          animate={{ opacity: 1, y: 0, scale: 1, transition: { type: "spring", visualDuration: 0.35, bounce: 0.35 } }}
+          exit={{ opacity: 0, y: -10, transition: { duration: 0.2 } }}
+        >
+          <Crest side={item.team} size={20} />
+          <span className="min-w-0 flex-1 truncate text-footnote" dir="rtl">
+            <b style={{ color: item.color }}>{item.title}</b> <span className="text-label-2">{item.sub}</span>
+          </span>
+          <span className="tabular shrink-0 text-footnote font-bold text-label">
+            {m.home.score} – {m.away.score}
+          </span>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

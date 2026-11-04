@@ -26,13 +26,14 @@ import { autostart, display, secrets, unlockFps, type ChangelogEntry, type Monit
 import { settings, updateAsk, updateSettings, type AskProvider, type SoundKind, type SoundPref } from "../../settings/store";
 import { BrandLogo, brandName } from "../../ui/brands";
 import { Button, Group, Row, Segmented, Select, Slider, Switch, TextField } from "../../ui/controls";
-import { effortLevels, providerInfo } from "../ask/providers";
+import { effortLevels, listModels, providerInfo } from "../ask/providers";
 import { discordState, reconnectDiscord } from "../discord/store";
 import { fps } from "../system/gaming";
 import { PlaceSearch } from "../weather/WeatherView";
-import { VaultSettings } from "../vault/VaultSettings";
 import { detectPlace } from "../weather/store";
 import { focusMode, setFocusMode } from "../../notch/focus";
+import { comboFrom, hotkeyErrors } from "../../notch/hotkeys";
+import { grabKeys } from "../shelf/ShelfView";
 import { checkForUpdate, installUpdate, update } from "../../lib/update";
 import { between, changelog, itemText, markSeen, useUnseen } from "../../lib/changelog";
 import { privacy, togglePresentation, usePresenting } from "../privacy/store";
@@ -139,7 +140,6 @@ export function SettingsView() {
             {page === "tools" && (
               <>
                 <Tools />
-                <VaultSettings />
               </>
             )}
             {page === "timer" && (
@@ -157,7 +157,6 @@ export function SettingsView() {
             )}
             {page === "accounts" && (
               <>
-                <Discord />
                 <Trading />
                 <KeysNote />
               </>
@@ -287,6 +286,32 @@ function KeysNote() {
 
 function Ask() {
   const s = settings.use();
+  // The models this account can use, as a drop-down (typing stays possible without a key).
+  const [models, setModels] = useState<string[] | "loading" | null>(null);
+  const [modelsErr, setModelsErr] = useState<string | null>(null);
+  const [modelsFor, setModelsFor] = useState<string | null>(null);
+  const want = `${s.ask.provider}|${s.ask.configs[s.ask.provider].baseUrl}`;
+  useEffect(() => {
+    if (modelsFor === want) return;
+    setModelsFor(want);
+    setModels("loading");
+    setModelsErr(null);
+    const provider = s.ask.provider;
+    listModels(provider, s.ask.configs[provider].baseUrl)
+      .then((list) => {
+        setModels(list);
+        // Nothing picked yet: a sensible default (Gemini: the newest "flash").
+        if (list.length && !settings.get().ask.configs[provider].model) {
+          const pick = list.find((m) => /flash/.test(m) && !/lite|preview|exp/.test(m)) ?? list[0];
+          updateAsk(provider, { model: pick });
+        }
+      })
+      .catch((e) => {
+        setModels(null);
+        const msg = String(e);
+        setModelsErr(msg === "no-key" ? null : msg);
+      });
+  }, [want, modelsFor]);
   return (
     <Group title={t("AI-Chat")} id="settings-ask">
       <Row label={t("Anbieter")}>
@@ -308,14 +333,28 @@ function Ask() {
           />
         </Row>
       )}
-      <SecretRow name={`ai.${s.ask.provider}` as SecretName} label={t("API-Schlüssel")} />
-      <Row label={t("Modell")} hint={s.ask.provider === "openrouter" ? t("Modell-ID von openrouter.ai/models") : undefined}>
-        <TextField
-          value={s.ask.configs[s.ask.provider].model}
-          onChange={(model) => updateAsk(s.ask.provider, { model: model.trim() })}
-          placeholder={t(providerInfo[s.ask.provider].modelHint)}
-          width="w-52"
-        />
+      <SecretRow
+        name={`ai.${s.ask.provider}` as SecretName}
+        label={t("API-Schlüssel")}
+        hint={s.ask.provider === "gemini" ? t("Kostenlos: aistudio.google.com → Get API key") : undefined}
+        onSaved={() => setModelsFor(null)}
+      />
+      <Row label={t("Modell")} hint={models === "loading" ? t("Lade Modelle …") : modelsErr ? tBackend(modelsErr) : s.ask.provider === "openrouter" ? t("Modell-ID von openrouter.ai/models") : undefined}>
+        {Array.isArray(models) && models.length ? (
+          <Select
+            value={s.ask.configs[s.ask.provider].model || models[0]}
+            options={models.map((m) => ({ value: m, label: m }))}
+            onChange={(model) => updateAsk(s.ask.provider, { model })}
+            width="w-52"
+          />
+        ) : (
+          <TextField
+            value={s.ask.configs[s.ask.provider].model}
+            onChange={(model) => updateAsk(s.ask.provider, { model: model.trim() })}
+            placeholder={t(providerInfo[s.ask.provider].modelHint)}
+            width="w-52"
+          />
+        )}
       </Row>
       <Row label="Effort" hint={t("Wie gründlich das Modell nachdenkt")}>
         <Segmented
@@ -562,7 +601,47 @@ function Display() {
       <Row label={t("Anzeigedauer: Nachricht")} hint={t("{n} Sekunden", { n: s.newsSeconds })}>
         <input type="range" min={5} max={20} step={1} value={s.newsSeconds} onChange={(e) => updateSettings({ newsSeconds: Number(e.target.value) })} className="w-36" />
       </Row>
+      <Row label={t("Kürzel: Notch in die Mitte")} hint={hotkeyHint("center")}>
+        <HotkeyField value={s.hotkeys.center} onChange={(center) => updateSettings((c) => ({ hotkeys: { ...c.hotkeys, center } }))} />
+      </Row>
+      <Row label={t("Kürzel: Notch ausblenden / zeigen")} hint={hotkeyHint("hide")}>
+        <HotkeyField value={s.hotkeys.hide} onChange={(hide) => updateSettings((c) => ({ hotkeys: { ...c.hotkeys, hide } }))} />
+      </Row>
     </Group>
+  );
+}
+
+function hotkeyHint(id: string): string {
+  return hotkeyErrors.get().includes(id) ? t("Belegt – bitte eine andere Kombination") : id === "hide" ? t("Töne laufen weiter") : t("Klicken und Tasten drücken");
+}
+
+/** Click, press the combination (Ctrl/Alt + key); Backspace clears it. */
+function HotkeyField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const [rec, setRec] = useState(false);
+  hotkeyErrors.use();
+  return (
+    <button
+      onPointerDown={() => grabKeys()}
+      onClick={() => setRec(true)}
+      onBlur={() => setRec(false)}
+      onKeyDown={(e) => {
+        if (!rec) return;
+        e.preventDefault();
+        if (e.key === "Escape") return setRec(false);
+        if (e.key === "Backspace" || e.key === "Delete") {
+          onChange("");
+          return setRec(false);
+        }
+        const c = comboFrom(e.nativeEvent);
+        if (c) {
+          onChange(c);
+          setRec(false);
+        }
+      }}
+      className={`tabular h-7 min-w-28 rounded-lg px-2.5 text-caption font-medium ${rec ? "bg-fill-3 text-label ring-1 ring-link" : "bg-fill-1 text-label-2 hover:text-label"}`}
+    >
+      {rec ? t("Tasten drücken …") : value || t("aus")}
+    </button>
   );
 }
 
@@ -604,7 +683,7 @@ const discordStatus: Record<string, string> = {
 };
 
 /** Discord call: your own app in the developer portal (the only way Discord grants voice scopes). */
-function Discord() {
+export function Discord() {
   const s = settings.use();
   const state = discordState.use();
   const [id, setId] = useState(s.discord.clientId);
@@ -697,6 +776,8 @@ const soundKinds: { id: SoundKind; label: string; hint: string }[] = [
   { id: "task", label: "Aufgaben-Erinnerungen", hint: "Wecker an To-dos" },
   { id: "goal", label: "Tore", hint: "Live-Spiele im Notch" },
   { id: "incident", label: "Rote Karte, VAR, Elfmeter", hint: "Live-Spiele im Notch" },
+  { id: "kickoff", label: "Anpfiff gleich", hint: "10 Min. vorher, und 2. Halbzeit" },
+  { id: "lineups", label: "Aufstellungen da", hint: "Sobald die Elf feststeht" },
 ];
 
 /** Sound per kind of popup; silent while Windows' Do not disturb is on. */

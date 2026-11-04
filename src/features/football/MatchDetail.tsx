@@ -8,7 +8,7 @@ import { fetchStandings, liveTable } from "./espn";
 import { competitionGames365, game365, standings365, stats365, type MatchStat } from "./s365";
 import { Crest } from "./LiveScore";
 import { TeamMatches, openTeam } from "./TeamPage";
-import { leagueMatches, loadLineups, scores } from "./store";
+import { clockText, leagueMatches, loadLineups, scores } from "./store";
 import type { Lineups, Match, MatchEvent, TableGroup, TeamLineup } from "./types";
 
 /*
@@ -72,7 +72,7 @@ export function MatchDetail() {
         <span className="tabular shrink-0 text-footnote font-bold whitespace-nowrap text-label">{m.state === "pre" ? "–" : `${m.home.score} – ${m.away.score}`}</span>
         <span className="max-w-[110px] truncate text-footnote font-semibold text-label">{m.away.short}</span>
         <Crest side={m.away} size={18} />
-        {m.state === "in" && <span className="tabular shrink-0 text-caption font-semibold whitespace-nowrap text-red" dir="auto">{m.clock}</span>}
+        {m.state === "in" && <span className="tabular shrink-0 text-caption font-semibold whitespace-nowrap text-red" dir="auto">{clockText(m)}</span>}
         <span className="flex-1" />
         <div className="flex rounded-full bg-fill-1 p-0.5">
           {(m.source === "s365" && m.state !== "pre" ? (["match", "lineups", "table", "matches"] as const) : (["lineups", "table", "matches"] as const)).map((k) => (
@@ -135,78 +135,147 @@ function MatchPane({ m }: { m: Match }) {
   useEffect(() => {
     if (err && m.events.some((e) => e.id)) setEvs(m.events);
   }, [err, m.events]);
+  const [view, setView] = useState<"events" | "stats">("events");
   if (!evs && err) return <Empty text={t("Spieldaten gerade nicht erreichbar")} />;
   if (!evs) return <Empty text={t("Lade Spiel …")} />;
-  const list = [...evs].sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
   return (
-    <div className="-mx-1 grid h-full grid-cols-[1fr_190px] gap-4 overflow-hidden px-1">
-      <div className="min-h-0 overflow-y-auto pb-1" dir="rtl">
-        {!list.length && <Empty text={t("Noch keine Ereignisse")} />}
-        {list.map((e, i) => (
-          <EventRow key={e.id ?? i} e={e} m={m} />
+    <div className="flex h-full flex-col">
+      <div className="mx-auto mb-2 flex shrink-0 rounded-full bg-fill-1 p-0.5">
+        {(["events", "stats"] as const).map((k) => (
+          <button
+            key={k}
+            onClick={() => setView(k)}
+            className={`h-6 rounded-full px-4 text-caption font-medium ${view === k ? "bg-fill-3 text-label" : "text-label-3 hover:text-label-2"}`}
+          >
+            {k === "events" ? t("Ereignisse") : t("Statistiken")}
+          </button>
         ))}
       </div>
-      <div className="min-h-0 overflow-y-auto pb-1">
-        {stats?.length ? stats.map((s) => <StatBar key={s.id} s={s} m={m} />) : <div className="pt-6 text-center text-caption text-label-3">{stats ? t("Keine Statistiken") : "…"}</div>}
+      <div className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-1">
+        {view === "events" ? <Timeline evs={evs} /> : stats?.length ? <Stats stats={stats} m={m} /> : <Empty text={stats ? t("Keine Statistiken") : "…"} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * One line down the middle with the minute on it; each team's events on its own side
+ * (home left, away right, as in the header), newest on top. Goals carry the score after them.
+ */
+function Timeline({ evs }: { evs: MatchEvent[] }) {
+  if (!evs.length) return <Empty text={t("Noch keine Ereignisse")} />;
+  // Running score, oldest first.
+  const asc = [...evs].sort((a, b) => (a.at ?? 0) - (b.at ?? 0));
+  const score = new Map<MatchEvent, string>();
+  let h = 0;
+  let a = 0;
+  for (const e of asc) {
+    if (e.kind !== "goal") continue;
+    if (e.side === "home") h++;
+    else a++;
+    score.set(e, `${h}-${a}`);
+  }
+  const rows = [...asc].reverse();
+  const out: React.ReactNode[] = [];
+  rows.forEach((e, i) => {
+    out.push(<TimelineRow key={e.id ?? i} e={e} score={score.get(e)} />);
+    const next = rows[i + 1];
+    // The break, between the last event of the first half and the first of the second.
+    if (next && (e.at ?? 0) >= 46 && (next.at ?? 0) < 46) out.push(<Divider key={`ht${i}`} text="بين الشوطين" />);
+  });
+  out.push(<Divider key="ko" text="بداية الماتش" />);
+  return (
+    <div className="relative">
+      <div className="absolute top-0 bottom-0 left-1/2 w-px bg-fill-2" />
+      {out}
+    </div>
+  );
+}
+
+function Divider({ text }: { text: string }) {
+  return (
+    <div className="relative my-1 text-center">
+      <span className="bg-black px-2 text-[10.5px] text-label-3">{text}</span>
+    </div>
+  );
+}
+
+function TimelineRow({ e, score }: { e: MatchEvent; score?: string }) {
+  const home = e.side === "home";
+  const main =
+    e.kind === "goal"
+      ? `${e.player ?? t("Tor")}${e.penalty ? " (ج)" : e.own ? " (هدف عكسي)" : ""}`
+      : e.kind === "var" || e.kind === "pen" || e.kind === "other"
+        ? e.label ?? ""
+        : e.player ?? "";
+  const sub =
+    e.kind === "goal"
+      ? e.extra ? `أسيست: ${e.extra}` : ""
+      : e.kind === "sub"
+        ? e.extra ? `↓ ${e.extra}` : ""
+        : e.kind === "var" || e.kind === "pen"
+          ? e.player ?? ""
+          : "";
+  const body = (
+    <div className={`min-w-0 ${home ? "pr-3 text-right" : "pl-3 text-left"}`}>
+      <div className={`flex items-center gap-1.5 text-footnote ${home ? "justify-end" : "justify-start"} ${e.kind === "goal" ? "font-bold text-label" : "text-label"}`}>
+        <EventIcon e={e} />
+        <span className="truncate" dir="auto">{e.kind === "sub" ? <><span className="text-green">↑ </span>{main}</> : main}</span>
+        {score && <span className="tabular shrink-0 rounded-[5px] bg-green/20 px-1 text-[10.5px] font-bold text-green">{score}</span>}
+      </div>
+      {sub && <div className="truncate text-caption text-label-3" dir="auto">{sub}</div>}
+    </div>
+  );
+  return (
+    <div className="grid min-h-[30px] grid-cols-[1fr_46px_1fr] items-center">
+      {home ? body : <span />}
+      <span className="tabular relative z-[1] justify-self-center rounded-full bg-fill-1 px-1.5 text-[10.5px] leading-[17px] font-semibold text-label-2" dir="ltr">
+        {e.minute}
+      </span>
+      {home ? <span /> : body}
     </div>
   );
 }
 
 function EventIcon({ e }: { e: MatchEvent }) {
-  if (e.kind === "goal") return <span className="text-[13px]">⚽</span>;
-  if (e.kind === "red") return <span className="block h-[13px] w-[9px] rounded-[1.5px] bg-red" />;
-  if (e.kind === "yellow") return <span className="block h-[13px] w-[9px] rounded-[1.5px]" style={{ background: "#ffd60a" }} />;
-  if (e.kind === "sub") return <span className="text-[12px] text-green">⇅</span>;
-  if (e.kind === "var") return <span className="rounded-[4px] px-1 text-[9px] leading-[14px] font-extrabold text-white" style={{ background: "#7c5cff" }}>VAR</span>;
+  if (e.kind === "goal") return <span className="text-[12px]">⚽</span>;
+  if (e.kind === "red") return <span className="block h-[12px] w-[8px] shrink-0 rounded-[1.5px] bg-red" />;
+  if (e.kind === "yellow") return <span className="block h-[12px] w-[8px] shrink-0 rounded-[1.5px]" style={{ background: "#ffd60a" }} />;
+  if (e.kind === "var") return <span className="shrink-0 rounded-[4px] px-1 text-[9px] leading-[14px] font-extrabold text-white" style={{ background: "#7c5cff" }}>VAR</span>;
   if (e.kind === "pen") return <span className="text-[12px] text-orange">✗</span>;
-  return <span className="text-[12px] text-label-3">•</span>;
+  return null;
 }
 
-/** Home events on the right (Arabic reading order), away on the left. */
-function EventRow({ e, m }: { e: MatchEvent; m: Match }) {
-  const main =
-    e.kind === "sub" ? e.player : e.kind === "goal" ? `${e.player ?? t("Tor")}${e.penalty ? " (ج)" : e.own ? " (ع.م)" : ""}` : e.player ?? e.label ?? "";
-  const second =
-    e.kind === "sub"
-      ? e.extra ? `↓ ${e.extra}` : ""
-      : e.kind === "goal"
-        ? e.extra ? `${t("Vorlage")}: ${e.extra}` : ""
-        : e.kind === "var" || e.kind === "pen" || e.kind === "other"
-          ? e.player ? e.label ?? "" : ""
-          : "";
-  const home = e.side === "home";
+/**
+ * Each stat: the two numbers and the name, then two bars growing out from the middle.
+ * Only the side ahead on that stat gets its team color, the other stays grey, so it reads
+ * at a glance even when both kits are close (yellow vs white).
+ */
+function Stats({ stats, m }: { stats: MatchStat[]; m: Match }) {
   return (
-    <div className={`flex items-center gap-2 border-b border-fill-1 py-1.5 ${home ? "" : "flex-row-reverse text-left"}`}>
-      <span className="tabular w-9 shrink-0 text-center text-caption font-semibold text-label-2" dir="ltr">{e.minute}</span>
-      <span className="flex w-5 shrink-0 justify-center">
-        <EventIcon e={e} />
-      </span>
-      <Crest side={m[e.side]} size={14} />
-      <div className={`min-w-0 flex-1 ${home ? "" : "text-left"}`}>
-        <div className={`truncate text-footnote ${e.kind === "goal" ? "font-bold text-label" : "font-medium text-label"}`}>
-          {e.kind === "sub" && <span className="text-green">↑ </span>}
-          {main}
-        </div>
-        {second && <div className="truncate text-caption text-label-3">{second}</div>}
-      </div>
-    </div>
-  );
-}
-
-function StatBar({ s, m }: { s: MatchStat; m: Match }) {
-  const h = Math.round(s.homeShare * 100);
-  return (
-    <div className="mb-2">
-      <div className="flex items-center justify-between text-caption">
-        <span className="tabular font-semibold text-label">{s.home}</span>
-        <span className="truncate px-1 text-label-3" dir="auto">{s.name}</span>
-        <span className="tabular font-semibold text-label">{s.away}</span>
-      </div>
-      <div className="mt-0.5 flex h-[5px] gap-[2px] overflow-hidden rounded-full">
-        <div className="rounded-full" style={{ width: `${h}%`, background: m.home.color }} />
-        <div className="flex-1 rounded-full" style={{ background: m.away.color, opacity: 0.85 }} />
-      </div>
+    <div className="flex flex-col gap-2.5 px-1 pt-1">
+      {stats.map((s) => {
+        const hp = Math.round(s.homeShare * 100);
+        const lead = hp > 50 ? "home" : hp < 50 ? "away" : null;
+        const col = (side: "home" | "away") => (lead === side ? m[side].color : "var(--color-fill-3)");
+        return (
+          <div key={s.id}>
+            <div className="grid grid-cols-[48px_1fr_48px] items-center text-footnote">
+              <span className={`tabular ${lead === "home" ? "font-bold text-label" : "text-label-2"}`}>{s.home}</span>
+              <span className="truncate text-center text-caption text-label-3" dir="auto">{s.name}</span>
+              <span className={`tabular text-right ${lead === "away" ? "font-bold text-label" : "text-label-2"}`}>{s.away}</span>
+            </div>
+            <div className="mt-1 grid grid-cols-2 gap-1">
+              <div className="flex h-[6px] justify-end overflow-hidden rounded-full bg-fill-1">
+                <div className="h-full rounded-full" style={{ width: `${hp}%`, background: col("home") }} />
+              </div>
+              <div className="flex h-[6px] overflow-hidden rounded-full bg-fill-1">
+                <div className="h-full rounded-full" style={{ width: `${100 - hp}%`, background: col("away") }} />
+              </div>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

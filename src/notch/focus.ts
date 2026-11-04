@@ -13,6 +13,12 @@ export const focusMode = createStore(false, { persist: "focus-mode" });
 /** This many quick clicks toggle it (like EXIT_CLICKS in hit_test.rs). */
 export const FOCUS_CLICKS = 3;
 
+/**
+ * Hidden (shortcut): nothing shows and clicks go through; sounds keep playing. Pressing the
+ * shortcut again brings it back as it is right now, mid-goal or mid-notification included.
+ */
+export const hiddenMode = createStore(false);
+
 export function setFocusMode(on: boolean) {
   focusMode.set(on);
 }
@@ -24,11 +30,12 @@ export function startFocusMode() {
   started = true;
   // One source of truth: every change (clicks, settings, tray) reaches Rust and the tray check.
   const apply = () => {
-    setPassthrough(focusMode.get());
+    setPassthrough(focusMode.get() || hiddenMode.get());
     syncFocusTray(focusMode.get());
   };
   apply();
   focusMode.subscribe(apply);
+  hiddenMode.subscribe(apply);
   onFocusExit(() => setFocusMode(false));
   onFocusFromTray(setFocusMode);
 }

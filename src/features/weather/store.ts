@@ -22,6 +22,8 @@ import { lang, t } from "../../i18n";
 export interface Forecast {
   current: { temp: number; feels: number; code: number; wind: number; day: boolean };
   daily: { date: string; code: number; max: number; min: number; rain: number }[];
+  /** Every hour of the 7 days ("2026-11-04T15:00" local), for the day view. */
+  hourly: { time: string; temp: number; code: number; rain: number; gust: number; day: boolean }[];
 }
 
 /** WMO weather codes → icon + text. */
@@ -45,7 +47,8 @@ export async function loadForecast(lat: number, lon: number): Promise<Forecast> 
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
     "&current=temperature_2m,apparent_temperature,weather_code,wind_speed_10m,is_day" +
-    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max&timezone=auto&forecast_days=7";
+    "&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max" +
+    "&hourly=temperature_2m,weather_code,precipitation_probability,wind_gusts_10m,is_day&timezone=auto&forecast_days=7";
   const r = await (await fetch(url)).json();
   const data: Forecast = {
     current: {
@@ -61,6 +64,14 @@ export async function loadForecast(lat: number, lon: number): Promise<Forecast> 
       max: r.daily.temperature_2m_max[i],
       min: r.daily.temperature_2m_min[i],
       rain: r.daily.precipitation_probability_max[i] ?? 0,
+    })),
+    hourly: (r.hourly?.time ?? []).map((time: string, i: number) => ({
+      time,
+      temp: r.hourly.temperature_2m[i],
+      code: r.hourly.weather_code[i],
+      rain: r.hourly.precipitation_probability?.[i] ?? 0,
+      gust: r.hourly.wind_gusts_10m?.[i] ?? 0,
+      day: r.hourly.is_day?.[i] === 1,
     })),
   };
   cache.set(key, { at: Date.now(), data });

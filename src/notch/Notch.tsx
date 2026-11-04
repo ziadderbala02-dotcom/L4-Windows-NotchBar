@@ -5,11 +5,11 @@ import { content, springs } from "../design/motion";
 import { useNowPlaying } from "../platform/media";
 import { isNative, keyboardFocus, onNativeBlur, onNativeHover, onShortcut, onTrayOpen, setHitRect, setMemoryLow } from "../platform/native";
 import { PrivacyDots } from "../features/privacy/PrivacyDots";
-import { FOCUS_CLICKS, focusMode, setFocusMode } from "./focus";
+import { FOCUS_CLICKS, focusMode, hiddenMode, setFocusMode } from "./focus";
 import { useDragToMove } from "./drag";
 import { LiveSlot, useLiveActivity } from "./live";
 import { goal, incident, useFeaturedMatch } from "../features/football/store";
-import { NewsExpanded } from "../features/football/LiveScore";
+import { NewsExpanded, OpenMomentBanner } from "../features/football/LiveScore";
 import { newsNotice, openNews, type TeamNews } from "../features/football/news";
 import { notifNotice, openApp, type Notif } from "../features/notifications/store";
 import { NotifExpanded } from "../features/notifications/NotificationsView";
@@ -41,6 +41,7 @@ const MEMORY_LOW_AFTER_MS = 20_000;
 export function Notch() {
   const { status, open, close, dismiss, toggle, onPointerEnter, onPointerLeave } = useNotchState();
   const focus = focusMode.use();
+  const hidden = hiddenMode.use();
   const { tools: toolSettings, display: displaySettings } = settings.use();
   // Focus mode as a line: no live activity, no dots, only the thin strip at the edge.
   const line = focus && displaySettings.focusStyle === "line";
@@ -197,7 +198,7 @@ export function Notch() {
     <div
       className="pointer-events-none fixed inset-x-0 top-0 z-50 flex justify-center transition-opacity duration-200"
       // In the browser the notch moves inside the window; natively the whole window moves (display.rs).
-      style={{ ["--accent" as string]: np?.accent, opacity: focus && !line ? 0.5 : 1, transform: isNative ? undefined : `translateX(${drag.offset}px)` }}
+      style={{ ["--accent" as string]: np?.accent, opacity: hidden ? 0 : focus && !line ? 0.5 : 1, transition: "opacity 0.18s", transform: isNative ? undefined : `translateX(${drag.offset}px)` }}
     >
       {/* Hit zone: bigger than the visible shape (Fitts) and flush with the top edge. */}
       <div
@@ -278,7 +279,9 @@ function Header({ title, onDragStart, onRecordStart }: { title: string; onDragSt
   const isPinned = pinned.use();
   return (
     // Empty header space = drag handle.
-    <div data-drag-handle onPointerDown={onDragStart} className="flex shrink-0 items-center justify-between gap-3 pr-3 pl-5" style={{ height: HEADER_HEIGHT + 4 }}>
+    <div data-drag-handle onPointerDown={onDragStart} className="relative flex shrink-0 items-center justify-between gap-3 pr-3 pl-5" style={{ height: HEADER_HEIGHT + 4 }}>
+      {/* A goal / red card / VAR while the notch is open: a strip over the header, then it's gone. */}
+      <OpenMomentBanner />
       <div className="relative min-w-0 flex-1">
         <AnimatePresence mode="popLayout" initial={false}>
           <motion.h2

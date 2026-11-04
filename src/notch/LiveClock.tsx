@@ -1,3 +1,4 @@
+import { useFeaturedMatch } from "../features/football/store";
 import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { motion } from "motion/react";
@@ -85,6 +86,9 @@ export function LiveClock() {
   const now = useMinute();
   const battery = useBattery();
   settings.use(); // 12/24 h switch re-renders
+  // Half time: the match steps aside for the clock, with its score as a small chip.
+  const m = useFeaturedMatch();
+  const pause = m && m.state === "in" && m.phase === "break" ? m : null;
   const { time, period } = formatTimeParts(now);
 
   return (
@@ -97,6 +101,11 @@ export function LiveClock() {
       <LiveEdge side="left" className="flex items-baseline gap-[3px]">
         <span className="tabular text-footnote font-semibold text-label">{time}</span>
         {period && <span className="text-[9px] font-semibold text-label-2">{period}</span>}
+        {pause && (
+          <span className="tabular ml-1.5 self-center rounded-full bg-fill-2 px-1.5 text-[10px] leading-[15px] font-bold text-label-2" title={pause.clock}>
+            ⚽ {pause.home.score}-{pause.away.score}
+          </span>
+        )}
       </LiveEdge>
       <LiveEdge side="right" className="flex items-center gap-1">
         {battery === undefined ? null : battery ? <BatteryReadout b={battery} /> : <DateReadout now={now} />}

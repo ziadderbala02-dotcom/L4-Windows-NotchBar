@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { CircleNotch, Drop, MagnifyingGlass, MapPin, NavigationArrow, Wind } from "@phosphor-icons/react";
+import { ArrowLeft, CircleNotch, Drop, MagnifyingGlass, MapPin, NavigationArrow, Wind } from "@phosphor-icons/react";
 import { content, fade, spin } from "../../design/motion";
 import { settings } from "../../settings/store";
 import { Skeleton } from "../../ui/controls";
@@ -24,6 +24,8 @@ export function WeatherView() {
   const [error, setError] = useState(false);
   const [searching, setSearching] = useState(false);
   const [detectFailed, setDetectFailed] = useState(false);
+  /** A day tapped in the week row: its hours replace the overview. */
+  const [day, setDay] = useState<string | null>(null);
 
   // First start without a location: detect via IP; if that fails, show the search.
   useEffect(() => {
@@ -58,6 +60,10 @@ export function WeatherView() {
             <Skeleton className="h-10 w-48" />
             <Skeleton className="h-20 w-full" />
           </motion.div>
+        ) : day ? (
+          <motion.div key={`day-${day}`} className="h-full" initial={{ opacity: 0, filter: "blur(4px)" }} animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }} exit={{ opacity: 0, transition: content.exit }}>
+            <DayHours data={data} date={day} onBack={() => setDay(null)} />
+          </motion.div>
         ) : (
           <motion.div key="data" className="flex h-full flex-col justify-between" initial={{ opacity: 0, filter: "blur(4px)" }} animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}>
             <Current data={data} name={place.name} auto={!!place.auto} onChangePlace={() => setSearching(true)} />
@@ -65,18 +71,73 @@ export function WeatherView() {
               {data.daily.map((d, i) => {
                 const { icon: I, text } = describe(d.code);
                 return (
-                  <div key={d.date} className={`flex flex-col items-center gap-1 rounded-[10px] py-1.5 ${i === 0 ? "bg-fill-1" : ""}`} title={text}>
+                  <button key={d.date} onClick={() => setDay(d.date)} className={`pressable flex flex-col items-center gap-1 rounded-[10px] py-1.5 hover:bg-fill-2 ${i === 0 ? "bg-fill-1" : ""}`} title={text}>
                     <span className="text-caption text-label-3">{i === 0 ? t("Heute") : weekday().format(new Date(`${d.date}T12:00:00`)).replace(".", "")}</span>
                     <I size={18} weight="fill" className="text-label-2" />
                     <span className="tabular text-caption font-semibold text-label">{formatTemp(d.max)}</span>
                     <span className="tabular -mt-1 text-caption text-label-3">{formatTemp(d.min)}</span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
           </motion.div>
         )}
       </AnimatePresence>
+    </div>
+  );
+}
+
+/** Strong wind from this gust speed on (km/h). */
+const STORM_GUST = 50;
+
+/**
+ * One day, hour by hour (from now on, for today):
+ *
+ *   ← Thursday            rain 14–17 · thunder at 16
+ *   15   16   17   18 …
+ *   🌧   ⛈    🌧   ☁
+ *   19°  18°  18°  17°
+ *   60%  80%  55%
+ * Rain, thunder and strong wind hours stand out in color.
+ */
+function DayHours({ data, date, onBack }: { data: Forecast; date: string; onBack: () => void }) {
+  const nowHour = new Date();
+  const hours = data.hourly.filter((h) => h.time.startsWith(date) && new Date(h.time).getTime() >= nowHour.getTime() - 3600_000);
+  const kind = (h: Forecast["hourly"][number]): string | null =>
+    h.code >= 95 ? "storm" : (h.code >= 51 && h.code <= 67) || (h.code >= 80 && h.code <= 82) ? "rain" : h.code >= 71 && h.code <= 86 ? "snow" : h.gust >= STORM_GUST ? "wind" : null;
+  const tint: Record<string, string> = { storm: "rgba(191,90,242,0.22)", rain: "rgba(10,132,255,0.2)", snow: "rgba(100,210,255,0.18)", wind: "rgba(255,159,10,0.2)" };
+  const label: Record<string, string> = { storm: t("Gewitter"), rain: t("Regen"), snow: t("Schnee"), wind: t("Starker Wind") };
+  const alerts = [...new Set(hours.map(kind).filter((k): k is string => !!k))];
+  const dayName = date === data.daily[0]?.date ? t("Heute") : new Intl.DateTimeFormat(locale(), { weekday: "long" }).format(new Date(`${date}T12:00:00`));
+  const hourFmt = new Intl.DateTimeFormat(locale(), { hour: "numeric", hour12: settings.get().units.clock === "12" });
+  return (
+    <div className="flex h-full flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <button onClick={onBack} className="pressable flex size-7 items-center justify-center rounded-full bg-fill-1 text-label-2 hover:text-label" aria-label={t("Zurück")}>
+          <ArrowLeft size={13} weight="bold" />
+        </button>
+        <span className="text-footnote font-semibold text-label">{dayName}</span>
+        <span className="flex-1" />
+        {alerts.map((k) => (
+          <span key={k} className="rounded-full px-2 text-caption leading-[20px] font-medium text-label" style={{ background: tint[k] }}>
+            {label[k]}
+          </span>
+        ))}
+      </div>
+      <div className="-mx-1 flex min-h-0 flex-1 gap-1 overflow-x-auto px-1 pb-1 [scrollbar-width:thin]">
+        {hours.map((h) => {
+          const { icon: I, text } = describe(h.code, h.day);
+          const k = kind(h);
+          return (
+            <div key={h.time} title={text} className="flex w-[46px] shrink-0 flex-col items-center justify-between rounded-[10px] py-2" style={{ background: k ? tint[k] : "var(--color-fill-1)" }}>
+              <span className="text-caption text-label-3">{hourFmt.format(new Date(h.time))}</span>
+              <I size={18} weight="fill" className="text-label-2" />
+              <span className="tabular text-footnote font-semibold text-label">{formatTemp(h.temp)}</span>
+              <span className="tabular text-[10px] text-label-3">{h.rain >= 10 ? `${h.rain}%` : k === "wind" ? `${Math.round(h.gust)}` : " "}</span>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -142,7 +142,14 @@ export function ClipboardView() {
                 hidden={hidden}
                 copied={copied === item.id}
                 selected={previewId === item.id}
-                onClick={() => (item.thumbnail && !hidden ? setPreviewId((p) => (p === item.id ? null : item.id)) : void copy(item.id))}
+                onClick={() => {
+                  // Images: one click copies it and opens it large (the copy button is small).
+                  if (item.thumbnail && !hidden) {
+                    const opening = previewId !== item.id;
+                    setPreviewId(opening ? item.id : null);
+                    if (opening) void copy(item.id);
+                  } else void copy(item.id);
+                }}
               />
               <div className="absolute top-2 right-2 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100">
                 {item.thumbnail && !hidden && <CardButton label={t("Kopieren")} icon={Copy} onClick={() => void copy(item.id)} />}
@@ -155,7 +162,7 @@ export function ClipboardView() {
 
       <AnimatePresence>
         {previewId !== null && preview && (
-          <PreviewPane key="preview" preview={preview} onCopy={() => void copy(previewId)} onClose={() => setPreviewId(null)} />
+          <PreviewPane key="preview" preview={preview} copied={copied === previewId} onCopy={() => void copy(previewId)} onClose={() => setPreviewId(null)} />
         )}
       </AnimatePresence>
     </div>
@@ -204,7 +211,7 @@ function usePreview(id: number | null): LoadedPreview | null {
   return data;
 }
 
-function PreviewPane({ preview, onCopy, onClose }: { preview: LoadedPreview; onCopy: () => void; onClose: () => void }) {
+function PreviewPane({ preview, onCopy, onClose , copied }: { preview: LoadedPreview; onCopy: () => void; onClose: () => void ; copied: boolean }) {
   return (
     <motion.div
       className="flex min-h-0 flex-1 flex-col items-center gap-1.5 px-4 pt-2.5"
@@ -224,7 +231,20 @@ function PreviewPane({ preview, onCopy, onClose }: { preview: LoadedPreview; onC
             initial={{ opacity: 0, filter: "blur(4px)" }}
             animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
             exit={{ opacity: 0, filter: "blur(4px)", transition: content.exit }}
+            onClick={onCopy}
           />
+        </AnimatePresence>
+        <AnimatePresence>
+          {copied && (
+            <motion.span
+              className="absolute top-2 right-2 rounded-full bg-black/75 px-2.5 text-caption leading-[22px] font-semibold text-green"
+              initial={{ opacity: 0, scale: 0.8 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0 }}
+            >
+              {t("Kopiert")} ✓
+            </motion.span>
+          )}
         </AnimatePresence>
       </div>
       <div className="flex w-full items-center justify-between" style={{ maxWidth: Math.max(preview.w, 240) }}>

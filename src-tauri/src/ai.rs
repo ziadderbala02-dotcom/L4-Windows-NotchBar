@@ -64,6 +64,46 @@ pub async fn ai_chat(id: String, config: ChatConfig, messages: Vec<Msg>, app: Ap
     result
 }
 
+/// The models this key can use, for the model picker (newest first where the API says).
+#[tauri::command]
+pub async fn ai_models(provider: String, base_url: Option<String>) -> Result<Vec<String>, String> {
+    let key = secrets::read(&format!("ai.{provider}")).ok_or("no-key")?;
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20)).build().map_err(|e| e.to_string())?;
+    let req = match provider.as_str() {
+        "anthropic" => client.get("https://api.anthropic.com/v1/models?limit=100").header("x-api-key", &key).header("anthropic-version", "2023-06-01"),
+        "openai" => client.get("https://api.openai.com/v1/models").bearer_auth(&key),
+        "openrouter" => client.get("https://openrouter.ai/api/v1/models").bearer_auth(&key),
+        "gemini" => client.get("https://generativelanguage.googleapis.com/v1beta/openai/models").bearer_auth(&key),
+        "custom" => {
+            let base = base_url.unwrap_or_default();
+            let base = base.trim().trim_end_matches('/');
+            if base.is_empty() {
+                return Ok(vec![]);
+            }
+            client.get(format!("{base}/models")).bearer_auth(&key)
+        }
+        other => return Err(format!("Unbekannter Anbieter: {other}")),
+    };
+    let res = req.send().await.map_err(|e| format!("Keine Verbindung: {}", short(&e.to_string())))?;
+    let status = res.status().as_u16();
+    let body = res.text().await.map_err(|e| e.to_string())?;
+    if !(200..300).contains(&status) {
+        return Err(http_error(status, &body));
+    }
+    let v: Value = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    let mut ids: Vec<String> = v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m["id"].as_str())
+        .map(|id| id.trim_start_matches("models/").to_string())
+        // Chat models only: no embeddings, speech, images or moderation.
+        .filter(|id| !["embed", "tts", "whisper", "dall-e", "image", "moderation", "audio", "transcribe", "realtime", "aqa", "imagen", "veo"].iter().any(|x| id.contains(x)))
+        .collect();
+    ids.dedup();
+    Ok(ids)
+}
+
 #[tauri::command]
 pub fn ai_cancel(id: String, state: State<'_, AiState>) {
     state.cancelled.lock().unwrap().insert(id);
@@ -88,6 +128,8 @@ pub async fn stream_chat(
         "anthropic" => "https://api.anthropic.com/v1/messages".to_string(),
         "openai" => "https://api.openai.com/v1/chat/completions".to_string(),
         "openrouter" => "https://openrouter.ai/api/v1/chat/completions".to_string(),
+        // Google's OpenAI-compatible endpoint (key from aistudio.google.com).
+        "gemini" => "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".to_string(),
         "custom" => {
             let base = config.base_url.as_deref().unwrap_or("").trim().trim_end_matches('/');
             if !(base.starts_with("https://") || base.starts_with("http://localhost") || base.starts_with("http://127.0.0.1")) {
@@ -129,6 +171,9 @@ pub async fn stream_chat(
         if let Some(e) = effort {
             if config.provider == "openrouter" {
                 body["reasoning"] = json!({ "effort": e });
+            } else if config.provider == "gemini" {
+                // Gemini knows low / medium / high.
+                body["reasoning_effort"] = json!(if e == "xhigh" { "high" } else { e });
             } else {
                 body["reasoning_effort"] = json!(e);
             }
