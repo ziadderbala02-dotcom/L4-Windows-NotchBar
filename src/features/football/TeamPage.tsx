@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, Star } from "@phosphor-icons/react";
 import { content } from "../../design/motion";
@@ -25,16 +25,29 @@ export function openTeam(side: Side, source: Source) {
 
 const cache = new Map<string, { at: number; results: Match[]; fixtures: Match[] }>();
 
+/** Full page for a team (back button + its matches). */
 export function TeamPage() {
   const p = teamPage.use();
+  if (!p) return null;
+  return (
+    <div className="flex h-full flex-col px-5 pt-1 pb-2">
+      <TeamMatches side={p.side} source={p.source} onBack={() => teamPage.set(null)} />
+    </div>
+  );
+}
+
+/**
+ * A team's last results and next matches, with a ⭐ to make it a favourite. Used on the
+ * team page and in the "Matches" tab of a match's details.
+ */
+export function TeamMatches({ side, source, onBack, header }: { side: Side; source: Source; onBack?: () => void; header?: ReactNode }) {
   const [tab, setTab] = useState<"results" | "fixtures">("results");
   const [data, setData] = useState<{ results: Match[]; fixtures: Match[] } | "loading" | "error" | "none">("loading");
   const f = follow.use();
 
   useEffect(() => {
-    if (!p) return;
-    if (p.source !== "s365") return setData("none");
-    const key = p.side.id;
+    if (source !== "s365") return setData("none");
+    const key = side.id;
     const hit = cache.get(key);
     if (hit && Date.now() - hit.at < 5 * 60_000) return setData(hit);
     setData("loading");
@@ -48,28 +61,33 @@ export function TeamPage() {
     return () => {
       alive = false;
     };
-  }, [p?.side.id, p?.source]);
+  }, [side.id, source]);
 
-  if (!p) return null;
-  const key = `${p.source}:${p.side.id}`;
+  const key = `${source}:${side.id}`;
   const fav = f.teams.some((x) => x.key === key);
   const list = typeof data === "string" ? [] : tab === "results" ? data.results : data.fixtures;
 
   return (
-    <div className="flex h-full flex-col px-5 pt-1 pb-2">
+    <div className="flex h-full min-h-0 flex-col">
       <div className="mb-2 flex items-center gap-2">
-        <button className="pressable flex size-7 items-center justify-center rounded-full bg-fill-1 text-label-2 hover:text-label" onClick={() => teamPage.set(null)} aria-label={t("Zurück")}>
-          <ArrowLeft size={13} weight="bold" />
-        </button>
-        <Crest side={p.side} size={24} />
-        <span className="truncate text-title font-semibold text-label" dir="auto">
-          {p.side.name}
-        </span>
-        {p.source === "s365" && (
+        {onBack && (
+          <button className="pressable flex size-7 items-center justify-center rounded-full bg-fill-1 text-label-2 hover:text-label" onClick={onBack} aria-label={t("Zurück")}>
+            <ArrowLeft size={13} weight="bold" />
+          </button>
+        )}
+        {header ?? (
+          <>
+            <Crest side={side} size={24} />
+            <span className="truncate text-title font-semibold text-label" dir="auto">
+              {side.name}
+            </span>
+          </>
+        )}
+        {source === "s365" && (
           <button
             className={`pressable flex size-7 items-center justify-center rounded-full ${fav ? "text-yellow" : "text-label-3 hover:text-label-2"}`}
             title={fav ? t("Aus Favoriten entfernen") : t("Zu Favoriten")}
-            onClick={() => toggleTeam({ key, source: "s365", id: p.side.id, name: p.side.name, logo: p.side.logo, league: null })}
+            onClick={() => toggleTeam({ key, source: "s365", id: side.id, name: side.name, logo: side.logo, league: null })}
           >
             <Star size={15} weight={fav ? "fill" : "bold"} />
           </button>
@@ -89,7 +107,7 @@ export function TeamPage() {
       </div>
       <AnimatePresence mode="popLayout" initial={false}>
         <motion.div
-          key={tab}
+          key={`${side.id}-${tab}`}
           className="-mx-1 min-h-0 flex-1 overflow-y-auto px-1 pb-1"
           initial={{ opacity: 0, filter: "blur(4px)" }}
           animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
@@ -104,7 +122,7 @@ export function TeamPage() {
           ) : !list.length ? (
             <Empty text={tab === "results" ? t("Keine Ergebnisse") : t("Keine anstehenden Spiele")} />
           ) : (
-            list.map((m) => <TeamRow key={m.key} m={m} teamId={p.side.id} />)
+            list.map((m) => <TeamRow key={m.key} m={m} teamId={side.id} />)
           )}
         </motion.div>
       </AnimatePresence>
@@ -122,7 +140,10 @@ function TeamRow({ m, teamId }: { m: Match; teamId: string }) {
   const res = m.state === "post" ? (us.score > them.score ? "W" : us.score < them.score ? "L" : "D") : null;
   const badge = res === "W" ? "bg-green text-black" : res === "L" ? "bg-red text-white" : "bg-fill-3 text-label";
   return (
-    <div className="flex h-9 cursor-pointer items-center gap-2 rounded-[8px] px-1 text-footnote hover:bg-fill-1" onClick={() => openDetail(m, "lineups")}>
+    <div className="flex h-9 cursor-pointer items-center gap-2 rounded-[8px] px-1 text-footnote hover:bg-fill-1" onClick={() => {
+        teamPage.set(null);
+        openDetail(m, "lineups");
+      }}>
       {res ? (
         <span className={`flex size-5 shrink-0 items-center justify-center rounded-[5px] text-caption font-bold ${badge}`}>{t(res === "W" ? "S" : res === "L" ? "N" : "U")}</span>
       ) : (

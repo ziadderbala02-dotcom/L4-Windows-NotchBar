@@ -1,15 +1,15 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowClockwise, Check, ListBullets, MagnifyingGlass, Newspaper, Plus, PushPin, SlidersHorizontal, SoccerBall, Star, Trash, X } from "@phosphor-icons/react";
+import { ArrowClockwise, CaretDown, CaretUp, Check, ListBullets, MagnifyingGlass, Newspaper, Plus, PushPin, SlidersHorizontal, SoccerBall, Star, Trash, X } from "@phosphor-icons/react";
 import { clearNews, news, newsMode, openNews, refreshNews } from "./news";
 import { content } from "../../design/motion";
 import { locale, t } from "../../i18n";
 import { formatAgo, formatTime } from "../../lib/format";
 import { competitionName } from "./espn";
-import { COMPETITIONS_365, competitionsGames365, search365, type TeamOption365 } from "./s365";
+import { COMPETITIONS_365, competitionsGames365, search365, searchComps365, type TeamOption365 } from "./s365";
 import { Crest } from "./LiveScore";
 import { MatchDetail, detail, onTeamClick, openDetail } from "./MatchDetail";
-import { cycleCompetition, fallback, follow, involvesFollowed, refreshScores, scores, toggleMain, togglePin, toggleTeam, updateFollow } from "./store";
+import { allComps, moveComp, setAllComps, cycleCompetition, fallback, follow, involvesFollowed, refreshScores, scores, toggleMain, togglePin, toggleTeam, updateFollow } from "./store";
 import { TeamPage, teamPage } from "./TeamPage";
 import type { Match } from "./types";
 
@@ -25,8 +25,9 @@ export function FootballView() {
   const backup = fallback.use();
   const newsCount = news.use().length;
   const team = teamPage.use();
-  if (open) return <MatchDetail />;
+  // A team opened from a table sits on top of that match; back returns to it.
   if (team) return <TeamPage />;
+  if (open) return <MatchDetail />;
   return (
     <div className="relative flex h-full flex-col px-5 pt-1 pb-2">
       <div className="mb-2 flex items-center gap-2">
@@ -164,7 +165,9 @@ const allCache = new Map<string, { at: number; list: Match[] }>();
 const lastComp = { id: "552" };
 
 function AllResults() {
-  const [comp, setComp] = useState(lastComp.id);
+  follow.use();
+  const comps = allComps();
+  const [comp, setComp] = useState(comps.some((c) => c.id === lastComp.id) ? lastComp.id : (comps[0]?.id ?? "552"));
   const [list, setList] = useState<Match[] | "loading" | "error">(allCache.get(comp)?.list ?? "loading");
   useEffect(() => {
     lastComp.id = comp;
@@ -197,14 +200,13 @@ function AllResults() {
   return (
     <div className="flex h-full flex-col gap-2">
       <div className="-mx-1 flex shrink-0 gap-1.5 overflow-x-auto px-1 pb-1" dir="rtl">
-        {COMPETITIONS_365.map((c) => (
+        {comps.map((c) => (
           <button
             key={c.id}
             onClick={() => setComp(c.id)}
-            title={c.name}
             className={`h-7 shrink-0 rounded-full px-3 text-caption font-medium ${comp === c.id ? "bg-fill-3 text-label" : "bg-fill-1 text-label-3 hover:text-label-2"}`}
           >
-            {c.short}
+            {c.name}
           </button>
         ))}
       </div>
@@ -367,6 +369,8 @@ function Follow() {
   const f = follow.use();
   return (
     <div className="-mx-1 flex h-full flex-col gap-3 overflow-y-auto px-1 pb-1">
+      <CompsEditor />
+
       <div>
         <Label text={t("Alle Spiele zeigen von")} hint={t("Spiele deiner Teams kommen immer, auch ohne Auswahl")} />
         <div className="flex flex-wrap gap-1.5">
@@ -496,3 +500,70 @@ function TeamSearch() {
   );
 }
 
+
+/** Which competitions appear under "All", and in what order. */
+function CompsEditor() {
+  follow.use();
+  const comps = allComps();
+  const [q, setQ] = useState("");
+  const [hits, setHits] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    const query = q.trim();
+    if (query.length < 2) return setHits([]);
+    const id = window.setTimeout(() => {
+      searchComps365(query)
+        .then(setHits)
+        .catch(() => setHits([]));
+    }, 350);
+    return () => window.clearTimeout(id);
+  }, [q]);
+  return (
+    <div>
+      <Label text={t("Wettbewerbe unter „Alle“")} hint={t("Reihenfolge mit den Pfeilen, ✕ blendet aus")} />
+      <div className="flex flex-col gap-0.5">
+        {comps.map((c, i) => (
+          <div key={c.id} className="flex h-8 items-center gap-1 rounded-[8px] bg-fill-1 px-2 text-footnote">
+            <span className="tabular w-5 text-caption text-label-3">{i + 1}</span>
+            <span className="flex-1 truncate text-label" dir="auto">
+              {c.name}
+            </span>
+            <button className="flex size-6 items-center justify-center rounded-full text-label-3 hover:text-label disabled:opacity-25" disabled={i === 0} onClick={() => moveComp(c.id, -1)} aria-label={t("Nach oben")}>
+              <CaretUp size={11} weight="bold" />
+            </button>
+            <button className="flex size-6 items-center justify-center rounded-full text-label-3 hover:text-label disabled:opacity-25" disabled={i === comps.length - 1} onClick={() => moveComp(c.id, 1)} aria-label={t("Nach unten")}>
+              <CaretDown size={11} weight="bold" />
+            </button>
+            <button className="flex size-6 items-center justify-center rounded-full text-label-3 hover:text-red" onClick={() => setAllComps(comps.filter((x) => x.id !== c.id))} aria-label={t("Entfernen")}>
+              <X size={10} weight="bold" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-1.5 flex h-8 items-center gap-2 rounded-[10px] bg-fill-1 px-3">
+        <MagnifyingGlass size={13} weight="bold" className="text-label-3" />
+        <input
+          value={q}
+          dir="auto"
+          onChange={(e) => setQ(e.target.value)}
+          placeholder={t("Wettbewerb hinzufügen, z. B. الدوري السعودي")}
+          className="min-w-0 flex-1 bg-transparent text-footnote text-label outline-none placeholder:text-label-4"
+        />
+      </div>
+      {hits.map((h) => (
+        <button
+          key={h.id}
+          disabled={comps.some((c) => c.id === h.id)}
+          onClick={() => {
+            setAllComps([...comps, h]);
+            setQ("");
+          }}
+          className="flex h-8 w-full items-center gap-2 rounded-[8px] px-2 text-left text-footnote text-label hover:bg-fill-1 disabled:opacity-40"
+        >
+          <span dir="auto">{h.name}</span>
+          <span className="flex-1" />
+          <Plus size={12} weight="bold" className="text-label-3" />
+        </button>
+      ))}
+    </div>
+  );
+}

@@ -4,7 +4,7 @@ import { isNative } from "../../platform/native";
 import { settings } from "../../settings/store";
 import { fetchLineups, fetchScoreboard, fetchTeams } from "./espn";
 import { sofaIncidents, sofaLineups, sofaMatch, sofaTeamMatches } from "./sofa";
-import { competitionsGames365, crest365, englishName365, game365, teamGames365 } from "./s365";
+import { COMPETITIONS_365, competitionsGames365, crest365, englishName365, game365, teamGames365 } from "./s365";
 import { teamKey, type FollowedTeam, type Lineups, type Match, type Side } from "./types";
 
 /*
@@ -34,6 +34,8 @@ export interface FollowState {
   pinned?: string[];
   /** The match that stays in the notch when several run at once (⭐); null = take turns. */
   mainKey?: string | null;
+  /** Competitions listed under "All", in this order (unset = the default list). */
+  allComps?: { id: string; name: string }[];
 }
 
 const defaults: FollowState = {
@@ -624,4 +626,23 @@ export function useFeaturedMatch(): Match | null {
   useTick(running > 1 ? 1000 : 30_000);
   if (!enabled || !on) return null;
   return featured(matches, g);
+}
+
+/* ---------- competitions under "All" ---------- */
+
+export function allComps(): { id: string; name: string }[] {
+  return follow.get().allComps ?? COMPETITIONS_365.map((c) => ({ id: c.id, name: c.short }));
+}
+
+export function setAllComps(list: { id: string; name: string }[]) {
+  updateFollow({ allComps: list });
+}
+
+export function moveComp(id: string, by: -1 | 1) {
+  const l = [...allComps()];
+  const i = l.findIndex((c) => c.id === id);
+  const j = i + by;
+  if (i < 0 || j < 0 || j >= l.length) return;
+  [l[i], l[j]] = [l[j], l[i]];
+  setAllComps(l);
 }

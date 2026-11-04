@@ -7,7 +7,7 @@ import { t } from "../../i18n";
 import { fetchStandings, liveTable } from "./espn";
 import { competitionGames365, standings365 } from "./s365";
 import { Crest } from "./LiveScore";
-import { openTeam } from "./TeamPage";
+import { TeamMatches, openTeam } from "./TeamPage";
 import { leagueMatches, loadLineups, scores } from "./store";
 import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
 
@@ -17,7 +17,7 @@ import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
  * ended now, marks the two teams of this match and shows who moved up or down.
  */
 
-type Tab = "lineups" | "table";
+type Tab = "lineups" | "table" | "matches";
 type SideKey = "home" | "away";
 
 /** `side`: opened from one team (its lineup only, its row stands out in the table). */
@@ -47,15 +47,9 @@ export function clickOrDouble(single: () => void, double: () => void) {
   }, DOUBLE_MS);
 }
 
-/** Click a team → its lineup; double click → the team's page (results and next matches). */
+/** Click a team → the match's details on that team (lineup first; Table and Matches are tabs). */
 export function onTeamClick(match: Match, side: SideKey) {
-  clickOrDouble(
-    () => openDetail(match, "lineups", side),
-    () => {
-      detail.set(null);
-      openTeam(match[side], match.source);
-    },
-  );
+  openDetail(match, "lineups", side);
 }
 
 export function MatchDetail() {
@@ -79,13 +73,13 @@ export function MatchDetail() {
         {m.state === "in" && <span className="tabular text-caption font-semibold text-red">{m.clock}</span>}
         <span className="flex-1" />
         <div className="flex rounded-full bg-fill-1 p-0.5">
-          {(["lineups", "table"] as const).map((k) => (
+          {(["lineups", "table", "matches"] as const).map((k) => (
             <button
               key={k}
               onClick={() => setTab(k)}
               className={`h-6 rounded-full px-3 text-caption font-medium ${d.tab === k ? "bg-fill-3 text-label" : "text-label-3 hover:text-label-2"}`}
             >
-              {k === "lineups" ? t("Aufstellung") : t("Tabelle")}
+              {k === "lineups" ? t("Aufstellung") : k === "table" ? t("Tabelle") : t("Spiele")}
             </button>
           ))}
         </div>
@@ -98,7 +92,7 @@ export function MatchDetail() {
           animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
           exit={{ opacity: 0, transition: content.exit }}
         >
-          {d.tab === "lineups" ? <LineupsPane m={m} side={d.side} /> : <TablePane m={m} side={d.side} />}
+          {d.tab === "lineups" ? <LineupsPane m={m} side={d.side} /> : d.tab === "table" ? <TablePane m={m} side={d.side} /> : <MatchesPane m={m} side={d.side} />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -273,8 +267,15 @@ function TablePane({ m, side }: { m: Match; side?: SideKey }) {
             layout
             key={r.teamId}
             transition={{ type: "spring", visualDuration: 0.45, bounce: 0.15 }}
-            className={`grid h-7 shrink-0 grid-cols-[22px_1fr_26px_26px_26px_26px_36px_32px] items-center gap-1 rounded-[8px] text-footnote ${focus ? "bg-fill-3" : mine ? "bg-fill-2" : ""}`}
+            className={`grid h-7 shrink-0 cursor-pointer grid-cols-[22px_1fr_26px_26px_26px_26px_36px_32px] items-center gap-1 rounded-[8px] text-footnote hover:bg-fill-1 ${focus ? "bg-fill-3" : mine ? "bg-fill-2" : ""}`}
             style={color ? { boxShadow: `inset 3px 0 0 ${color}` } : undefined}
+            // Click a team in the table: its results and next matches.
+            onClick={() =>
+              openTeam(
+                { id: r.teamId, name: r.name, short: r.name, abbr: r.abbr, logo: r.logo, color: color ?? "#d1d1d6", score: 0 },
+                m.source,
+              )
+            }
           >
             <span className="tabular flex items-center gap-0.5 pl-1.5 text-caption text-label-3">
               <span className="h-3 w-[2px] rounded-full" style={{ background: r.note?.color ?? "transparent" }} title={r.note?.text} />
@@ -306,4 +307,32 @@ function TablePane({ m, side }: { m: Match; side?: SideKey }) {
 
 function Empty({ text }: { text: string }) {
   return <div className="flex h-full items-center justify-center px-6 text-center text-body text-label-3">{text}</div>;
+}
+
+/* ---------- the two teams' matches ---------- */
+
+/** Results and next matches of either team: chips pick the team (the clicked one first). */
+function MatchesPane({ m, side }: { m: Match; side?: SideKey }) {
+  const [k, setK] = useState<SideKey>(side ?? "home");
+  return (
+    <TeamMatches
+      key={k}
+      side={m[k]}
+      source={m.source}
+      header={
+        <div className="flex gap-1.5">
+          {(["home", "away"] as const).map((x) => (
+            <button
+              key={x}
+              onClick={() => setK(x)}
+              className={`pressable flex h-7 items-center gap-1.5 rounded-full px-2.5 text-caption font-medium ${x === k ? "bg-fill-3 text-label" : "bg-fill-1 text-label-3 hover:text-label-2"}`}
+            >
+              <Crest side={m[x]} size={14} />
+              <span dir="auto">{m[x].short}</span>
+            </button>
+          ))}
+        </div>
+      }
+    />
+  );
 }

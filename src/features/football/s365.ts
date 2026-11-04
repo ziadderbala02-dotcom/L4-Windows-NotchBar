@@ -303,3 +303,9 @@ export async function teamFixtures365(id: string): Promise<Match[]> {
   const r = await getJson<{ games?: RawGame[] }>(url(`games/fixtures/?competitors=${id}`));
   return (r.games ?? []).map((g) => parse365(g)).sort((a, b) => a.kickoff - b.kickoff);
 }
+
+/** Competition search (for the list under "All"). */
+export async function searchComps365(q: string): Promise<{ id: string; name: string }[]> {
+  const r = await getJson<{ competitions?: { id: number; name: string; sportId?: number }[] }>(url(`search/?query=${encodeURIComponent(q)}`));
+  return (r.competitions ?? []).filter((c) => c.sportId === 1).slice(0, 8).map((c) => ({ id: String(c.id), name: c.name }));
+}
