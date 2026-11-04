@@ -31,7 +31,7 @@ export function LiveScore({ match }: { match: Match }) {
       exit={{ opacity: 0, filter: "blur(4px)", transition: content.exit }}
     >
       <AnimatePresence initial={false} mode="popLayout">
-        {celebrating ? <GoalBurst key={`goal-${celebrating.at}`} match={match} g={celebrating} /> : <Bar key="bar" match={match} />}
+        {celebrating ? <GoalBurst key={`goal-${celebrating.at}`} match={match} g={celebrating} /> : <Bar key={`bar-${match.key}`} match={match} />}
       </AnimatePresence>
     </motion.div>
   );

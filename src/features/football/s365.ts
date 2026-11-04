@@ -292,3 +292,14 @@ export async function englishName365(id: string, query: string): Promise<string 
   const r = await getJson<{ competitors?: RawCompetitor[] }>(url(`search/?query=${encodeURIComponent(query)}`).replace("langId=27", "langId=1"));
   return r.competitors?.find((c) => String(c.id) === id)?.name ?? null;
 }
+
+/** A team's last results (newest first) and next fixtures (soonest first). */
+export async function teamResults365(id: string): Promise<Match[]> {
+  const r = await getJson<{ games?: RawGame[] }>(url(`games/results/?competitors=${id}`));
+  return (r.games ?? []).map((g) => parse365(g)).sort((a, b) => b.kickoff - a.kickoff);
+}
+
+export async function teamFixtures365(id: string): Promise<Match[]> {
+  const r = await getJson<{ games?: RawGame[] }>(url(`games/fixtures/?competitors=${id}`));
+  return (r.games ?? []).map((g) => parse365(g)).sort((a, b) => a.kickoff - b.kickoff);
+}

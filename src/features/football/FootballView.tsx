@@ -1,16 +1,16 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowClockwise, Check, MagnifyingGlass, Newspaper, Plus, SlidersHorizontal, SoccerBall, Trash, X } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, ListBullets, MagnifyingGlass, Newspaper, Plus, PushPin, SlidersHorizontal, SoccerBall, Star, Trash, X } from "@phosphor-icons/react";
 import { clearNews, news, newsMode, openNews, refreshNews } from "./news";
 import { content } from "../../design/motion";
 import { locale, t } from "../../i18n";
 import { formatAgo, formatTime } from "../../lib/format";
-import { competitionName, fetchTeamSchedule } from "./espn";
-import { sofaTeamMatches } from "./sofa";
-import { COMPETITIONS_365, search365, teamGames365, type TeamOption365 } from "./s365";
+import { competitionName } from "./espn";
+import { COMPETITIONS_365, competitionsGames365, search365, type TeamOption365 } from "./s365";
 import { Crest } from "./LiveScore";
-import { MatchDetail, clickOrDouble, detail, onTeamClick, openDetail } from "./MatchDetail";
-import { cycleCompetition, fallback, follow, refreshScores, scores, toggleTeam, updateFollow } from "./store";
+import { MatchDetail, detail, onTeamClick, openDetail } from "./MatchDetail";
+import { cycleCompetition, fallback, follow, involvesFollowed, refreshScores, scores, toggleMain, togglePin, toggleTeam, updateFollow } from "./store";
+import { TeamPage, teamPage } from "./TeamPage";
 import type { Match } from "./types";
 
 /*
@@ -20,11 +20,13 @@ import type { Match } from "./types";
  *   Follow   competitions (off / my teams / all matches), teams, stream delay.
  */
 export function FootballView() {
-  const [panel, setPanel] = useState<"matches" | "news" | "follow">("matches");
+  const [panel, setPanel] = useState<"matches" | "all" | "news" | "follow">("matches");
   const open = detail.use();
   const backup = fallback.use();
   const newsCount = news.use().length;
+  const team = teamPage.use();
   if (open) return <MatchDetail />;
+  if (team) return <TeamPage />;
   return (
     <div className="relative flex h-full flex-col px-5 pt-1 pb-2">
       <div className="mb-2 flex items-center gap-2">
@@ -32,14 +34,14 @@ export function FootballView() {
           <span className="text-footnote font-semibold text-label">{t("Folgen")}</span>
         ) : (
           <div className="flex rounded-full bg-fill-1 p-0.5">
-            {(["matches", "news"] as const).map((k) => (
+            {(["matches", "all", "news"] as const).map((k) => (
               <button
                 key={k}
                 onClick={() => setPanel(k)}
                 className={`flex h-6 items-center gap-1.5 rounded-full px-3 text-caption font-medium ${panel === k ? "bg-fill-3 text-label" : "text-label-3 hover:text-label-2"}`}
               >
-                {k === "matches" ? <SoccerBall size={12} weight="fill" /> : <Newspaper size={12} weight="fill" />}
-                {k === "matches" ? t("Spiele") : t("Nachrichten")}
+                {k === "matches" ? <Star size={12} weight="fill" /> : k === "all" ? <SoccerBall size={12} weight="fill" /> : <Newspaper size={12} weight="fill" />}
+                {k === "matches" ? t("Meine Spiele") : k === "all" ? t("Alle") : t("Nachrichten")}
               </button>
             ))}
           </div>
@@ -63,7 +65,7 @@ export function FootballView() {
           <button
             className="pressable flex size-7 items-center justify-center rounded-full text-label-3 hover:text-label"
             title={t("Aktualisieren")}
-            onClick={panel === "news" ? refreshNews : refreshScores}
+            onClick={panel === "news" ? refreshNews : () => (allCache.clear(), refreshScores())}
           >
             <ArrowClockwise size={14} weight="bold" />
           </button>
@@ -84,7 +86,7 @@ export function FootballView() {
           animate={{ opacity: 1, filter: "blur(0px)", transition: content.enter }}
           exit={{ opacity: 0, transition: content.exit }}
         >
-          {panel === "matches" ? <Matches /> : panel === "news" ? <NewsList /> : <Follow />}
+          {panel === "matches" ? <Matches onAll={() => setPanel("all")} /> : panel === "all" ? <AllResults /> : panel === "news" ? <NewsList /> : <Follow />}
         </motion.div>
       </AnimatePresence>
     </div>
@@ -115,61 +117,32 @@ function NewsList() {
 
 /* ---------- matches ---------- */
 
-const upcomingCache: { at: number; key: string; list: Match[] } = { at: 0, key: "", list: [] };
-
-/** Next fixtures of the followed teams (ESPN schedules, 365Scores, SofaScore), cached for 30 min. */
-function useUpcoming(): Match[] {
-  const { teams } = follow.use();
-  const key = teams.map((t) => t.key).join(",");
-  const [list, setList] = useState<Match[]>(upcomingCache.key === key ? upcomingCache.list : []);
-  useEffect(() => {
-    if (upcomingCache.key === key && Date.now() - upcomingCache.at < 30 * 60_000) return;
-    let alive = true;
-    const ids365 = teams.filter((tm) => tm.source === "s365").map((tm) => tm.id);
-    const jobs = [
-      teamGames365(ids365),
-      ...teams.map((tm) =>
-        tm.source === "espn" && tm.league ? fetchTeamSchedule(tm.league, tm.id) : tm.source === "sofa" ? sofaTeamMatches(tm.id) : Promise.resolve([] as Match[]),
-      ),
-    ];
-    void Promise.allSettled(jobs).then((rs) => {
-      const now = Date.now();
-      const seen = new Set<string>();
-      const all = rs
-        .flatMap((r) => (r.status === "fulfilled" ? r.value : []))
-        .filter((m) => m.state === "pre" && m.kickoff > now && !seen.has(m.key) && seen.add(m.key))
-        .sort((a, b) => a.kickoff - b.kickoff)
-        .slice(0, 8);
-      Object.assign(upcomingCache, { at: now, key, list: all });
-      if (alive) setList(all);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [key]);
-  return list;
-}
-
-function Matches() {
+/** Home: only the favourite teams' and pinned matches; everything else is under "All". */
+function Matches({ onAll }: { onAll: () => void }) {
   const { matches, error, updated } = scores.use();
-  const upcoming = useUpcoming();
-  const live = matches.filter((m) => m.state === "in");
+  const f = follow.use();
+  const mine = matches.filter((m) => involvesFollowed(m) || (f.pinned ?? []).includes(m.key));
+  const now = Date.now();
+  const live = mine.filter((m) => m.state === "in");
   // "Today" = kicked off or kicking off today (365Scores also sends the last weeks' results).
   const todayStr = new Date().toDateString();
-  const today = matches.filter((m) => m.state !== "in" && new Date(m.kickoff).toDateString() === todayStr).sort((a, b) => a.kickoff - b.kickoff);
-  const recent = matches
-    .filter((m) => m.state === "post" && new Date(m.kickoff).toDateString() !== todayStr && Date.now() - m.kickoff < 4 * 86_400_000)
+  const today = mine.filter((m) => m.state !== "in" && new Date(m.kickoff).toDateString() === todayStr).sort((a, b) => a.kickoff - b.kickoff);
+  const later = mine
+    .filter((m) => m.state === "pre" && m.kickoff > now && new Date(m.kickoff).toDateString() !== todayStr)
+    .sort((a, b) => a.kickoff - b.kickoff)
+    .slice(0, 8);
+  const recent = mine
+    .filter((m) => m.state === "post" && new Date(m.kickoff).toDateString() !== todayStr && now - m.kickoff < 7 * 86_400_000)
     .sort((a, b) => b.kickoff - a.kickoff)
-    .slice(0, 5);
-  const later = upcoming.filter((u) => !matches.some((m) => m.key === u.key));
+    .slice(0, 6);
 
-  if (!updated && !upcoming.length)
+  if (!updated)
     return <div className="flex h-full items-center justify-center text-body text-label-3">{error ? t("Ergebnisse gerade nicht erreichbar") : t("Lade Spiele …")}</div>;
 
   return (
     <div className="-mx-1 flex h-full flex-col gap-2 overflow-y-auto px-1 pb-1">
       {live.map((m) => (
-        <LiveCard key={m.key} m={m} />
+        <LiveCard key={m.key} m={m} several={live.length > 1} />
       ))}
       {today.length > 0 && <Section title={t("Heute")} list={today} />}
       {later.length > 0 && <Section title={t("Demnächst")} list={later} />}
@@ -177,20 +150,106 @@ function Matches() {
       {!live.length && !today.length && !later.length && !recent.length && (
         <div className="flex flex-1 items-center justify-center text-body text-label-3">{t("Gerade keine Spiele deiner Teams")}</div>
       )}
+      <button className="pressable mx-auto mt-1 flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-fill-1 px-4 text-caption font-medium text-label-2 hover:text-label" onClick={onAll}>
+        <ListBullets size={12} weight="bold" />
+        {t("Alle Ergebnisse")}
+      </button>
     </div>
   );
 }
 
-function LiveCard({ m }: { m: Match }) {
+/* ---------- all results, by competition ---------- */
+
+const allCache = new Map<string, { at: number; list: Match[] }>();
+const lastComp = { id: "552" };
+
+function AllResults() {
+  const [comp, setComp] = useState(lastComp.id);
+  const [list, setList] = useState<Match[] | "loading" | "error">(allCache.get(comp)?.list ?? "loading");
+  useEffect(() => {
+    lastComp.id = comp;
+    let alive = true;
+    const load = () => {
+      const hit = allCache.get(comp);
+      if (hit && Date.now() - hit.at < 20_000) return setList(hit.list);
+      competitionsGames365([comp])
+        .then((l) => {
+          allCache.set(comp, { at: Date.now(), list: l });
+          if (alive) setList(l);
+        })
+        .catch(() => alive && setList((x) => (Array.isArray(x) ? x : "error")));
+    };
+    if (!allCache.get(comp)) setList("loading");
+    load();
+    const id = window.setInterval(load, 20_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [comp]);
+
+  const now = Date.now();
+  const arr = Array.isArray(list) ? list : [];
+  const live = arr.filter((m) => m.state === "in");
+  const upcoming = arr.filter((m) => m.state === "pre" && m.kickoff > now - 3600_000).sort((a, b) => a.kickoff - b.kickoff).slice(0, 12);
+  const results = arr.filter((m) => m.state === "post").sort((a, b) => b.kickoff - a.kickoff).slice(0, 12);
+
+  return (
+    <div className="flex h-full flex-col gap-2">
+      <div className="-mx-1 flex shrink-0 gap-1.5 overflow-x-auto px-1 pb-1" dir="rtl">
+        {COMPETITIONS_365.map((c) => (
+          <button
+            key={c.id}
+            onClick={() => setComp(c.id)}
+            title={c.name}
+            className={`h-7 shrink-0 rounded-full px-3 text-caption font-medium ${comp === c.id ? "bg-fill-3 text-label" : "bg-fill-1 text-label-3 hover:text-label-2"}`}
+          >
+            {c.short}
+          </button>
+        ))}
+      </div>
+      <div className="-mx-1 flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-1 pb-1">
+        {list === "loading" ? (
+          <div className="flex flex-1 items-center justify-center text-body text-label-3">{t("Lade Spiele …")}</div>
+        ) : list === "error" ? (
+          <div className="flex flex-1 items-center justify-center text-body text-label-3">{t("Ergebnisse gerade nicht erreichbar")}</div>
+        ) : (
+          <>
+            {live.length > 0 && <Section title={t("Live")} list={live} pin />}
+            {upcoming.length > 0 && <Section title={t("Demnächst")} list={upcoming} pin />}
+            {results.length > 0 && <Section title={t("Ergebnisse")} list={results} />}
+            {!live.length && !upcoming.length && !results.length && (
+              <div className="flex flex-1 items-center justify-center text-body text-label-3">{t("Gerade keine Spiele in diesem Wettbewerb")}</div>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LiveCard({ m, several }: { m: Match; several: boolean }) {
   const goals = m.events.filter((e) => e.kind === "goal");
+  const f = follow.use();
+  const main = f.mainKey === m.key;
+  const pinned = (f.pinned ?? []).includes(m.key);
   return (
     <div
       className="cursor-pointer rounded-[16px] bg-fill-1 px-4 py-3 hover:bg-fill-2"
-      onClick={() => clickOrDouble(() => openDetail(m, "lineups"), () => openDetail(m, "table"))}
-      title={t("Klick: Aufstellungen · Doppelklick: Tabelle")}
+      onClick={() => openDetail(m, "lineups")}
     >
-      <div className="mb-2 flex items-center justify-between text-caption text-label-3">
-        <span>{m.leagueName}</span>
+      <div className="mb-2 flex items-center gap-2 text-caption text-label-3">
+        <span dir="auto">{m.leagueName}</span>
+        <span className="flex-1" />
+        {pinned && <IconToggle on label={t("Nicht mehr verfolgen")} onClick={() => togglePin(m)} icon={<PushPin size={12} weight="fill" />} />}
+        {several && (
+          <IconToggle
+            on={main}
+            label={main ? t("Abwechseln") : t("Im Notch behalten")}
+            onClick={() => toggleMain(m)}
+            icon={<Star size={12} weight={main ? "fill" : "bold"} />}
+          />
+        )}
         <span className="flex items-center gap-1 font-semibold text-red">
           <motion.span className="size-[5px] rounded-full bg-red" animate={{ opacity: [1, 0.25] }} transition={{ repeat: Infinity, repeatType: "reverse", duration: 0.9 }} />
           <span className="tabular">{m.clock}</span>
@@ -240,12 +299,28 @@ function TeamCell({ side, align, onClick }: { side: Match["home"]; align: "left"
   );
 }
 
-function Section({ title, list }: { title: string; list: Match[] }) {
+function IconToggle({ on, label, onClick, icon }: { on: boolean; label: string; onClick: () => void; icon: React.ReactNode }) {
+  return (
+    <button
+      aria-label={label}
+      title={label}
+      className={`flex size-6 items-center justify-center rounded-full ${on ? "text-yellow" : "text-label-3 hover:text-label-2"}`}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+    >
+      {icon}
+    </button>
+  );
+}
+
+function Section({ title, list, pin = false }: { title: string; list: Match[]; pin?: boolean }) {
   return (
     <div className="flex flex-col">
       <span className="px-1 pt-1 pb-1 text-caption font-medium text-label-3">{title}</span>
       {list.map((m) => (
-        <Row key={m.key} m={m} />
+        <Row key={m.key} m={m} pin={pin} />
       ))}
     </div>
   );
@@ -253,7 +328,10 @@ function Section({ title, list }: { title: string; list: Match[] }) {
 
 const day = () => new Intl.DateTimeFormat(locale(), { weekday: "short", day: "numeric", month: "short" });
 
-function Row({ m }: { m: Match }) {
+function Row({ m, pin = false }: { m: Match; pin?: boolean }) {
+  const f = follow.use();
+  const pinned = (f.pinned ?? []).includes(m.key);
+  const fav = involvesFollowed(m);
   const isToday = new Date(m.kickoff).toDateString() === new Date().toDateString();
   const right =
     m.state === "post" ? (
@@ -266,8 +344,7 @@ function Row({ m }: { m: Match }) {
   return (
     <div
       className="flex h-8 cursor-pointer items-center gap-2 rounded-[8px] px-1 text-footnote hover:bg-fill-1"
-      onClick={() => clickOrDouble(() => openDetail(m, "lineups"), () => openDetail(m, "table"))}
-      title={t("Klick: Aufstellungen · Doppelklick: Tabelle")}
+      onClick={() => openDetail(m, "lineups")}
     >
       <Crest side={m.home} size={16} />
       <span className="truncate text-label">{m.home.short}</span>
@@ -277,6 +354,9 @@ function Row({ m }: { m: Match }) {
       <span className="ml-1 truncate text-caption text-label-3">{m.leagueName || competitionName(m.league)}</span>
       <span className="flex-1" />
       {right}
+      {(pin || pinned) && !fav && m.state !== "post" && (
+        <IconToggle on={pinned} label={pinned ? t("Nicht mehr verfolgen") : t("Im Notch verfolgen")} onClick={() => togglePin(m)} icon={<PushPin size={12} weight={pinned ? "fill" : "bold"} />} />
+      )}
     </div>
   );
 }

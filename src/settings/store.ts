@@ -60,6 +60,9 @@ export interface Settings {
   idleClock: boolean;
   /** Windows notifications (WhatsApp, mail …) pop up in the notch. */
   notifications: boolean;
+  /** How long a notification / a headline stays in the closed notch, in seconds. */
+  notifSeconds: number;
+  newsSeconds: number;
 }
 
 /** All tool IDs in default order. Must match `src/notch/tabs.ts`. */
@@ -112,6 +115,8 @@ const defaults: Settings = {
   updates: { auto: true },
   idleClock: true,
   notifications: true,
+  notifSeconds: 5,
+  newsSeconds: 9,
 };
 
 /** °F and 12 h where the Windows region uses them (US & co.), otherwise °C and 24 h. */

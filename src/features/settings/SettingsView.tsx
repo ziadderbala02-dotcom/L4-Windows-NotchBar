@@ -549,6 +549,12 @@ function Display() {
       <Row label={t("Benachrichtigungen im Notch")} hint={t("WhatsApp, Mails und andere Windows-Benachrichtigungen")}>
         <Switch label={t("Benachrichtigungen im Notch")} checked={s.notifications} onChange={(notifications) => updateSettings({ notifications })} />
       </Row>
+      <Row label={t("Anzeigedauer: Benachrichtigung")} hint={t("{n} Sekunden", { n: s.notifSeconds })}>
+        <input type="range" min={3} max={15} step={1} value={s.notifSeconds} onChange={(e) => updateSettings({ notifSeconds: Number(e.target.value) })} className="w-36" />
+      </Row>
+      <Row label={t("Anzeigedauer: Nachricht")} hint={t("{n} Sekunden", { n: s.newsSeconds })}>
+        <input type="range" min={5} max={20} step={1} value={s.newsSeconds} onChange={(e) => updateSettings({ newsSeconds: Number(e.target.value) })} className="w-36" />
+      </Row>
     </Group>
   );
 }

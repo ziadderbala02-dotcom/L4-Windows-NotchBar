@@ -7,6 +7,7 @@ import { t } from "../../i18n";
 import { fetchStandings, liveTable } from "./espn";
 import { competitionGames365, standings365 } from "./s365";
 import { Crest } from "./LiveScore";
+import { openTeam } from "./TeamPage";
 import { leagueMatches, loadLineups, scores } from "./store";
 import type { Lineups, Match, TableGroup, TeamLineup } from "./types";
 
@@ -46,11 +47,14 @@ export function clickOrDouble(single: () => void, double: () => void) {
   }, DOUBLE_MS);
 }
 
-/** Click a team → its lineup; double click → the table. */
+/** Click a team → its lineup; double click → the team's page (results and next matches). */
 export function onTeamClick(match: Match, side: SideKey) {
   clickOrDouble(
     () => openDetail(match, "lineups", side),
-    () => openDetail(match, "table", side),
+    () => {
+      detail.set(null);
+      openTeam(match[side], match.source);
+    },
   );
 }
 

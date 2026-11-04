@@ -30,6 +30,10 @@ export interface FollowState {
   news?: boolean;
   /** Which headlines pop up in the notch: all football news, the followed teams', or none. */
   newsMode?: "all" | "teams" | "off";
+  /** Matches followed one-off (📌), by match key ("s365:4804720"); dropped after full time. */
+  pinned?: string[];
+  /** The match that stays in the notch when several run at once (⭐); null = take turns. */
+  mainKey?: string | null;
 }
 
 const defaults: FollowState = {
@@ -101,6 +105,24 @@ export function toggleTeam(team: FollowedTeam) {
     teams: adding ? [...s.teams, team] : s.teams.filter((t) => t.key !== team.key),
   }));
   if (adding && team.source === "s365" && team.espn === undefined && !KNOWN_ESPN[team.id]) void resolveEspn(team);
+}
+
+/** 📌 Follow one match (not a favourite team's) in the notch until it ends. */
+export function togglePin(m: Match) {
+  updateFollow((s) => {
+    const pins = s.pinned ?? [];
+    const on = pins.includes(m.key);
+    return { pinned: on ? pins.filter((k) => k !== m.key) : [...pins, m.key], mainKey: on && s.mainKey === m.key ? null : s.mainKey };
+  });
+}
+
+/** ⭐ Keep this match in the notch (others only cut in for a goal); again = take turns. */
+export function toggleMain(m: Match) {
+  updateFollow((s) => ({ mainKey: s.mainKey === m.key ? null : m.key }));
+}
+
+export function isPinned(m: Match): boolean {
+  return (follow.get().pinned ?? []).includes(m.key);
 }
 
 /* ---------- ESPN as a fallback for 365Scores ---------- */
@@ -254,7 +276,7 @@ export async function loadLineups(m: Match): Promise<Lineups | null> {
 function checkReminders(list: Match[], now = Date.now()) {
   const keys = followedKeys();
   for (const m of list) {
-    if (m.state !== "pre" || !involvesFollowed(m, keys)) continue;
+    if (m.state !== "pre" || !(involvesFollowed(m, keys) || isPinned(m))) continue;
     const until = m.kickoff - now;
     if (until > 0 && until <= 10 * 60_000) notifyOnce(`kick:${m.key}`, { kind: "kickoff", match: m });
     if (until <= 75 * 60_000 && until > -30 * 60_000 && !lineups.get()[m.key] && now - (lineupCheckedAt.get(m.key) ?? 0) > 4 * 60_000) {
@@ -303,7 +325,7 @@ export function involvesFollowed(m: Match, keys = followedKeys()): boolean {
 
 function relevant(m: Match): boolean {
   const f = follow.get();
-  if (involvesFollowed(m)) return true;
+  if (involvesFollowed(m) || (f.pinned ?? []).includes(m.key)) return true;
   if (m.source === "s365") return f.competitions.some((c) => c.slug === m.league && c.mode === "all");
   return fallback.get().active && m.source === "espn" && f.competitions.some((c) => c.mode === "all" && COMP_TO_ESPN[c.slug] === m.league);
 }
@@ -367,16 +389,35 @@ async function pollSofa(team: FollowedTeam, now: number) {
  * 365Scores: one request covers every followed team. While a game is live (or about to
  * start) every 10 s, plus its detail for the scorers.
  */
+/** Pins and the ⭐ go away once their match has been over for a few minutes. */
+function unpinFinished(ms: Match[], now: number) {
+  const f = follow.get();
+  const over = (k: string) => {
+    const m = ms.find((x) => x.key === k);
+    if (!m) return false;
+    return m.state === "post" && now - (endedAt.get(k) ?? m.kickoff + 2.5 * 3600_000) > FINAL_MS;
+  };
+  const pins = (f.pinned ?? []).filter((k) => !over(k));
+  const main = f.mainKey && over(f.mainKey) ? null : (f.mainKey ?? null);
+  if (pins.length !== (f.pinned ?? []).length || main !== (f.mainKey ?? null)) updateFollow({ pinned: pins, mainKey: main });
+}
+
 async function poll365(now: number) {
   const ids = follow.get().teams.filter((t) => t.source === "s365").map((t) => t.id);
   const comps = follow.get().competitions.filter((c) => c.mode === "all" && /^\d+$/.test(c.slug)).map((c) => c.slug);
-  if (!ids.length && !comps.length) {
+  const pinned = (follow.get().pinned ?? []).filter((k) => k.startsWith("s365:")).map((k) => k.slice(5));
+  if (!ids.length && !comps.length && !pinned.length) {
     cache365 = [];
     return;
   }
   try {
     const [byTeam, byComp] = await Promise.all([teamGames365(ids), competitionsGames365(comps)]);
     let ms = [...byTeam, ...byComp.filter((g) => !byTeam.some((x) => x.key === g.key))];
+    // Pinned matches not covered by a followed team: fetch each one.
+    const missing = pinned.filter((id) => !ms.some((m) => m.id === id));
+    const extra = await Promise.allSettled(missing.map((id) => game365(id)));
+    ms = [...ms, ...extra.flatMap((x) => (x.status === "fulfilled" ? [x.value.match] : []))];
+    unpinFinished(ms, now);
     const live = ms.filter((m) => m.state === "in");
     if (live.length) {
       const details = await Promise.allSettled(live.map((m) => game365(m.id)));
@@ -550,14 +591,27 @@ function useTick(ms: number) {
  * The match the closed notch shows: the one with a goal right now, else a running
  * match of a followed team, else any running match, else one that just ended.
  */
+/** Several matches running and no ⭐: the notch takes turns this often. */
+export const ROTATE_MS = 10_000;
+
+/**
+ * The match the closed notch shows:
+ *   1. the one with a goal right now (always, so no goal is missed)
+ *   2. the ⭐ match, while it runs
+ *   3. otherwise the running matches take turns every ROTATE_MS
+ *   4. a match that just ended, with its final score
+ */
 export function featured(list: Match[], g: Goal | null, now = Date.now()): Match | null {
-  const keys = followedKeys();
   const live = list.filter((m) => m.state === "in" || (m.state === "post" && now - (endedAt.get(m.key) ?? 0) < FINAL_MS));
   if (!live.length) return null;
   const byGoal = g && live.find((m) => m.key === g.matchKey);
   if (byGoal) return byGoal;
-  const rank = (m: Match) => (m.state === "in" ? 0 : 2) + (involvesFollowed(m, keys) ? 0 : 1);
-  return [...live].sort((a, b) => rank(a) - rank(b) || a.kickoff - b.kickoff)[0];
+  const running = live.filter((m) => m.state === "in").sort((a, b) => a.kickoff - b.kickoff || a.key.localeCompare(b.key));
+  const main = follow.get().mainKey;
+  const star = main && running.find((m) => m.key === main);
+  if (star) return star;
+  if (running.length) return running[Math.floor(now / ROTATE_MS) % running.length];
+  return [...live].sort((a, b) => b.kickoff - a.kickoff)[0];
 }
 
 export function useFeaturedMatch(): Match | null {
@@ -565,7 +619,9 @@ export function useFeaturedMatch(): Match | null {
   const g = goal.use();
   const { enabled } = follow.use();
   const on = settings.use().tools.some((t) => t.id === "football" && t.enabled);
-  useTick(30_000);
+  // Taking turns needs a tick at the rotation pace; otherwise a slow one is enough.
+  const running = matches.filter((m) => m.state === "in").length;
+  useTick(running > 1 ? 1000 : 30_000);
   if (!enabled || !on) return null;
   return featured(matches, g);
 }

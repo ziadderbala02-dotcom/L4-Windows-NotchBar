@@ -25,7 +25,8 @@ export const history = createStore<Notif[]>([], { persist: "notifications-histor
 export const unread = createStore<number>(0, { persist: "notifications-unread" });
 /** The notification shown in the closed notch right now. */
 export const notifNotice = createStore<Notif | null>(null);
-export const NOTIF_MS = 7000;
+/** Display time, from the settings (3–15 s). */
+const notifMs = () => Math.min(15, Math.max(3, settings.get().notifSeconds ?? 5)) * 1000;
 const HISTORY_MAX = 150;
 const POLL_MS = 2000;
 
@@ -70,7 +71,7 @@ function showNext() {
   window.setTimeout(() => {
     if (notifNotice.get() === n) notifNotice.set(null);
     window.setTimeout(showNext, 400);
-  }, NOTIF_MS);
+  }, notifMs());
 }
 
 /** Bring the sending app to the front (WhatsApp on its chat list, Outlook, …). */

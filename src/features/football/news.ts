@@ -23,7 +23,8 @@ export interface TeamNews extends NewsItem {
 export const news = createStore<TeamNews[]>([]);
 /** The headline shown in the closed notch right now. */
 export const newsNotice = createStore<TeamNews | null>(null);
-export const NEWS_NOTICE_MS = 9000;
+/** Display time, from the settings (5–20 s). */
+const newsMs = () => Math.min(20, Math.max(5, settings.get().newsSeconds ?? 9)) * 1000;
 
 /** 365Scores returns only the newest few per call, so ask often enough not to miss any. */
 const POLL_MS = 4 * 60_000;
@@ -142,7 +143,7 @@ function showNext() {
   window.setTimeout(() => {
     if (newsNotice.get() === n) newsNotice.set(null);
     window.setTimeout(showNext, 1500);
-  }, NEWS_NOTICE_MS);
+  }, newsMs());
 }
 
 export function refreshNews() {
