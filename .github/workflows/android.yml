@@ -1,0 +1,53 @@
+name: Android
+
+# Builds the phone app (android/) when it changes. A new versionName in
+# android/app/build.gradle.kts publishes NotchLive_X.Y.Z.apk as a release tagged
+# android-vX.Y.Z. It's never marked "latest", so the Windows app's updater
+# (releases/latest/download/latest.json) keeps pointing at the Windows release.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "android/**"
+      - ".github/workflows/android.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.11.1"
+      - name: Build APK
+        run: gradle -p android assembleRelease --no-daemon --stacktrace
+      - id: version
+        run: |
+          v=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          cp android/app/build/outputs/apk/release/app-release.apk "NotchLive_$v.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NotchLive_${{ steps.version.outputs.version }}
+          path: NotchLive_${{ steps.version.outputs.version }}.apk
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "android-v$V" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "android-v$V already published; bump versionName for a new release."
+            exit 0
+          fi
+          gh release create "android-v$V" "NotchLive_$V.apk" -R "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" --latest=false \
+            --title "Notch Live (Android) $V" \
+            --notes "**Install:** download \`NotchLive_$V.apk\` below on the phone and open it (allow installing from this source). Installs over the previous version."
