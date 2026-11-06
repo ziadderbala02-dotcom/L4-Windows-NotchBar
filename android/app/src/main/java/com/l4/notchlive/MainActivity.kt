@@ -84,7 +84,6 @@ class MainActivity : Activity() {
         prefs = Prefs(this)
         L.load(this)
         Ui.load(this)
-        Ui.bars(this)
         tab = savedInstanceState?.getInt("tab") ?: intent.getIntExtra("tab", 0)
         step = savedInstanceState?.getInt("step") ?: 0
         root = FrameLayout(this).apply {
@@ -92,6 +91,8 @@ class MainActivity : Activity() {
             layoutDirection = if (L.ar) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
         }
         setContentView(root)
+        // After setContentView: before it, some ROMs (HyperOS) have no window decor yet and crash.
+        Ui.bars(this)
         onboarding = !prefs.onboarded || savedInstanceState?.getBoolean("onboarding") == true
         checkUpdate()
     }

@@ -66,12 +66,14 @@ object Ui {
     fun bars(a: Activity) {
         a.window.statusBarColor = BG
         a.window.navigationBarColor = NAV
-        if (Build.VERSION.SDK_INT >= 30) {
+        if (Build.VERSION.SDK_INT >= 30) try {
             val light = if (dark) 0 else WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS
             a.window.insetsController?.setSystemBarsAppearance(
                 light,
                 WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS or WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS,
             )
+        } catch (e: Exception) {
+            // No decor yet: the bars keep their default look.
         }
     }
 
