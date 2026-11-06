@@ -31,6 +31,34 @@ class Prefs(ctx: Context) {
         get() = p.getInt("scale", 100)
         set(v) = p.edit().putInt("scale", v).apply()
 
+    /** Show the notch over full-screen apps (games, video). */
+    var overFullscreen: Boolean
+        get() = p.getBoolean("overFullscreen", true)
+        set(v) = p.edit().putBoolean("overFullscreen", v).apply()
+
+    var vibrate: Boolean
+        get() = p.getBoolean("vibrate", true)
+        set(v) = p.edit().putBoolean("vibrate", v).apply()
+
+    /** Swiped away: only a small mark by the camera until swiped back. */
+    var tucked: Boolean
+        get() = p.getBoolean("tucked", false)
+        set(v) = p.edit().putBoolean("tucked", v).apply()
+
+    /** Matches pinned to the notch (any team). Removed when they end. */
+    var pinned: Set<Int>
+        get() = (p.getStringSet("pinned", emptySet()) ?: emptySet()).mapNotNull { it.toIntOrNull() }.toSet()
+        set(v) = p.edit().putStringSet("pinned", v.map { it.toString() }.toSet()).apply()
+
+    /** "Last match: X MB, battery −Y%". */
+    var report: String
+        get() = p.getString("report", "") ?: ""
+        set(v) = p.edit().putString("report", v).apply()
+
+    var lastUpdateCheck: Long
+        get() = p.getLong("lastUpdateCheck", 0)
+        set(v) = p.edit().putLong("lastUpdateCheck", v).apply()
+
     var teams: List<TeamOption>
         get() {
             val raw = p.getString("teams", null) ?: return DEFAULT_TEAMS

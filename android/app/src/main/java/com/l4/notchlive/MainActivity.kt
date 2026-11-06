@@ -3,6 +3,7 @@ package com.l4.notchlive
 import android.Manifest
 import android.app.Activity
 import android.content.ComponentName
+import android.content.IntentFilter
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -40,6 +41,12 @@ class MainActivity : Activity() {
     private lateinit var perms: LinearLayout
     private lateinit var teamList: LinearLayout
     private lateinit var results: LinearLayout
+    private lateinit var update: LinearLayout
+    private lateinit var liveList: LinearLayout
+    private lateinit var liveFilter: EditText
+    private lateinit var report: TextView
+    private var live: List<Match> = emptyList()
+    private var downloadId = -1L
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
 
@@ -66,6 +73,10 @@ class MainActivity : Activity() {
         })
         root.addView(head)
         root.addView(text("سكور ماتشات فرقك حوالين الكاميرا، وقت الماتش بس.", 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(4)))
+
+        // New version banner (hidden until there is one).
+        update = card().apply { visibility = View.GONE }
+        root.addView(update, lp(MATCH, WRAP, top = dp(16)))
 
         // Permissions.
         perms = card()
@@ -96,6 +107,32 @@ class MainActivity : Activity() {
         teams.addView(results, lp(MATCH, WRAP, top = dp(6)))
         root.addView(teams, lp(MATCH, WRAP, top = dp(12)))
 
+        // Live now: pin any match to the notch.
+        val now = card()
+        val nowHead = row()
+        nowHead.addView(text("ماتشات دلوقتي", 16f, bold = true), lp(0, WRAP, 1f))
+        nowHead.addView(button("حدّث") { loadLive() })
+        now.addView(nowHead)
+        now.addView(text("ثبّت 📌 أي ماتش عشان يظهر في النوتش حتى لو مش لفرقك. بيتشال لوحده لما يخلص.", 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+        liveFilter = EditText(this).apply {
+            hint = "فلتر: فريق أو دوري…"
+            setHintTextColor(Ui.MUTED)
+            setTextColor(Ui.TEXT)
+            textSize = 13f
+            inputType = InputType.TYPE_CLASS_TEXT
+            background = Ui.rounded(Ui.LINE, dp(10).toFloat())
+            setPadding(dp(12), dp(6), dp(12), dp(6))
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) = drawLive()
+            })
+        }
+        now.addView(liveFilter, lp(MATCH, WRAP, top = dp(8)))
+        liveList = column()
+        now.addView(liveList, lp(MATCH, WRAP, top = dp(6)))
+        root.addView(now, lp(MATCH, WRAP, top = dp(12)))
+
         // Position and size.
         val pos = card()
         pos.addView(text("مكان النوتش", 16f, bold = true))
@@ -104,18 +141,31 @@ class MainActivity : Activity() {
         pos.addView(slider("الحجم", 80, 140, prefs.scale) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(6)))
         val demo = row()
         demo.addView(button("جرّب جول ⚽", primary = true) { LiveService.start(this, LiveService.ACTION_DEMO, "goal") }, lp(0, WRAP, 1f))
-        demo.addView(button("جرّب طرد 🟥") { LiveService.start(this, LiveService.ACTION_DEMO, "red") }, lp(0, WRAP, 1f, start = dp(8)))
+        demo.addView(button("طرد 🟥") { LiveService.start(this, LiveService.ACTION_DEMO, "red") }, lp(0, WRAP, 1f, start = dp(6)))
+        demo.addView(button("صفارة") { LiveService.start(this, LiveService.ACTION_DEMO, "whistle") }, lp(0, WRAP, 1f, start = dp(6)))
         pos.addView(demo, lp(MATCH, WRAP, top = dp(12)))
+        pos.addView(text("في التجربة: دوس على النوتش تكبر، ودوس تاني تفتح 365. اسحبها يمين تستخبى، وشمال ترجع.", 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
         root.addView(pos, lp(MATCH, WRAP, top = dp(12)))
 
         // Options.
         val opts = card()
         opts.addView(toggle("صوت الجول والكروت", prefs.sound) { prefs.sound = it })
+        opts.addView(toggle("اهتزاز مع الجون والطرد", prefs.vibrate) { prefs.vibrate = it }, lp(MATCH, WRAP, top = dp(8)))
+        opts.addView(
+            toggle("تظهر فوق الألعاب والفيديو (full screen)", prefs.overFullscreen) {
+                prefs.overFullscreen = it
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+            },
+            lp(MATCH, WRAP, top = dp(8)),
+        )
         opts.addView(
             toggle("اخفيها لما يكون في صوت شغال (أغاني أو فيديو)", prefs.hideOnAudio) { prefs.hideOnAudio = it },
             lp(MATCH, WRAP, top = dp(8)),
         )
         root.addView(opts, lp(MATCH, WRAP, top = dp(12)))
+
+        report = text("", 11f, Ui.MUTED)
+        root.addView(report, lp(MATCH, WRAP, top = dp(12)))
 
         root.addView(
             text("الإصدار ${packageManager.getPackageInfo(packageName, 0).versionName} • البيانات من 365Scores", 11f, Ui.MUTED).apply {
@@ -140,6 +190,139 @@ class MainActivity : Activity() {
         super.onResume()
         drawPerms()
         if (prefs.enabled) LiveService.start(this, LiveService.ACTION_REFRESH)
+        report.text = prefs.report.ifBlank { "تقرير البطارية والداتا هيظهر هنا بعد أول ماتش." }
+        loadLive()
+        checkUpdate()
+    }
+
+    override fun onDestroy() {
+        try {
+            unregisterReceiver(downloaded)
+        } catch (e: Exception) {
+            // Not registered.
+        }
+        super.onDestroy()
+    }
+
+    /* ---------- live now + pins ---------- */
+
+    private fun loadLive() {
+        liveList.removeAllViews()
+        liveList.addView(text("بيحمّل…", 12f, Ui.MUTED))
+        io.execute {
+            val l = try {
+                Api.liveNow()
+            } catch (e: Exception) {
+                null
+            }
+            main.post {
+                if (isFinishing) return@post
+                if (l == null) {
+                    liveList.removeAllViews()
+                    liveList.addView(text("مفيش نت أو 365Scores مش بيرد.", 12f, 0xFFFCA5A5.toInt()))
+                    return@post
+                }
+                live = l
+                drawLive()
+            }
+        }
+    }
+
+    private fun drawLive() {
+        liveList.removeAllViews()
+        val q = liveFilter.text.toString().trim()
+        val pins = prefs.pinned
+        val list = live
+            .filter { q.isEmpty() || it.home.name.contains(q, true) || it.away.name.contains(q, true) || it.comp.contains(q, true) }
+            .sortedWith(compareBy({ it.id !in pins }, { it.comp }))
+        if (live.isEmpty()) liveList.addView(text("مفيش ماتشات شغالة دلوقتي.", 12f, Ui.MUTED))
+        var lastComp = ""
+        for (m in list.take(60)) {
+            if (m.comp != lastComp) {
+                lastComp = m.comp
+                liveList.addView(text(m.comp, 11f, Ui.ACCENT), lp(MATCH, WRAP, top = dp(10)))
+            }
+            val r = row()
+            val txt = column()
+            txt.addView(text("${m.home.short}  ${m.home.score} - ${m.away.score}  ${m.away.short}", 13f).apply { maxLines = 1 })
+            txt.addView(text(m.clock, 11f, Ui.MUTED))
+            r.addView(txt, lp(0, WRAP, 1f))
+            val pinned = m.id in prefs.pinned
+            r.addView(button(if (pinned) "📌 مثبّت" else "📌 ثبّت", primary = pinned) {
+                prefs.pinned = if (m.id in prefs.pinned) prefs.pinned - m.id else prefs.pinned + m.id
+                drawLive()
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+            })
+            liveList.addView(r, lp(MATCH, WRAP, top = dp(4)))
+        }
+        if (list.size > 60) liveList.addView(text("و${list.size - 60} كمان… استخدم الفلتر.", 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+    }
+
+    /* ---------- new version ---------- */
+
+    private fun checkUpdate() {
+        io.execute {
+            val r = try {
+                Updater.latest()
+            } catch (e: Exception) {
+                null
+            }
+            main.post {
+                if (isFinishing) return@post
+                if (r == null || !Updater.newer(r.version, Updater.current(this))) {
+                    update.visibility = View.GONE
+                    return@post
+                }
+                update.removeAllViews()
+                update.visibility = View.VISIBLE
+                update.addView(text("نسخة جديدة: ${r.version}", 15f, Ui.ACCENT, bold = true))
+                update.addView(text("هتتنزل وتتسطّب فوق النسخة دي. أول مرة أندرويد هيطلب تسمح للتطبيق يسطّب.", 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+                update.addView(button("حمّل وسطّب", primary = true) { download(r) }, lp(MATCH, WRAP, top = dp(8)))
+            }
+        }
+    }
+
+    private val downloaded = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) {
+            val id = i.getLongExtra(android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1)
+            if (id != downloadId) return
+            val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
+            val uri = dm.getUriForDownloadedFile(id) ?: return
+            install(uri)
+        }
+    }
+
+    private fun download(r: Updater.Release) {
+        if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
+            return
+        }
+        val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
+        val req = android.app.DownloadManager.Request(Uri.parse(r.apkUrl))
+            .setTitle("Notch Live ${r.version}")
+            .setMimeType("application/vnd.android.package-archive")
+            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+            .setDestinationInExternalFilesDir(this, android.os.Environment.DIRECTORY_DOWNLOADS, "NotchLive_${r.version}.apk")
+        val f = IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE)
+        try {
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(downloaded, f, RECEIVER_EXPORTED) else registerReceiver(downloaded, f)
+        } catch (e: Exception) {
+            // Already listening.
+        }
+        downloadId = dm.enqueue(req)
+        update.addView(text("بيتحمّل… هيفتح التسطيب لوحده لما يخلص.", 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+    }
+
+    private fun install(uri: Uri) {
+        try {
+            startActivity(
+                Intent(Intent.ACTION_VIEW)
+                    .setDataAndType(uri, "application/vnd.android.package-archive")
+                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        } catch (e: Exception) {
+            // Open it from the download notification instead.
+        }
     }
 
     /* ---------- permissions ---------- */
@@ -179,7 +362,7 @@ class MainActivity : Activity() {
                 appDetails()
             }
         }
-        permRow("الضغط على النوتش (اختياري)", "إمكانية الوصول ← Notch Live. بيخلي الضغطة تفتح الماتش", tap) {
+        permRow("الضغط والسحب على النوتش", "إمكانية الوصول ← التطبيقات المنزّلة ← Notch Live. من غيرها شريط الحالة بياكل الضغطات. لو قال \"إعداد مقيد\": معلومات التطبيق ← ⋮ ← اسمح بالإعدادات المقيدة", tap) {
             startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
         }
     }

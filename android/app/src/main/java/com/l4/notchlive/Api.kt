@@ -25,6 +25,8 @@ data class Side(
     /** Team colour, brightened to glow on black. */
     val color: Int,
     val score: Int,
+    /** 365Scores' URL name ("al-ahly"), for the match page link. */
+    val slug: String = "",
 )
 
 data class Ev(
@@ -56,6 +58,17 @@ data class Match(
     val home: Side,
     val away: Side,
     val events: List<Ev>,
+    val compId: Int = 0,
+    val compSlug: String = "",
+    /** The minute being played (91, 92 … in added time), null when not running. */
+    val minute: Int? = null,
+    /** Announced added time ("+4"), when 365Scores sends it. */
+    val added: Int? = null,
+    /** Running clock in seconds at [fetchedAt], when the feed says it keeps counting. */
+    val clockSec: Int? = null,
+    val fetchedAt: Long = System.currentTimeMillis(),
+    /** 1 = first half, 2 = second half, 3+ = extra time; 0 unknown. */
+    val period: Int = 0,
 ) {
     fun side(home: Boolean) = if (home) this.home else away
     fun reds(home: Boolean) = events.count { it.kind == "red" && it.home == home }
@@ -69,6 +82,9 @@ object Api {
     const val PRE = 0
     const val LIVE = 1
     const val POST = 2
+
+    /** Bytes downloaded since the app started, for the battery/data report. */
+    val bytes = java.util.concurrent.atomic.AtomicLong()
 
     private const val BASE = "https://webws.365scores.com/web"
     private const val PARAMS = "langId=27&timezoneName=Africa/Cairo&userCountryId=131&appTypeId=5"
@@ -86,7 +102,10 @@ object Api {
         c.setRequestProperty("Accept", "application/json")
         try {
             if (c.responseCode !in 200..299) throw IOException("HTTP ${c.responseCode}")
-            return JSONObject(c.inputStream.bufferedReader().use { it.readText() })
+            val text = c.inputStream.bufferedReader().use { it.readText() }
+            // Rough data use (uncompressed size; the wire is smaller with gzip).
+            bytes.addAndGet(text.length.toLong() + 600)
+            return JSONObject(text)
         } finally {
             c.disconnect()
         }
@@ -145,8 +164,12 @@ object Api {
             logo = crest(id, c.optInt("imageVersion", 1)),
             color = glow(c.str("color"), c.str("awayColor")),
             score = if (score.isNaN() || score < 0) 0 else score.toInt(),
+            slug = c.str("nameForURL"),
         )
     }
+
+    const val HALF_TIME = "شوط"
+    private val PLUS = Regex("(\\d+)\\s*\\+\\s*(\\d+)")
 
     private val HT = Regex("استراحة|بين الشوطين|half ?-?time|\\bHT\\b", RegexOption.IGNORE_CASE)
     private val PENS = Regex("ترجيح|penalt", RegexOption.IGNORE_CASE)
@@ -158,7 +181,7 @@ object Api {
 
     private fun breakLabel(g: JSONObject): String? {
         val st = "${g.str("statusText")} ${g.str("shortStatusText")}"
-        if (g.optInt("statusId") == 7 || HT.containsMatchIn(st)) return "بين الشوطين"
+        if (g.optInt("statusId") == 7 || HT.containsMatchIn(st)) return HALF_TIME
         if (PENS.containsMatchIn(st) && WAIT.containsMatchIn(st)) return "قبل الترجيح"
         if (WAIT2.containsMatchIn(st)) return if (EXTRA.containsMatchIn(st)) "قبل الترجيح" else "قبل الإضافي"
         return null
@@ -187,6 +210,14 @@ object Api {
         }
         val home = g.optJSONObject("homeCompetitor") ?: JSONObject()
         val away = g.optJSONObject("awayCompetitor") ?: JSONObject()
+        // The minute: "90+3'" means the 93rd; preciseGameTime keeps counting through added time.
+        val shown = g.str("gameTimeDisplay")
+        val plus = PLUS.find(shown)
+        val precise = g.optJSONObject("preciseGameTime")
+        val fromPrecise = precise?.let { if (it.has("minutes")) it.optInt("minutes") + 1 else null }
+        val fromShown = plus?.let { it.groupValues[1].toInt() + it.groupValues[2].toInt() }
+            ?: shown.filter { it.isDigit() }.toIntOrNull()
+        val minute = if (phase == "play" || phase == "var") listOfNotNull(fromPrecise, fromShown).maxOrNull() else null
         return Match(
             id = g.optInt("id"),
             comp = g.str("competitionDisplayName").split(" - ").first(),
@@ -197,7 +228,47 @@ object Api {
             home = side(home),
             away = side(away),
             events = events(g, home.optInt("id")),
+            compId = g.optInt("competitionId"),
+            minute = minute,
+            added = addedTime(g),
+            clockSec = precise?.takeIf { it.optBoolean("autoProgress") && it.has("minutes") && phase == "play" }
+                ?.let { it.optInt("minutes") * 60 + it.optInt("seconds") },
+            period = g.str("shortStatusText").trim().toIntOrNull() ?: when {
+                g.str("statusText").contains("الأول") -> 1
+                g.str("statusText").contains("الثاني") -> 2
+                else -> 0
+            },
         )
+    }
+
+    /** Announced added time, if the feed has it anywhere we know of. */
+    private fun addedTime(g: JSONObject): Int? {
+        for (k in listOf("addedTime", "injuryTime", "stoppageTime")) {
+            val v = g.optInt(k, 0)
+            if (v > 0) return v
+        }
+        return null
+    }
+
+    /** Competition URL names from a response root, by id. */
+    private fun compSlugs(root: JSONObject): Map<Int, String> =
+        root.optJSONArray("competitions").objects().associate { it.optInt("id") to it.str("nameForURL") }
+
+    private fun withSlug(m: Match, slugs: Map<Int, String>) = m.copy(compSlug = slugs[m.compId] ?: "")
+
+    /** The match page on 365scores.com (the 365Scores app opens the same link). */
+    fun matchUrl(m: Match): String {
+        val comp = "${m.compSlug.ifBlank { "league" }}-${m.compId}"
+        val teams = "${m.home.slug.ifBlank { "home" }}-${m.away.slug.ifBlank { "away" }}"
+        val ids = listOf(m.home.id, m.away.id).sorted().joinToString("-")
+        return "https://www.365scores.com/ar/football/match/$comp/$teams-$ids-${m.compId}#id=${m.id}"
+    }
+
+    /** Every football match being played right now. */
+    fun liveNow(): List<Match> {
+        val r = get(url("games/allscores/?sports=1&onlyLiveGames=true&showOdds=false"))
+        val slugs = compSlugs(r)
+        return r.optJSONArray("games").objects().map { withSlug(parse(it), slugs) }
     }
 
     private fun events(g: JSONObject, homeId: Int): List<Ev> {
@@ -250,11 +321,15 @@ object Api {
     fun teamGames(ids: List<Int>): List<Match> {
         if (ids.isEmpty()) return emptyList()
         val r = get(url("games/current/?competitors=${ids.joinToString(",")}"))
-        return r.optJSONArray("games").objects().map { parse(it) }
+        val slugs = compSlugs(r)
+        return r.optJSONArray("games").objects().map { withSlug(parse(it), slugs) }
     }
 
     /** One game with its events (scorers, cards). */
-    fun game(id: Int): Match = parse(get(url("game/?gameId=$id")).getJSONObject("game"))
+    fun game(id: Int): Match {
+        val r = get(url("game/?gameId=$id"))
+        return withSlug(parse(r.getJSONObject("game")), compSlugs(r))
+    }
 
     fun search(q: String): List<TeamOption> {
         val r = get(url("search/?query=${URLEncoder.encode(q, "UTF-8")}"))

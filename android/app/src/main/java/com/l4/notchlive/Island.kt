@@ -22,7 +22,13 @@ import kotlin.math.min
  * With the optional accessibility service on, the window sits above the status bar and
  * takes taps; otherwise it's a normal overlay (needs "display over other apps").
  */
-class Island(private val ctx: Context, private val prefs: Prefs, private val onTap: (Int) -> Unit) {
+class Island(private val ctx: Context, private val prefs: Prefs, private val gestures: IslandView.Gestures) {
+    companion object {
+        /** Status bar room on Omar's phone: left icons end at 27% of the width, right icons start at 69%. */
+        const val LEFT_EDGE = 195f / 720f
+        const val RIGHT_EDGE = 496f / 720f
+    }
+
     private var view: IslandView? = null
     private var wm: WindowManager? = null
     private var lp: WindowManager.LayoutParams? = null
@@ -35,7 +41,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         private set
 
     /** The notch is on screen and visible right now (else alerts go to a notification). */
-    val showing get() = view != null && statusBarVisible
+    val showing get() = view != null && (statusBarVisible || prefs.overFullscreen)
 
     private class Geo(val cx: Float, val cy: Float, val r: Float, val screenW: Int, val portrait: Boolean)
 
@@ -85,8 +91,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         }
     }
 
-    /** Draw [match] (null = hide), with [burst] widening it when set. */
-    fun update(match: Match?, clock: String, burst: Burst?) {
+    private var big = false
+
+    /**
+     * Draw [match] (null = hide). [burst] or [info] widen it; [tucked] leaves only a small mark.
+     * [clock] is the minute label, [added] the announced added time ("+4" or "").
+     */
+    fun update(match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean) {
         if (match == null) {
             hide()
             return
@@ -94,35 +105,44 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         val v = view ?: attach() ?: return
         v.match = match
         v.clock = clock
-        if (burst !== shownBurst) {
+        v.added = added
+        val wantBig = burst != null || info
+        if (burst !== shownBurst || wantBig != big) {
             shownBurst = burst
-            if (burst != null) {
+            if (wantBig) {
                 v.burst = burst
-                layout(true)
+                v.info = info && burst == null
+                v.tucked = tucked
+                big = true
+                layout()
                 animateTo(1f) {}
-            } else {
+            } else if (big) {
+                big = false
                 animateTo(0f) {
                     v.burst = null
-                    layout(false)
+                    v.info = false
+                    v.tucked = tucked
+                    layout()
                 }
             }
-        } else {
-            if (burst != null && v.burst === burst) v.invalidate()
-            layout(v.burst != null)
+        } else if (!big) {
+            v.tucked = tucked
         }
+        if (!big && anim?.isRunning != true) layout()
         applyVisibility()
         v.invalidate()
     }
 
     /**
-     * Full screen (status bar hidden): keep the window so we hear when the bar comes back,
-     * but draw nothing and let touches through.
+     * Full screen (status bar hidden): shown on top by default; with the option off, the window
+     * stays (to hear when the bar comes back) but draws nothing and lets touches through.
      */
     private fun applyVisibility() {
         val v = view ?: return
         val p = lp ?: return
-        v.visibility = if (statusBarVisible) View.VISIBLE else View.INVISIBLE
-        val flags = if (statusBarVisible) p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        val visible = statusBarVisible || prefs.overFullscreen
+        v.visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        val flags = if (visible) p.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
         else p.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
         if (flags != p.flags) {
             p.flags = flags
@@ -160,10 +180,12 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         val w = h.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val g = measure(w)
         if (!g.portrait) return null
-        val v = IslandView(h)
+        val v = IslandView(h, gestures)
         v.camR = g.r
         v.scale = prefs.scale / 100f
-        v.setOnClickListener { v.match?.let { onTap(it.id) } }
+        // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each side).
+        v.leftMax = g.cx - g.screenW * LEFT_EDGE
+        v.rightMax = g.screenW * RIGHT_EDGE - g.cx
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
                 statusBarVisible = ins.isVisible(WindowInsets.Type.statusBars())
@@ -174,6 +196,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         val p = WindowManager.LayoutParams(
             1, 1, type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
                 WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
@@ -198,19 +221,38 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         host = h
         geo = g
         shownBurst = null
+        big = false
         return v
     }
 
-    /** Size and place the window: centred on the camera, wide enough for the pill (or the burst). */
-    private fun layout(big: Boolean) {
+    /** Size and place the window for the current mode; tells the view where the camera is. */
+    private fun layout() {
         val v = view ?: return
         val p = lp ?: return
         val g = geo ?: return
+        val density = ctx.resources.displayMetrics.density
         val ch = v.compactHeight()
-        val width = if (big) max(v.compactWidth(), v.burstWidth(g.screenW)) else v.compactWidth()
-        val height = if (big) max(ch, v.burstHeight()) else ch
-        val x = (g.cx - width / 2f).toInt()
-        val y = (g.cy - ch / 2f + prefs.offsetY * ctx.resources.displayMetrics.density).toInt()
+        val width: Int
+        val height: Int
+        val x: Int
+        if (big) {
+            width = v.bigWidth(g.screenW)
+            height = max(ch, v.bigHeight())
+            x = (g.cx - width / 2f).toInt()
+            v.camX = g.cx - x
+        } else if (v.tucked) {
+            width = v.tuckWidth()
+            height = ch
+            x = (g.cx + g.r + 2 * density).toInt()
+            v.camX = g.cx - x
+        } else {
+            val (lw, rw) = v.compactExtent()
+            width = (lw + rw).toInt() + 1
+            height = ch
+            x = (g.cx - lw).toInt()
+            v.camX = g.cx - x
+        }
+        val y = (g.cy - ch / 2f + prefs.offsetY * density).toInt()
         if (p.width == width && p.height == height && p.x == x && p.y == y) return
         p.width = width
         p.height = height
@@ -237,6 +279,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val onT
         lp = null
         host = null
         shownBurst = null
+        big = false
     }
 
     /** Host changed (accessibility on/off), rotation, or size settings: build the window again. */
