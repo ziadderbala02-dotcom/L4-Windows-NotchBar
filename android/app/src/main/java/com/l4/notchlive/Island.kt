@@ -97,6 +97,19 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
 
     private var big = false
 
+    /** Saver mode: the view skips endless animations. */
+    var calm = false
+        set(v) {
+            field = v
+            view?.calm = v
+        }
+
+    /** The big view's content changed size (stats arrived): resize the window. */
+    fun relayout() {
+        if (big) layout()
+        view?.invalidate()
+    }
+
     /**
      * Draw [match] (null = hide). [burst] or [info] widen it; [tucked] leaves only a small mark.
      * [clock] is the minute label, [added] the announced added time ("+4" or "").
@@ -187,6 +200,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val w = h.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val g = measure(w)
         val v = IslandView(h, gestures)
+        v.calm = calm
         v.camR = g.r
         v.scale = prefs.scale / 100f
         v.landscape = !g.portrait

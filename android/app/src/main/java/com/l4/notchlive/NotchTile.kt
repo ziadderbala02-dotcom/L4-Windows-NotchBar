@@ -26,7 +26,10 @@ class NotchTile : TileService() {
         val on = !Prefs(this).paused
         tile.state = if (on) Tile.STATE_ACTIVE else Tile.STATE_INACTIVE
         tile.label = "Notch Live"
-        if (android.os.Build.VERSION.SDK_INT >= 29) tile.subtitle = if (on) "ظاهرة" else "مستخبية"
+        L.load(this)
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            tile.subtitle = if (L.ar) (if (on) "ظاهرة" else "مخفية") else (if (on) "Shown" else "Hidden")
+        }
         tile.updateTile()
     }
 }

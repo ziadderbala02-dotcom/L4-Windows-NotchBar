@@ -70,6 +70,78 @@ class Prefs(ctx: Context) {
         get() = (p.getStringSet("pinned", emptySet()) ?: emptySet()).mapNotNull { it.toIntOrNull() }.toSet()
         set(v) = p.edit().putStringSet("pinned", v.map { it.toString() }.toSet()).apply()
 
+    /** "system", "ar" or "en". */
+    var lang: String
+        get() = p.getString("lang", "system") ?: "system"
+        set(v) = p.edit().putString("lang", v).apply()
+
+    /** "system", "light" or "dark" (the app's screens; the notch stays black). */
+    var theme: String
+        get() = p.getString("theme", "system") ?: "system"
+        set(v) = p.edit().putString("theme", v).apply()
+
+    /** "fast" (6 s), "balanced" (15 s) or "saver" (30 s). */
+    var speed: String
+        get() = p.getString("speed", "fast") ?: "fast"
+        set(v) = p.edit().putString("speed", v).apply()
+
+    var autoSaver: Boolean
+        get() = p.getBoolean("autoSaver", true)
+        set(v) = p.edit().putBoolean("autoSaver", v).apply()
+
+    var mobileBalanced: Boolean
+        get() = p.getBoolean("mobileBalanced", false)
+        set(v) = p.edit().putBoolean("mobileBalanced", v).apply()
+
+    var onboarded: Boolean
+        get() = p.getBoolean("onboarded", false)
+        set(v) = p.edit().putBoolean("onboarded", v).apply()
+
+    /** Full-time score card notification. */
+    var cards: Boolean
+        get() = p.getBoolean("cards", true)
+        set(v) = p.edit().putBoolean("cards", v).apply()
+
+    /** Phone notifications in the notch (beta, off by default). */
+    var phone: Boolean
+        get() = p.getBoolean("phone", false)
+        set(v) = p.edit().putBoolean("phone", v).apply()
+
+    var phoneApps: Set<String>
+        get() = p.getStringSet("phoneApps", emptySet()) ?: emptySet()
+        set(v) = p.edit().putStringSet("phoneApps", v).apply()
+
+    var phoneHide: Boolean
+        get() = p.getBoolean("phoneHide", false)
+        set(v) = p.edit().putBoolean("phoneHide", v).apply()
+
+    var phoneFullOnly: Boolean
+        get() = p.getBoolean("phoneFullOnly", false)
+        set(v) = p.edit().putBoolean("phoneFullOnly", v).apply()
+
+    /** Last run of matches: data in bytes and battery drop (-1 unknown, -2 charging). */
+    var lastBytes: Long
+        get() = p.getLong("lastBytes", -1)
+        set(v) = p.edit().putLong("lastBytes", v).apply()
+
+    var lastBattery: Int
+        get() = p.getInt("lastBattery", -1)
+        set(v) = p.edit().putInt("lastBattery", v).apply()
+
+    /** Data per day, "yyyy-MM-dd" → bytes, last 14 days. */
+    var daily: Map<String, Long>
+        get() = try {
+            val o = JSONObject(p.getString("daily", "{}") ?: "{}")
+            o.keys().asSequence().associateWith { o.getLong(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        set(v) {
+            val o = JSONObject()
+            v.entries.sortedBy { it.key }.takeLast(14).forEach { o.put(it.key, it.value) }
+            p.edit().putString("daily", o.toString()).apply()
+        }
+
     /** "Last match: X MB, battery −Y%". */
     var report: String
         get() = p.getString("report", "") ?: ""

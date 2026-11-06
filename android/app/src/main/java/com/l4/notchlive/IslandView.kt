@@ -30,7 +30,14 @@ class Burst(
     /** News: the team's crest and the article to open. */
     val logo: String? = null,
     val url: String? = null,
+    /** Phone notifications: the app's icon. */
+    val icon: android.graphics.Bitmap? = null,
+    /** menu: the rows. */
+    val items: List<String> = emptyList(),
 ) {
+    /** stats: filled in when they arrive (null = loading). */
+    @Volatile
+    var stats: List<Stat>? = null
     /** When it went on screen, for the animations. */
     var startedAt = 0L
 }
@@ -47,7 +54,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     interface Gestures {
         fun tap()
         fun swipe(right: Boolean)
+        /** Vertical swipe: down opens the quick stats, up closes them. */
+        fun pull(down: Boolean)
+        fun longPress()
+        fun menuPick(index: Int)
     }
+
+    /** Saver mode: no endless breathing animations (bursts still animate). */
+    var calm = false
 
     var match: Match? = null
         set(v) {
@@ -202,10 +216,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun infoLines(): Int = min(4, max(goals(true).size, goals(false).size).let { if (it > 3) 4 else it })
 
     fun bigHeight(): Int = when {
-        info && burst == null -> (top() + 46 * d + infoLines() * 15 * d + 8 * d).toInt()
-        burst?.kind == "news" -> (top() + 62 * d).toInt()
+        info && burst == null -> (top() + 70 * d + infoLines() * 15 * d + 8 * d).toInt()
+        burst?.kind == "news" || burst?.kind == "phone" -> (top() + 62 * d).toInt()
+        burst?.kind == "menu" -> (top() + (burst?.items?.size ?: 3) * MENU_ROW * d + 8 * d).toInt()
+        burst?.kind == "stats" -> (top() + max(1, min(4, burst?.stats?.size ?: 1)) * 30 * d + 12 * d).toInt()
         else -> (top() + 52 * d).toInt()
     }
+
+    private val MENU_ROW = 40f
 
     /* ---------- touch: tap / swipe ---------- */
 
@@ -213,18 +231,56 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private var downY = 0f
 
     @SuppressLint("ClickableViewAccessibility")
+    private var pressed = false
+    private var longDone = false
+    private val longPress = Runnable {
+        if (pressed) {
+            longDone = true
+            performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+            gestures.longPress()
+        }
+    }
+
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        val dpx = resources.displayMetrics.density
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.rawX
                 downY = e.rawY
+                pressed = true
+                longDone = false
+                postDelayed(longPress, 500)
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (abs(e.rawX - downX) > 12 * dpx || abs(e.rawY - downY) > 12 * dpx) {
+                    pressed = false
+                    removeCallbacks(longPress)
+                }
             }
             MotionEvent.ACTION_UP -> {
+                pressed = false
+                removeCallbacks(longPress)
+                if (longDone) return true
                 val dx = e.rawX - downX
                 val dy = e.rawY - downY
-                val far = 36 * resources.displayMetrics.density
-                if (abs(dx) > far && abs(dx) > abs(dy)) gestures.swipe(dx > 0)
-                else if (abs(dx) < 12 * resources.displayMetrics.density && abs(dy) < 12 * resources.displayMetrics.density) gestures.tap()
+                val far = 36 * dpx
+                when {
+                    abs(dx) > far && abs(dx) > abs(dy) -> gestures.swipe(dx > 0)
+                    abs(dy) > far && abs(dy) > abs(dx) -> gestures.pull(dy > 0)
+                    abs(dx) < 12 * dpx && abs(dy) < 12 * dpx -> {
+                        val b = burst
+                        if (b?.kind == "menu" && t > 0.9f) {
+                            val i = ((e.y - top() - 4 * d) / (MENU_ROW * d)).toInt()
+                            if (i in b.items.indices) gestures.menuPick(i) else gestures.tap()
+                        } else {
+                            gestures.tap()
+                        }
+                    }
+                }
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                pressed = false
+                removeCallbacks(longPress)
             }
         }
         return true
@@ -262,7 +318,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         rect.set(l, 0f, r, h)
         c.drawRoundRect(rect, radius, radius, bg)
         // A goal for: the notch flashes in the team colour.
-        if (b != null && b.kind == "goal" && !b.against && age < 900 && t > 0.3f) {
+        if (b != null && b.kind == "goal" && !b.against && age < 900 && t > 0.3f && !calm) {
             dot.color = b.color
             dot.alpha = (110 * (1f - age / 900f) * min(1f, t)).toInt()
             c.drawRoundRect(rect, radius, radius, dot)
@@ -284,7 +340,9 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (compactAlpha > 0f) drawCompact(c, m, ch, compactAlpha)
         val bigAlpha = ((t - 0.5f) * 2f).coerceIn(0f, 1f)
         if (bigAlpha > 0f) {
-            if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
+            if (b?.kind == "menu") drawMenu(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
+            else if (b?.kind == "stats") drawStats(c, m, b, camX - bw / 2, camX + bw / 2, bigAlpha)
+            else if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
             else if (info) drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
         }
         c.restore()
@@ -316,7 +374,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawText(txt, r, baseline(score, r), score)
         score.textAlign = Paint.Align.LEFT
         score.textSize = old
-        if (breathe) postInvalidateDelayed(50)
+        if (breathe && !calm) postInvalidateDelayed(50)
     }
 
     private fun drawTuck(c: Canvas) {
@@ -371,7 +429,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             val label = clockLabel(m)
             minute.color = minuteColor(m)
             minute.alpha = a
-            if (m.phase == "var") {
+            if (m.phase == "var" && !calm) {
                 // "VAR" blinks while the referee is at the screen.
                 minute.alpha = (a * (0.35f + 0.65f * abs(sin(System.currentTimeMillis() / 300.0)).toFloat())).toInt()
                 postInvalidateDelayed(50)
@@ -417,11 +475,11 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             m.phase == "var" -> 0xFF60A5FA.toInt() to true
             else -> 0xFF34D399.toInt() to true
         }
-        val level = if (breathe) 0.35f + 0.65f * ((sin(now / 450.0) + 1) / 2).toFloat() else 1f
+        val level = if (breathe && !calm) 0.35f + 0.65f * ((sin(now / 450.0) + 1) / 2).toFloat() else 1f
         dot.color = color
         dot.alpha = (a * level).toInt()
         c.drawCircle(x + 6 * d + 3 * d, cy, 3 * d, dot)
-        if (breathe) {
+        if (breathe && !calm) {
             dot.alpha = (a * level * 0.25f).toInt()
             c.drawCircle(x + 6 * d + 3 * d, cy, 5.5f * d, dot)
             postInvalidateDelayed(50)
@@ -484,7 +542,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val crest = 34 * d
         val cx = left + crest / 2
 
-        if (b.kind == "news") {
+        if (b.kind == "news" || b.kind == "phone") {
             drawNews(c, b, left, right, top, bottom, alpha)
             return
         }
@@ -576,7 +634,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val a = (alpha * 255).toInt()
         val crest = 30 * d
         val mid = (top + bottom) / 2
-        b.logo?.let { drawCrest(c, it, left, mid - crest / 2, crest, alpha) }
+        if (b.icon != null) {
+            bmp.alpha = (alpha * 255).toInt()
+            rect.set(left, mid - crest / 2, left + crest, mid + crest / 2)
+            c.drawBitmap(b.icon, null, rect, bmp)
+        } else {
+            b.logo?.let { drawCrest(c, it, left, mid - crest / 2, crest, alpha) }
+        }
         val textL = left + crest + 10 * d
         val avail = max(20f, right - textL)
         title.color = b.color
@@ -614,11 +678,11 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private fun scorerText(e: Ev): String {
         val tag = when {
-            e.own -> " (عكسي)"
-            e.pen -> " (ج)"
+            e.own -> L.t("own_goal")
+            e.pen -> L.t("pen_short")
             else -> ""
         }
-        return "${e.player ?: "جون"}$tag ${e.minute}".trim()
+        return "${e.player ?: "⚽"}$tag ${e.minute}".trim()
     }
 
     /** After a tap: crest + name each side, the score and minute in the middle, scorers below. */
@@ -656,6 +720,42 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawText(TextUtils.ellipsize(m.away.short, name, nameW, TextUtils.TruncateAt.END).toString(), right - crest - 6 * d, baseline(name, rowMid), name)
         name.textAlign = Paint.Align.LEFT
 
+        // The 90 minutes: played part in green, goals above (home) / below (away) the line, cards.
+        val ty = top + 46 * d
+        val tl = left + 4 * d
+        val tr = right - 4 * d
+        val span = tr - tl
+        val played = ((m.minute ?: if (m.state == Api.POST) 90 else 0) / 90f).coerceIn(0f, 1f)
+        stroke.strokeCap = Paint.Cap.ROUND
+        stroke.strokeWidth = 3 * d
+        stroke.color = 0xFF2A2D38.toInt()
+        stroke.alpha = a
+        c.drawLine(tl, ty, tr, ty, stroke)
+        stroke.color = 0xFF34D399.toInt()
+        stroke.alpha = a
+        if (played > 0f) c.drawLine(tl, ty, tl + span * played, ty, stroke)
+        stroke.strokeWidth = 1.5f * d
+        stroke.color = 0xFF71717A.toInt()
+        stroke.alpha = a
+        c.drawLine(tl + span / 2, ty - 6 * d, tl + span / 2, ty + 6 * d, stroke)
+        for (e in m.events) {
+            val x = tl + span * (e.at.toFloat() / 90f).coerceIn(0f, 1f)
+            when (e.kind) {
+                "goal" -> {
+                    dot.color = Color.WHITE
+                    dot.alpha = a
+                    c.drawCircle(x, if (e.home) ty - 9 * d else ty + 9 * d, 3.5f * d, dot)
+                }
+                "red", "yellow" -> {
+                    dot.color = if (e.kind == "red") 0xFFEF4444.toInt() else 0xFFFBBF24.toInt()
+                    dot.alpha = a
+                    val y0 = if (e.home) ty - 13 * d else ty + 5 * d
+                    rect.set(x - 2.5f * d, y0, x + 2.5f * d, y0 + 8 * d)
+                    c.drawRoundRect(rect, 1 * d, 1 * d, dot)
+                }
+            }
+        }
+
         // Scorers: up to 3 a side, then "+N".
         line.alpha = a
         val colW = (right - left) / 2 - 8 * d
@@ -665,10 +765,66 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             if (gs.size > 3) shown += "+${gs.size - 3}"
             line.textAlign = if (home) Paint.Align.LEFT else Paint.Align.RIGHT
             shown.forEachIndexed { i, s ->
-                val y = top + 40 * d + i * 15 * d - line.ascent()
+                val y = top + 64 * d + i * 15 * d - line.ascent()
                 c.drawText(TextUtils.ellipsize(s, line, colW, TextUtils.TruncateAt.END).toString(), if (home) left else right, y, line)
             }
         }
         line.textAlign = Paint.Align.LEFT
+    }
+
+    /** The long-press menu: one row per action, tapped by position. */
+    private fun drawMenu(c: Canvas, b: Burst, l: Float, r: Float, alpha: Float) {
+        val a = (alpha * 255).toInt()
+        val top = top() + 4 * d
+        name.alpha = a
+        name.textAlign = Paint.Align.CENTER
+        b.items.forEachIndexed { i, s ->
+            val y0 = top + i * MENU_ROW * d
+            if (i > 0) {
+                stroke.color = 0xFF2A2D38.toInt()
+                stroke.strokeWidth = 1 * d
+                stroke.alpha = a
+                c.drawLine(l + 18 * d, y0, r - 18 * d, y0, stroke)
+            }
+            c.drawText(s, (l + r) / 2, baseline(name, y0 + MENU_ROW * d / 2), name)
+        }
+        name.textAlign = Paint.Align.LEFT
+    }
+
+    /** Pulled down: the main numbers, a bar per row in the teams' colours. */
+    private fun drawStats(c: Canvas, m: Match, b: Burst, l: Float, r: Float, alpha: Float) {
+        val a = (alpha * 255).toInt()
+        val top = top() + 4 * d
+        val left = l + 18 * d
+        val right = r - 18 * d
+        val st = b.stats
+        line.alpha = a
+        if (st == null || st.isEmpty()) {
+            line.textAlign = Paint.Align.CENTER
+            c.drawText(L.t(if (st == null) "stats_loading" else "stats_none"), (l + r) / 2, top + 18 * d, line)
+            line.textAlign = Paint.Align.LEFT
+            return
+        }
+        st.take(4).forEachIndexed { i, row ->
+            val y = top + i * 30 * d
+            name.alpha = a
+            name.textAlign = Paint.Align.LEFT
+            c.drawText(row.home, left, y + 12 * d, name)
+            name.textAlign = Paint.Align.RIGHT
+            c.drawText(row.away, right, y + 12 * d, name)
+            line.textAlign = Paint.Align.CENTER
+            c.drawText(TextUtils.ellipsize(row.name, line, (right - left) * 0.6f, TextUtils.TruncateAt.END).toString(), (left + right) / 2, y + 12 * d, line)
+            line.textAlign = Paint.Align.LEFT
+            val split = left + (right - left) * row.homeShare.coerceIn(0.03f, 0.97f)
+            dot.color = m.home.color
+            dot.alpha = a
+            rect.set(left, y + 17 * d, split - 1.5f * d, y + 21 * d)
+            c.drawRoundRect(rect, 2 * d, 2 * d, dot)
+            dot.color = m.away.color
+            dot.alpha = a
+            rect.set(split + 1.5f * d, y + 17 * d, right, y + 21 * d)
+            c.drawRoundRect(rect, 2 * d, 2 * d, dot)
+        }
+        name.textAlign = Paint.Align.LEFT
     }
 }

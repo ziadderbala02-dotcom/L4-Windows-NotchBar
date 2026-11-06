@@ -41,6 +41,8 @@ class LiveService : Service(), IslandView.Gestures {
 
         private const val CH_LIVE = "live"
         private const val CH_SCORE = "score"
+        private const val CH_RESULT = "result"
+        private const val PHONE_ID = -3
         /** Bursts that belong to no match. */
         private const val NEWS_ID = -2
         private const val NEWS_MS = 15 * 60_000L
@@ -51,7 +53,33 @@ class LiveService : Service(), IslandView.Gestures {
         const val ACTION_DEMO = "demo"
         const val ACTION_STOP = "stop"
 
-        private const val FAST_MS = 6_000L
+        /** Live polling and full-game refresh per speed: fast, balanced, saver. */
+        private fun liveMs(speed: String) = when (speed) {
+            "saver" -> 30_000L
+            "balanced" -> 15_000L
+            else -> 6_000L
+        }
+
+        private fun detailMs(speed: String) = when (speed) {
+            "saver" -> 60_000L
+            "balanced" -> 40_000L
+            else -> 20_000L
+        }
+
+        /** The speed in force now: the chosen one, unless battery or mobile data says otherwise. */
+        fun effectiveSpeed(ctx: Context): String {
+            val p = Prefs(ctx)
+            val bm = ctx.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+            if (p.autoSaver && !bm.isCharging && bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) in 1..20) return "saver"
+            if (p.mobileBalanced && p.speed == "fast") {
+                val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+                val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+                if (caps != null && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) &&
+                    !caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                ) return "balanced"
+            }
+            return p.speed
+        }
         private const val SLOW_MS = 5 * 60_000L
         private const val RETRY_MS = 30_000L
         private const val FINAL_MS = 30_000L
@@ -59,8 +87,7 @@ class LiveService : Service(), IslandView.Gestures {
         private const val BURST_MS = 6_500L
         private const val INFO_MS = 5_000L
         private const val CIRCLE_OPEN_MS = 8_000L
-        /** Scorers and cards are refetched this often (or at once when the score changes). */
-        private const val DETAIL_MS = 20_000L
+
         /** The countdown shows from this long before kickoff. */
         private const val SOON_MS = 15 * 60_000L
 
@@ -131,15 +158,16 @@ class LiveService : Service(), IslandView.Gestures {
         super.onCreate()
         instance = this
         prefs = Prefs(this)
+        L.load(this)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
         nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
-            NotificationChannel(CH_LIVE, "متابعة الماتشات", NotificationManager.IMPORTANCE_MIN).apply {
+            NotificationChannel(CH_LIVE, L.t("ch_live"), NotificationManager.IMPORTANCE_MIN).apply {
                 setShowBadge(false)
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CH_SCORE, "السكور وقت الماتش (وعلى شاشة القفل)", NotificationManager.IMPORTANCE_LOW).apply {
+            NotificationChannel(CH_SCORE, L.t("ch_score"), NotificationManager.IMPORTANCE_LOW).apply {
                 setShowBadge(false)
                 setSound(null, null)
                 enableVibration(false)
@@ -147,13 +175,14 @@ class LiveService : Service(), IslandView.Gestures {
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CH_ALERT, "أهداف وأحداث", NotificationManager.IMPORTANCE_HIGH).apply {
+            NotificationChannel(CH_ALERT, L.t("ch_alert"), NotificationManager.IMPORTANCE_HIGH).apply {
                 // The app plays its own sounds and vibration.
                 setSound(null, null)
                 enableVibration(false)
             },
         )
-        val n = ongoing("Notch Live", "مستني ماتشات فرقك")
+        nm.createNotificationChannel(NotificationChannel(CH_RESULT, L.t("ch_result"), NotificationManager.IMPORTANCE_DEFAULT).apply { setSound(null, null) })
+        val n = ongoing("Notch Live", L.t("waiting"))
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIF_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(NOTIF_ID, n)
         sounds = Sounds(this)
@@ -201,6 +230,9 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
+    /** For the app's home screen: what the notch shows now, and what's known. */
+    fun snapshot(): Pair<Match?, List<Match>> = onScreen?.takeIf { it.id >= 0 } to matches
+
     /** The accessibility service came or went: move the window to the new host. */
     fun hostChanged() = main.post {
         island.reattach()
@@ -212,6 +244,23 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
+        if (current?.kind == "menu" || current?.kind == "stats") {
+            current = null
+            render()
+            return
+        }
+        current?.takeIf { it.kind == "phone" }?.let { b ->
+            current = null
+            phoneIntents.remove(b)?.let {
+                try {
+                    it.send()
+                } catch (e: Exception) {
+                    // The notification is gone.
+                }
+            }
+            render()
+            return
+        }
         current?.takeIf { it.kind == "news" }?.url?.let { link ->
             current = null
             try {
@@ -243,7 +292,80 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
+    /** Mute (no sound or vibration) per match, for this session. */
+    private val muted = HashSet<Int>()
+    private var hiddenUntil = 0L
+
+    override fun longPress() {
+        val m = onScreen ?: return
+        if (m.id < 0) return
+        val items = listOf(
+            L.t(if (m.id in muted) "menu_unmute" else "menu_mute"),
+            L.t(if (m.id in prefs.pinned) "menu_unpin" else "menu_pin"),
+            L.t("menu_hide"),
+        )
+        showOverlay(Burst("menu", "", "", true, 0xFF3F3F46.toInt(), m.id, items = items), 6_000L)
+    }
+
+    override fun menuPick(index: Int) {
+        val b = current?.takeIf { it.kind == "menu" } ?: return
+        val id = b.matchId
+        when (index) {
+            0 -> if (!muted.add(id)) muted.remove(id)
+            1 -> {
+                val p = prefs.pinned
+                prefs.pinned = if (id in p) p - id else p + id
+                refresh()
+            }
+            2 -> hiddenUntil = System.currentTimeMillis() + 10 * 60_000L
+        }
+        current = null
+        render()
+    }
+
+    override fun pull(down: Boolean) {
+        val m = onScreen ?: return
+        if (!down) {
+            if (current?.kind == "stats") {
+                current = null
+                render()
+            }
+            return
+        }
+        if (m.id < 0) return
+        val b = Burst("stats", "", "", true, 0xFF3F3F46.toInt(), m.id)
+        showOverlay(b, 10_000L)
+        net.execute {
+            val st = try {
+                Api.stats(m.id, m.home.id)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            main.post {
+                b.stats = st
+                island.relayout()
+                render()
+            }
+        }
+    }
+
+    /** Menu and stats: shown at once over whatever is on, without sound. */
+    private fun showOverlay(b: Burst, ms: Long) {
+        val now = System.currentTimeMillis()
+        current?.let { if (it.kind != "menu" && it.kind != "stats") queue.addFirst(it) }
+        b.startedAt = now
+        current = b
+        currentUntil = now + ms
+        infoMatch = null
+        render()
+    }
+
     override fun swipe(right: Boolean) {
+        if (current?.kind == "menu" || current?.kind == "stats") {
+            current = null
+            render()
+            return
+        }
         if (circleNow) {
             infoMatch = null
             render()
@@ -273,6 +395,7 @@ class LiveService : Service(), IslandView.Gestures {
     private fun poll(g: Int) {
         if (g != gen) return
         var next = SLOW_MS
+        val speed = effectiveSpeed(this)
         try {
             val favs = prefs.teams.map { it.id }.toSet()
             val pins = prefs.pinned
@@ -298,7 +421,7 @@ class LiveService : Service(), IslandView.Gestures {
             list = list.map { m ->
                 if (m.state != Api.LIVE || m in extra) return@map m
                 val d = details[m.id]
-                val stale = d == null || now - d.fetchedAt > DETAIL_MS ||
+                val stale = d == null || now - d.fetchedAt > detailMs(speed) ||
                     d.home.score != m.home.score || d.away.score != m.away.score || d.phase != m.phase || d.state != m.state
                 if (stale) {
                     try {
@@ -323,7 +446,7 @@ class LiveService : Service(), IslandView.Gestures {
             }
             next = if (hot) {
                 // Before kickoff (line-ups, countdown) a minute is plenty.
-                if (list.any { it.state == Api.LIVE } || list.any { it.state == Api.PRE && it.kickoff - now < SOON_MS }) FAST_MS else 60_000L
+                if (list.any { it.state == Api.LIVE } || list.any { it.state == Api.PRE && it.kickoff - now < SOON_MS }) liveMs(speed) else 60_000L
             } else {
                 val k = list.filter { it.state == Api.PRE && it.kickoff > now }.minOfOrNull { it.kickoff }
                 if (k != null) (k - 75 * 60_000 - now).coerceIn(30_000L, SLOW_MS) else SLOW_MS
@@ -332,6 +455,7 @@ class LiveService : Service(), IslandView.Gestures {
         } catch (e: Exception) {
             next = RETRY_MS
         }
+        countData()
         if (g == gen) net.schedule({ poll(g) }, next, TimeUnit.MILLISECONDS)
     }
 
@@ -346,22 +470,23 @@ class LiveService : Service(), IslandView.Gestures {
             if (before != null) {
                 if (before.state == Api.LIVE && m.state == Api.POST) {
                     endedAt[m.id] = now
-                    push(Burst("whistle", "انتهت المباراة", "${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}", true, 0xFFE5E7EB.toInt(), m.id))
+                    push(Burst("whistle", L.t("full_time"), "${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}", true, 0xFFE5E7EB.toInt(), m.id))
+                    resultCard(m)
                 }
                 if (before.state == Api.PRE && m.state == Api.PRE && !before.hasLineups && m.hasLineups) {
-                    push(Burst("notice", "التشكيل نزل", "${teams(m)} • دوس تشوفه", true, 0xFF34D399.toInt(), m.id))
+                    push(Burst("notice", L.t("lineups"), L.f("lineups_sub", teams(m)), true, 0xFF34D399.toInt(), m.id))
                 }
                 if (before.state == Api.PRE && m.state == Api.LIVE) {
-                    push(Burst("whistle", "الماتش بدأ", teams(m), true, 0xFFE5E7EB.toInt(), m.id))
+                    push(Burst("whistle", L.t("kickoff"), teams(m), true, 0xFFE5E7EB.toInt(), m.id))
                 }
                 for (home in listOf(true, false)) {
                     val diff = m.side(home).score - before.side(home).score
                     if (diff > 0 && m.state != Api.PRE) goal(m, home)
-                    else if (diff < 0) push(Burst("var", "الجون اتلغى", m.side(home).short, home, 0xFFF87171.toInt(), m.id))
+                    else if (diff < 0) push(Burst("var", L.t("goal_off"), m.side(home).short, home, 0xFFF87171.toInt(), m.id))
                 }
                 if (before.phase == "break" && m.state == Api.LIVE && m.phase == "play") {
-                    val what = if (before.clock == Api.HALF_TIME) "الشوط التاني بدأ" else teams(m)
-                    push(Burst("whistle", "استكمال المباراة", what, true, 0xFFE5E7EB.toInt(), m.id))
+                    val what = if (before.clock == Api.HALF_TIME) L.t("second_half") else teams(m)
+                    push(Burst("whistle", L.t("resume"), what, true, 0xFFE5E7EB.toInt(), m.id))
                 }
             }
             spotIncidents(m)
@@ -391,7 +516,7 @@ class LiveService : Service(), IslandView.Gestures {
         val last = m.events.lastOrNull { it.kind == "goal" && it.home == home }
         val bad = against(m, home)
         val b = Burst(
-            "goal", if (bad) "جون للمنافس" else "جووووول ⚽", scorerLine(m, home, last), home, m.side(home).color, m.id,
+            "goal", if (bad) L.t("goal_against") else L.t("goal"), scorerLine(m, home, last), home, m.side(home).color, m.id,
             against = bad,
         )
         // Goals jump the queue.
@@ -418,8 +543,8 @@ class LiveService : Service(), IslandView.Gestures {
         val team = m.side(home).short
         if (e == null || e.player == null) return team
         val tag = when {
-            e.own -> " (عكسي)"
-            e.pen -> " (ضربة جزاء)"
+            e.own -> L.t("own_goal")
+            e.pen -> L.t("pen_goal")
             else -> ""
         }
         return listOf(e.player + tag, e.minute).filter { it.isNotBlank() }.joinToString(" • ")
@@ -445,9 +570,9 @@ class LiveService : Service(), IslandView.Gestures {
             if (!known.add(e.id)) continue
             val who = listOfNotNull(e.player, e.minute.ifBlank { null }).joinToString(" • ").ifBlank { m.side(e.home).short }
             when (e.kind) {
-                "red" -> push(Burst("red", "طرد", who, e.home, 0xFFF87171.toInt(), m.id))
-                "var" -> push(Burst("var", e.label.ifBlank { "قرار الفار" }, who, e.home, if (cancelled.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFF60A5FA.toInt(), m.id))
-                "pen" -> push(Burst("pen", e.label.ifBlank { "ضربة جزاء" }, who, e.home, if (missed.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFFFBBF24.toInt(), m.id))
+                "red" -> push(Burst("red", L.t("red"), who, e.home, 0xFFF87171.toInt(), m.id))
+                "var" -> push(Burst("var", e.label.ifBlank { L.t("var") }, who, e.home, if (cancelled.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFF60A5FA.toInt(), m.id))
+                "pen" -> push(Burst("pen", e.label.ifBlank { L.t("pen") }, who, e.home, if (missed.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFFFBBF24.toInt(), m.id))
             }
         }
     }
@@ -456,6 +581,61 @@ class LiveService : Service(), IslandView.Gestures {
         // The provider can send a VAR event and the lowered score together: show it once.
         if (b.kind == "var" && (listOfNotNull(current) + queue).any { it.kind == "var" && it.matchId == b.matchId }) return
         queue.addLast(b)
+    }
+
+    /* ---------- phone notifications (beta) ---------- */
+
+    private val phoneIntents = HashMap<Burst, PendingIntent>()
+
+    /** From NotifListener: an app the user picked posted something. */
+    fun phoneNotification(title: String, text: String, icon: android.graphics.Bitmap?, open: PendingIntent?) = main.post {
+        if (!prefs.enabled || prefs.paused || !prefs.phone) return@post
+        if (prefs.phoneFullOnly && island.statusBarVisible) return@post
+        if (inCall()) return@post
+        val b = Burst(
+            "phone", title, if (prefs.phoneHide) L.t("new_message") else text, true, 0xFF34D399.toInt(), PHONE_ID, icon = icon,
+        )
+        if (open != null) phoneIntents[b] = open
+        queue.addLast(b)
+        render()
+    }
+
+    /* ---------- full-time card ---------- */
+
+    /** A notification with a picture of the final score, to share. */
+    private fun resultCard(m: Match) {
+        if (!prefs.cards || m.id < 0) return
+        val favs = prefs.teams.map { it.id }.toSet()
+        if (m.home.id !in favs && m.away.id !in favs && m.id !in prefs.pinned) return
+        val file = try {
+            ShareCard.render(this, m)
+        } catch (e: Exception) {
+            return
+        }
+        val uri = android.net.Uri.parse("content://$packageName.share/${file.name}")
+        val send = Intent(Intent.ACTION_SEND)
+            .setType("image/png")
+            .putExtra(Intent.EXTRA_STREAM, uri)
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        send.clipData = android.content.ClipData.newRawUri("", uri)
+        val chooser = Intent.createChooser(send, L.t("share")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val pi = PendingIntent.getActivity(this, 5000 + m.id % 1000, chooser, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+        val bmp = android.graphics.BitmapFactory.decodeFile(file.path)
+        val n = Notification.Builder(this, CH_RESULT)
+            .setSmallIcon(R.drawable.ic_ball)
+            .setContentTitle(L.f("card_title", "${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}"))
+            .setContentText(L.t("card_text"))
+            .setLargeIcon(bmp)
+            .setStyle(Notification.BigPictureStyle().bigPicture(bmp))
+            .setContentIntent(pi)
+            .addAction(Notification.Action.Builder(null, L.t("share"), pi).build())
+            .setAutoCancel(true)
+            .build()
+        try {
+            nm.notify(3000 + m.id % 1000, n)
+        } catch (e: SecurityException) {
+            // Notifications are off.
+        }
     }
 
     /* ---------- news about the favourite teams ---------- */
@@ -469,7 +649,7 @@ class LiveService : Service(), IslandView.Gestures {
     /** Every 15 min: new headlines about the favourite teams (the first check only remembers them). */
     private fun pollNews() {
         try {
-            if (prefs.enabled && prefs.news) {
+            if (prefs.enabled && prefs.news && effectiveSpeed(this) != "saver") {
                 val seen = prefs.seenNews.toMutableSet()
                 val first = seen.isEmpty()
                 val fresh = ArrayList<Pair<TeamOption, Api.News>>()
@@ -488,7 +668,7 @@ class LiveService : Service(), IslandView.Gestures {
                 val pick = fresh.sortedByDescending { it.second.at }.take(2)
                 if (pick.isNotEmpty()) main.post {
                     for ((t, n) in pick) {
-                        queue.addLast(Burst("news", "خبر عن ${t.name}", n.title, true, 0xFF60A5FA.toInt(), NEWS_ID, logo = t.logo, url = n.url))
+                        queue.addLast(Burst("news", L.f("news_about", t.name), n.title, true, 0xFF60A5FA.toInt(), NEWS_ID, logo = t.logo, url = n.url))
                     }
                 }
             }
@@ -496,6 +676,31 @@ class LiveService : Service(), IslandView.Gestures {
             // Try again next time.
         }
         if (instance === this) net.schedule({ pollNews() }, NEWS_MS, TimeUnit.MILLISECONDS)
+    }
+
+    /* ---------- data per day ---------- */
+
+    private var lastTraffic = -1L
+
+    /** Adds what was downloaded since last time to today's total (kept 14 days). */
+    private fun countData() {
+        val now = traffic()
+        if (lastTraffic >= 0 && now >= lastTraffic) {
+            val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            val d = prefs.daily.toMutableMap()
+            d[day] = (d[day] ?: 0L) + (now - lastTraffic)
+            prefs.daily = d
+        }
+        lastTraffic = now
+    }
+
+    /** The feed's Arabic status words, in the app's language. */
+    private fun localClock(c: String): String = when (c) {
+        Api.HALF_TIME -> L.t("half_time")
+        "انتهت" -> L.t("ft")
+        "قبل الإضافي" -> if (L.ar) c else "Before ET"
+        "قبل الترجيح" -> if (L.ar) c else "Before pens"
+        else -> c
     }
 
     /* ---------- the clock ---------- */
@@ -512,9 +717,9 @@ class LiveService : Service(), IslandView.Gestures {
     private fun clockText(m: Match, now: Long): String {
         if (m.state == Api.PRE) {
             val mins = ((m.kickoff - now + 59_999) / 60_000).toInt()
-            return if (mins > 0) "بعد ${mins}د" else "دلوقتي"
+            return if (mins > 0) L.f("in_min", mins) else L.t("now")
         }
-        if (m.state != Api.LIVE || m.phase != "play") return m.clock
+        if (m.state != Api.LIVE || m.phase != "play") return localClock(m.clock)
         val n = minuteNow(m, now) ?: return m.clock
         return "$n'"
     }
@@ -562,16 +767,16 @@ class LiveService : Service(), IslandView.Gestures {
         if (current == null && queue.isNotEmpty() && now >= nextBurstAt) {
             val b = queue.removeFirst()
             // Only if its match is still around (a burst for a match that ended long ago is dropped).
-            val owner = if (b.kind == "news") newsMatch(b) else list.firstOrNull { it.id == b.matchId }
+            val owner = if (b.kind == "news" || b.kind == "phone") newsMatch(b) else list.firstOrNull { it.id == b.matchId }
             if (owner != null) {
                 current = b
                 b.startedAt = now
-                currentUntil = now + if (b.kind == "news") 8_000L else BURST_MS
+                currentUntil = now + if (b.kind == "news" || b.kind == "phone") 8_000L else BURST_MS
                 infoMatch = null
                 announce(b, owner)
             }
         }
-        val news = current?.takeIf { it.kind == "news" }
+        val news = current?.takeIf { it.kind == "news" || it.kind == "phone" }
         val m = if (news != null) newsMatch(news) else featured(list, now)
         onScreen = m
         // Xiaomi's island is busy (a call or music): circle beside it, or hidden if that's off.
@@ -579,7 +784,8 @@ class LiveService : Service(), IslandView.Gestures {
         val wasCircle = circleNow
         circleNow = busy && prefs.circle && island.portrait()
         if (wasCircle && !circleNow) infoMatch = null
-        val hidden = !prefs.enabled || prefs.paused || (busy && !prefs.circle && island.portrait())
+        val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait())
+        island.calm = effectiveSpeed(this) == "saver"
         if (m == null || hidden) {
             island.update(null, "", "", null, false, false, false)
         } else {
@@ -595,10 +801,12 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     private fun announce(b: Burst, m: Match) {
-        if (prefs.sound && !inCall()) sounds.play(if (b.against) "conceded" else b.kind)
-        if (prefs.vibrate && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
+        if (b.kind == "phone") return
+        val quiet = b.matchId in muted
+        if (prefs.sound && !inCall() && !quiet) sounds.play(if (b.against) "conceded" else b.kind)
+        if (prefs.vibrate && !quiet && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
         // The notch can't show it (no permission, a call, landscape): a normal notification instead.
-        if (!island.canShow() || !island.showing || prefs.paused || inCall()) {
+        if (!island.canShow() || !island.showing || prefs.paused || inCall() || System.currentTimeMillis() < hiddenUntil) {
             if (b.kind == "notice" || b.kind == "whistle" || b.kind == "news") return
             val n = Notification.Builder(this, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_ball)
@@ -656,8 +864,9 @@ class LiveService : Service(), IslandView.Gestures {
             val mins = (now - runStart) / 60_000
             val mb = (traffic() - runBytes) / 1_048_576.0
             val drop = runBattery - battery()
-            val bat = if (runCharged) "كان على الشاحن" else "البطارية نزلت $drop%"
-            prefs.report = "آخر ماتشات: $mins دقيقة • ${"%.1f".format(mb)} ميجا داتا • $bat (مع استخدامك العادي للموبايل)"
+            prefs.lastBytes = traffic() - runBytes
+            prefs.lastBattery = if (runCharged) -2 else drop.coerceAtLeast(0)
+            prefs.report = "$mins min • ${"%.1f".format(mb)} MB"
             runStart = 0L
             // Next time a match starts, the notch is out again even if it was swiped away.
             prefs.tucked = false
@@ -698,7 +907,7 @@ class LiveService : Service(), IslandView.Gestures {
             "${shown.home.short} ${shown.home.score} - ${shown.away.score} ${shown.away.short}" to "${clockText(shown, now)} • ${shown.comp}"
         } else {
             val next = matches.filter { it.state == Api.PRE && it.kickoff > now }.minByOrNull { it.kickoff }
-            "Notch Live" to (next?.let { "الجاي: ${teams(it)} • ${android.text.format.DateFormat.format("EEE h:mm a", it.kickoff)}" } ?: "مستني ماتشات فرقك")
+            "Notch Live" to (next?.let { L.f("next_match", teams(it), android.text.format.DateFormat.format("EEE h:mm a", it.kickoff)) } ?: L.t("waiting"))
         }
         val key = "$title|$text"
         if (key == lastNotif) return
@@ -730,8 +939,8 @@ class LiveService : Service(), IslandView.Gestures {
             if (!Updater.newer(r.version, Updater.current(this))) return@execute
             val n = Notification.Builder(this, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_ball)
-                .setContentTitle("نسخة جديدة من Notch Live: ${r.version}")
-                .setContentText("افتح التطبيق ودوس تحديث")
+                .setContentTitle(L.f("update_title", r.version))
+                .setContentText(L.t("update_text"))
                 .setAutoCancel(true)
                 .setContentIntent(mainIntent())
                 .build()
@@ -759,24 +968,24 @@ class LiveService : Service(), IslandView.Gestures {
             Ev("d4", "red", false, "70'", "كوندي", null, "", own = false, pen = false, at = 70.0),
         )
         val m = Match(
-            -1, "تجربة", Api.LIVE, "92'", "play", now - 95 * 60_000, home, away, evs,
+            -1, if (L.ar) "تجربة" else "Test", Api.LIVE, "92'", "play", now - 95 * 60_000, home, away, evs,
             minute = 92, added = 4, clockSec = 91 * 60 + 10, fetchedAt = now, period = 2,
         )
         demo = m
         demoUntil = now + 25_000
         queue.removeAll { it.matchId == -1 }
         when (kind) {
-            "goal" -> push(Burst("goal", "جووووول ⚽", "تريزيجيه • 88'", true, home.color, -1))
-            "red" -> push(Burst("red", "طرد", "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
-            "whistle" -> push(Burst("whistle", "استكمال المباراة", "الشوط التاني بدأ", true, 0xFFE5E7EB.toInt(), -1))
-            "against" -> push(Burst("goal", "جون للمنافس", "يامال • 88'", false, away.color, -1, against = true))
+            "goal" -> push(Burst("goal", L.t("goal"), "تريزيجيه • 88'", true, home.color, -1))
+            "red" -> push(Burst("red", L.t("red"), "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
+            "whistle" -> push(Burst("whistle", L.t("resume"), L.t("second_half"), true, 0xFFE5E7EB.toInt(), -1))
+            "against" -> push(Burst("goal", L.t("goal_against"), "يامال • 88'", false, away.color, -1, against = true))
             "news" -> queue.addLast(
-                Burst("news", "خبر عن ${a.name}", "تجربة: عنوان خبر طويل شوية عشان نشوف شكله على سطرين جوا النوتش", true, 0xFF60A5FA.toInt(), NEWS_ID, logo = a.logo, url = "https://www.365scores.com/ar/news"),
+                Burst("news", L.f("news_about", a.name), if (L.ar) "تجربة: عنوان خبر طويل بعض الشيء لنرى شكله على سطرين داخل النوتش" else "Test: a longish headline to see how it looks on two lines in the notch", true, 0xFF60A5FA.toInt(), NEWS_ID, logo = a.logo, url = "https://www.365scores.com/ar/news"),
             )
             "lineups" -> {
                 // Before kickoff: the countdown, then the line-ups notice.
                 demo = m.copy(state = Api.PRE, clock = "", phase = "", kickoff = now + 12 * 60_000, events = emptyList(), minute = null, added = null, clockSec = null)
-                push(Burst("notice", "التشكيل نزل", "${a.name} × ${b.name} • دوس تشوفه", true, 0xFF34D399.toInt(), -1))
+                push(Burst("notice", L.t("lineups"), L.f("lineups_sub", "${a.name} × ${b.name}"), true, 0xFF34D399.toInt(), -1))
             }
         }
         nextBurstAt = now + 2500

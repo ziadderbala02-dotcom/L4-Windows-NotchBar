@@ -89,9 +89,10 @@ object Api {
     val bytes = java.util.concurrent.atomic.AtomicLong()
 
     private const val BASE = "https://webws.365scores.com/web"
-    private const val PARAMS = "langId=27&timezoneName=Africa/Cairo&userCountryId=131&appTypeId=5"
+    /** Names come in the app's language (L.apiLang: 27 Arabic, 1 English). */
+    private fun params() = "langId=${L.apiLang}&timezoneName=Africa/Cairo&userCountryId=131&appTypeId=5"
 
-    private fun url(p: String) = "$BASE/$p${if (p.contains('?')) "&" else "?"}$PARAMS"
+    private fun url(p: String) = "$BASE/$p${if (p.contains('?')) "&" else "?"}${params()}"
 
     fun crest(id: Int, version: Int = 1) =
         "https://imagecache.365scores.com/image/upload/f_png,w_68,h_68,c_limit,q_auto:eco,dpr_2,d_Competitors:default1.png/v$version/Competitors/$id"
@@ -170,6 +171,7 @@ object Api {
         )
     }
 
+    /** Kept stable for comparisons; shown through L.t("half_time"). */
     const val HALF_TIME = "شوط"
     private val PLUS = Regex("(\\d+)\\s*\\+\\s*(\\d+)")
 
@@ -286,6 +288,15 @@ object Api {
         "scores365://game/$id",
         "365scores://game?gameId=$id",
     )
+
+    /** Every football match of today (Cairo time), any state. */
+    fun today(): List<Match> {
+        val d = java.text.SimpleDateFormat("dd/MM/yyyy", Locale.US).apply { timeZone = TimeZone.getTimeZone("Africa/Cairo") }
+            .format(java.util.Date())
+        val r = get(url("games/allscores/?sports=1&startDate=$d&endDate=$d&showOdds=false"))
+        val slugs = compSlugs(r)
+        return r.optJSONArray("games").objects().map { withSlug(parse(it), slugs) }
+    }
 
     /** Every football match being played right now. */
     fun liveNow(): List<Match> {

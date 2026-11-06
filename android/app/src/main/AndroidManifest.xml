@@ -4,6 +4,11 @@
     <!-- To ask whether the 365Scores app is installed (Android 11+ hides other apps otherwise). -->
     <queries>
         <package android:name="com.scores365" />
+        <!-- The app list for phone notifications in the notch (beta). -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
     </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -70,6 +75,22 @@
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
+        <provider
+            android:name=".ShareProvider"
+            android:authorities="com.l4.notchlive.share"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <service
+            android:name=".NotifListener"
+            android:exported="true"
+            android:label="Notch Live"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
         </service>
 
