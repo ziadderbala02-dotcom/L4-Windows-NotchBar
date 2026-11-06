@@ -40,6 +40,10 @@ class LiveService : Service(), IslandView.Gestures {
         var instance: LiveService? = null
 
         private const val CH_LIVE = "live"
+        private const val CH_SCORE = "score"
+        /** Bursts that belong to no match. */
+        private const val NEWS_ID = -2
+        private const val NEWS_MS = 15 * 60_000L
         private const val CH_ALERT = "alerts"
         private const val NOTIF_ID = 1
         private const val UPDATE_ID = 2
@@ -135,6 +139,14 @@ class LiveService : Service(), IslandView.Gestures {
             },
         )
         nm.createNotificationChannel(
+            NotificationChannel(CH_SCORE, "السكور وقت الماتش (وعلى شاشة القفل)", NotificationManager.IMPORTANCE_LOW).apply {
+                setShowBadge(false)
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
+        )
+        nm.createNotificationChannel(
             NotificationChannel(CH_ALERT, "أهداف وأحداث", NotificationManager.IMPORTANCE_HIGH).apply {
                 // The app plays its own sounds and vibration.
                 setSound(null, null)
@@ -150,6 +162,7 @@ class LiveService : Service(), IslandView.Gestures {
         refresh()
         main.post(tick)
         checkUpdate()
+        net.schedule({ pollNews() }, 20, TimeUnit.SECONDS)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -199,6 +212,16 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
+        current?.takeIf { it.kind == "news" }?.url?.let { link ->
+            current = null
+            try {
+                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+                // No browser.
+            }
+            render()
+            return
+        }
         if (circleNow) {
             // Beside Xiaomi's island: tap opens the full view over it, tap again closes it.
             if (infoMatch == m.id) {
@@ -358,9 +381,19 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
+    /** A goal against: the other side is a favourite and the scorer isn't. */
+    private fun against(m: Match, home: Boolean): Boolean {
+        val favs = prefs.teams.map { it.id }.toSet()
+        return m.side(home).id !in favs && m.side(!home).id in favs
+    }
+
     private fun goal(m: Match, home: Boolean) {
         val last = m.events.lastOrNull { it.kind == "goal" && it.home == home }
-        val b = Burst("goal", "جووووول ⚽", scorerLine(m, home, last), home, m.side(home).color, m.id)
+        val bad = against(m, home)
+        val b = Burst(
+            "goal", if (bad) "جون للمنافس" else "جووووول ⚽", scorerLine(m, home, last), home, m.side(home).color, m.id,
+            against = bad,
+        )
         // Goals jump the queue.
         queue.addFirst(b)
         if (current != null && current?.kind != "goal") {
@@ -412,7 +445,7 @@ class LiveService : Service(), IslandView.Gestures {
             if (!known.add(e.id)) continue
             val who = listOfNotNull(e.player, e.minute.ifBlank { null }).joinToString(" • ").ifBlank { m.side(e.home).short }
             when (e.kind) {
-                "red" -> push(Burst("red", "🟥 طرد", who, e.home, 0xFFF87171.toInt(), m.id))
+                "red" -> push(Burst("red", "طرد", who, e.home, 0xFFF87171.toInt(), m.id))
                 "var" -> push(Burst("var", e.label.ifBlank { "قرار الفار" }, who, e.home, if (cancelled.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFF60A5FA.toInt(), m.id))
                 "pen" -> push(Burst("pen", e.label.ifBlank { "ضربة جزاء" }, who, e.home, if (missed.containsMatchIn(e.label)) 0xFFF87171.toInt() else 0xFFFBBF24.toInt(), m.id))
             }
@@ -423,6 +456,46 @@ class LiveService : Service(), IslandView.Gestures {
         // The provider can send a VAR event and the lowered score together: show it once.
         if (b.kind == "var" && (listOfNotNull(current) + queue).any { it.kind == "var" && it.matchId == b.matchId }) return
         queue.addLast(b)
+    }
+
+    /* ---------- news about the favourite teams ---------- */
+
+    /** A stand-in "match" so the notch can draw a news burst. */
+    private fun newsMatch(b: Burst): Match {
+        val side = Side(0, "", "", b.logo ?: "", b.color, 0)
+        return Match(NEWS_ID, "", Api.POST, "", "", 0L, side, side, emptyList())
+    }
+
+    /** Every 15 min: new headlines about the favourite teams (the first check only remembers them). */
+    private fun pollNews() {
+        try {
+            if (prefs.enabled && prefs.news) {
+                val seen = prefs.seenNews.toMutableSet()
+                val first = seen.isEmpty()
+                val fresh = ArrayList<Pair<TeamOption, Api.News>>()
+                for (t in prefs.teams) {
+                    val items = try {
+                        Api.news(t.id).take(6)
+                    } catch (e: Exception) {
+                        continue
+                    }
+                    for (n in items) {
+                        if (seen.add(n.id) && !first && System.currentTimeMillis() - n.at < 6 * 3600_000L) fresh += t to n
+                    }
+                }
+                // Keep the list from growing forever.
+                prefs.seenNews = if (seen.size > 300) seen.toList().takeLast(200).toSet() else seen
+                val pick = fresh.sortedByDescending { it.second.at }.take(2)
+                if (pick.isNotEmpty()) main.post {
+                    for ((t, n) in pick) {
+                        queue.addLast(Burst("news", "خبر عن ${t.name}", n.title, true, 0xFF60A5FA.toInt(), NEWS_ID, logo = t.logo, url = n.url))
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Try again next time.
+        }
+        if (instance === this) net.schedule({ pollNews() }, NEWS_MS, TimeUnit.MILLISECONDS)
     }
 
     /* ---------- the clock ---------- */
@@ -489,14 +562,17 @@ class LiveService : Service(), IslandView.Gestures {
         if (current == null && queue.isNotEmpty() && now >= nextBurstAt) {
             val b = queue.removeFirst()
             // Only if its match is still around (a burst for a match that ended long ago is dropped).
-            if (list.any { it.id == b.matchId }) {
+            val owner = if (b.kind == "news") newsMatch(b) else list.firstOrNull { it.id == b.matchId }
+            if (owner != null) {
                 current = b
-                currentUntil = now + BURST_MS
+                b.startedAt = now
+                currentUntil = now + if (b.kind == "news") 8_000L else BURST_MS
                 infoMatch = null
-                announce(b, list.first { it.id == b.matchId })
+                announce(b, owner)
             }
         }
-        val m = featured(list, now)
+        val news = current?.takeIf { it.kind == "news" }
+        val m = if (news != null) newsMatch(news) else featured(list, now)
         onScreen = m
         // Xiaomi's island is busy (a call or music): circle beside it, or hidden if that's off.
         val busy = inCall() || audio.isMusicActive
@@ -519,11 +595,11 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     private fun announce(b: Burst, m: Match) {
-        if (prefs.sound && !inCall()) sounds.play(b.kind)
+        if (prefs.sound && !inCall()) sounds.play(if (b.against) "conceded" else b.kind)
         if (prefs.vibrate && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
         // The notch can't show it (no permission, a call, landscape): a normal notification instead.
         if (!island.canShow() || !island.showing || prefs.paused || inCall()) {
-            if (b.kind == "notice" || b.kind == "whistle") return
+            if (b.kind == "notice" || b.kind == "whistle" || b.kind == "news") return
             val n = Notification.Builder(this, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_ball)
                 .setContentTitle("${b.title}  ${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}")
@@ -590,18 +666,36 @@ class LiveService : Service(), IslandView.Gestures {
 
     /* ---------- notifications ---------- */
 
-    private fun ongoing(title: String, text: String, m: Match? = null): Notification =
-        Notification.Builder(this, CH_LIVE)
+    private fun ongoing(title: String, text: String, m: Match? = null): Notification {
+        val live = m != null && m.id >= 0
+        val b = Notification.Builder(this, if (live) CH_SCORE else CH_LIVE)
             .setSmallIcon(R.drawable.ic_ball)
             .setContentTitle(title)
             .setContentText(text)
             .setOngoing(true)
-            .setContentIntent(if (m != null && m.id >= 0) matchIntent(m) else mainIntent())
-            .build()
+            .setOnlyAlertOnce(true)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setContentIntent(if (live) matchIntent(m!!) else mainIntent())
+        if (live) {
+            // A small scoreboard, which the lock screen shows too.
+            val v = android.widget.RemoteViews(packageName, R.layout.notif_score)
+            v.setTextViewText(R.id.home_name, m!!.home.short)
+            v.setTextViewText(R.id.away_name, m.away.short)
+            v.setTextViewText(R.id.score, if (m.state == Api.PRE) "×" else "${m.home.score} - ${m.away.score}")
+            v.setTextViewText(R.id.status, text)
+            Logos.get(m.home.logo) { lastNotif = "" }?.let { v.setImageViewBitmap(R.id.home_logo, it) }
+            Logos.get(m.away.logo) { lastNotif = "" }?.let { v.setImageViewBitmap(R.id.away_logo, it) }
+            b.setCustomContentView(v)
+            b.setCustomBigContentView(v)
+            b.setStyle(Notification.DecoratedCustomViewStyle())
+        }
+        return b.build()
+    }
 
     private fun updateOngoing(m: Match?, now: Long) {
-        val (title, text) = if (m != null) {
-            "${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}" to "${clockText(m, now)} • ${m.comp}"
+        val shown = m?.takeIf { it.id >= 0 }
+        val (title, text) = if (shown != null) {
+            "${shown.home.short} ${shown.home.score} - ${shown.away.score} ${shown.away.short}" to "${clockText(shown, now)} • ${shown.comp}"
         } else {
             val next = matches.filter { it.state == Api.PRE && it.kickoff > now }.minByOrNull { it.kickoff }
             "Notch Live" to (next?.let { "الجاي: ${teams(it)} • ${android.text.format.DateFormat.format("EEE h:mm a", it.kickoff)}" } ?: "مستني ماتشات فرقك")
@@ -609,7 +703,7 @@ class LiveService : Service(), IslandView.Gestures {
         val key = "$title|$text"
         if (key == lastNotif) return
         lastNotif = key
-        nm.notify(NOTIF_ID, ongoing(title, text, m))
+        nm.notify(NOTIF_ID, ongoing(title, text, shown))
     }
 
     private fun mainIntent(): PendingIntent = PendingIntent.getActivity(
@@ -673,8 +767,12 @@ class LiveService : Service(), IslandView.Gestures {
         queue.removeAll { it.matchId == -1 }
         when (kind) {
             "goal" -> push(Burst("goal", "جووووول ⚽", "تريزيجيه • 88'", true, home.color, -1))
-            "red" -> push(Burst("red", "🟥 طرد", "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
+            "red" -> push(Burst("red", "طرد", "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
             "whistle" -> push(Burst("whistle", "استكمال المباراة", "الشوط التاني بدأ", true, 0xFFE5E7EB.toInt(), -1))
+            "against" -> push(Burst("goal", "جون للمنافس", "يامال • 88'", false, away.color, -1, against = true))
+            "news" -> queue.addLast(
+                Burst("news", "خبر عن ${a.name}", "تجربة: عنوان خبر طويل شوية عشان نشوف شكله على سطرين جوا النوتش", true, 0xFF60A5FA.toInt(), NEWS_ID, logo = a.logo, url = "https://www.365scores.com/ar/news"),
+            )
             "lineups" -> {
                 // Before kickoff: the countdown, then the line-ups notice.
                 demo = m.copy(state = Api.PRE, clock = "", phase = "", kickoff = now + 12 * 60_000, events = emptyList(), minute = null, added = null, clockSec = null)

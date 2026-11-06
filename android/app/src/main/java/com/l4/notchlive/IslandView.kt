@@ -25,7 +25,15 @@ class Burst(
     val home: Boolean,
     val color: Int,
     val matchId: Int,
-)
+    /** A goal against a favourite team: no celebration, a low sound. */
+    val against: Boolean = false,
+    /** News: the team's crest and the article to open. */
+    val logo: String? = null,
+    val url: String? = null,
+) {
+    /** When it went on screen, for the animations. */
+    var startedAt = 0L
+}
 
 /**
  * The notch, drawn by hand around the punch-hole camera at [camX] (view coordinates).
@@ -193,8 +201,11 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private fun infoLines(): Int = min(4, max(goals(true).size, goals(false).size).let { if (it > 3) 4 else it })
 
-    fun bigHeight(): Int = if (info && burst == null) (top() + 46 * d + infoLines() * 15 * d + 8 * d).toInt()
-    else (top() + 52 * d).toInt()
+    fun bigHeight(): Int = when {
+        info && burst == null -> (top() + 46 * d + infoLines() * 15 * d + 8 * d).toInt()
+        burst?.kind == "news" -> (top() + 62 * d).toInt()
+        else -> (top() + 52 * d).toInt()
+    }
 
     /* ---------- touch: tap / swipe ---------- */
 
@@ -242,20 +253,31 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val r = lerp(camX + rw, camX + bw / 2, t)
         val h = lerp(ch, bh, t)
         val radius = lerp(ch / 2, 24 * d, t)
+        val b = burst
+        val age = if (b != null) System.currentTimeMillis() - b.startedAt else 0L
+        // A red card shakes the notch for a moment.
+        val shake = if (b?.kind == "red" && age < 450) (4 * d * sin(age / 22.0) * kotlin.math.exp(-age / 180.0)).toFloat() else 0f
+        c.save()
+        c.translate(shake, 0f)
         rect.set(l, 0f, r, h)
         c.drawRoundRect(rect, radius, radius, bg)
+        // A goal for: the notch flashes in the team colour.
+        if (b != null && b.kind == "goal" && !b.against && age < 900 && t > 0.3f) {
+            dot.color = b.color
+            dot.alpha = (110 * (1f - age / 900f) * min(1f, t)).toInt()
+            c.drawRoundRect(rect, radius, radius, dot)
+        }
 
-        val b = burst
         val accent = b?.color ?: if (info) 0xFF3F3F46.toInt() else null
         if (accent != null && t > 0.05f) {
             border.color = accent
             border.strokeWidth = 1.5f * d
             // Whistle and goal pulse a little.
-            val pulse = if (b != null && (b.kind == "goal" || b.kind == "whistle")) 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
+            val pulse = if (b != null && ((b.kind == "goal" && !b.against) || b.kind == "whistle")) 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
             border.alpha = (min(1f, t) * 220 * pulse).toInt()
             rect.inset(border.strokeWidth / 2, border.strokeWidth / 2)
             c.drawRoundRect(rect, radius, radius, border)
-            if (b != null && (b.kind == "goal" || b.kind == "whistle")) postInvalidateOnAnimation()
+            if (b != null) postInvalidateOnAnimation()
         }
 
         val compactAlpha = (1f - t * 2.5f).coerceIn(0f, 1f)
@@ -265,6 +287,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
             else if (info) drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
         }
+        c.restore()
     }
 
     /** The small circle beside Xiaomi's island: the score, ringed by the live colour. */
@@ -348,6 +371,11 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             val label = clockLabel(m)
             minute.color = minuteColor(m)
             minute.alpha = a
+            if (m.phase == "var") {
+                // "VAR" blinks while the referee is at the screen.
+                minute.alpha = (a * (0.35f + 0.65f * abs(sin(System.currentTimeMillis() / 300.0)).toFloat())).toInt()
+                postInvalidateDelayed(50)
+            }
             x -= 6 * d + minute.measureText(label)
             c.drawText(label, x, baseline(minute, cy), minute)
             if (added.isNotEmpty()) {
@@ -447,29 +475,90 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private fun drawBurst(c: Canvas, m: Match, b: Burst, l: Float, r: Float, h: Float, alpha: Float) {
         val a = (alpha * 255).toInt()
+        val age = System.currentTimeMillis() - b.startedAt
         val top = top()
         val bottom = h - 6 * d
         val mid = (top + bottom) / 2
         val left = l + 14 * d
         val right = r - 14 * d
         val crest = 34 * d
+        val cx = left + crest / 2
 
-        if (b.kind == "whistle") drawWhistle(c, left + crest / 2, mid, b.color, alpha)
-        else drawCrest(c, if (b.home) m.home.logo else m.away.logo, left, mid - crest / 2, crest, alpha)
+        if (b.kind == "news") {
+            drawNews(c, b, left, right, top, bottom, alpha)
+            return
+        }
 
+        // Goal for: rings in the team colour spread out from the crest.
+        if (b.kind == "goal" && !b.against) {
+            c.save()
+            rect.set(l, 0f, r, h)
+            c.clipRect(rect)
+            stroke.color = b.color
+            stroke.strokeWidth = 2f * d
+            for (k in 0..2) {
+                val p = ((age + k * 400) % 1200) / 1200f
+                stroke.alpha = (a * (1f - p) * 0.8f).toInt()
+                c.drawCircle(cx, mid, crest / 2 + p * 70 * d, stroke)
+            }
+            c.restore()
+        }
+        // VAR: a scan line sweeps across.
+        if (b.kind == "var") {
+            val p = (age % 1300) / 1300f
+            val x = l + p * (r - l)
+            stroke.color = b.color
+            stroke.strokeWidth = 2f * d
+            for (k in 0..5) {
+                stroke.alpha = (a * (0.7f - k * 0.12f)).toInt().coerceAtLeast(0)
+                val xx = x - k * 5 * d
+                if (xx > l + 8 * d) c.drawLine(xx, top - 2 * d, xx, bottom + 2 * d, stroke)
+            }
+        }
+
+        if (b.kind == "whistle") {
+            drawWhistle(c, cx, mid, b.color, alpha)
+        } else {
+            // The crest bounces in on a goal.
+            val bounce = if (b.kind == "goal" && !b.against) 1f + 0.22f * kotlin.math.exp(-age / 450.0).toFloat() * abs(sin(age / 85.0)).toFloat() else 1f
+            val sz = crest * bounce
+            drawCrest(c, if (b.home) m.home.logo else m.away.logo, cx - sz / 2, mid - sz / 2, sz, alpha)
+        }
+        // Red card: a card flips in over the crest's corner.
+        if (b.kind == "red") {
+            val f = (age / 380f).coerceIn(0f, 1f)
+            val w = 11 * d
+            val hh = 15 * d
+            val ccx = left + crest - 2 * d
+            val ccy = mid + crest / 2 - hh / 2
+            c.save()
+            c.scale(kotlin.math.abs(kotlin.math.cos((1 - f) * Math.PI / 2).toFloat()).coerceAtLeast(0.05f), 1f, ccx, ccy)
+            c.rotate(12f, ccx, ccy)
+            dot.color = 0xFFEF4444.toInt()
+            dot.alpha = a
+            rect.set(ccx - w / 2, ccy - hh / 2, ccx + w / 2, ccy + hh / 2)
+            c.drawRoundRect(rect, 2 * d, 2 * d, dot)
+            c.restore()
+        }
+
+        // The score pops when it has just changed.
         val sc = bigScore(m)
         score.alpha = a
         val big = score.textSize
+        val pop = if (b.kind == "goal") 1f + 0.4f * kotlin.math.exp(-age / 350.0).toFloat() else 1f
         score.textSize = 18f * d
         val sw = score.measureText(sc)
-        c.drawText(sc, right - sw, baseline(score, mid), score)
+        score.textSize = 18f * d * pop
+        score.textAlign = Paint.Align.CENTER
+        c.drawText(sc, right - sw / 2, baseline(score, mid), score)
+        score.textAlign = Paint.Align.LEFT
         score.textSize = big
 
         val textL = left + crest + 10 * d
         val textR = right - sw - 10 * d
         val tx = (textL + textR) / 2
         val avail = max(20f, textR - textL)
-        title.color = b.color
+        title.color = if (b.against) 0xFFD4D4D8.toInt() else b.color
         title.alpha = a
         sub.alpha = a
         val tt = TextUtils.ellipsize(b.title, title, avail, TextUtils.TruncateAt.END).toString()
@@ -480,6 +569,47 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             c.drawText(tt, tx, mid - 3 * d, title)
             c.drawText(st, tx, mid + 3 * d - sub.ascent(), sub)
         }
+    }
+
+    /** News: the team's crest, "خبر", and the headline on up to two lines. */
+    private fun drawNews(c: Canvas, b: Burst, left: Float, right: Float, top: Float, bottom: Float, alpha: Float) {
+        val a = (alpha * 255).toInt()
+        val crest = 30 * d
+        val mid = (top + bottom) / 2
+        b.logo?.let { drawCrest(c, it, left, mid - crest / 2, crest, alpha) }
+        val textL = left + crest + 10 * d
+        val avail = max(20f, right - textL)
+        title.color = b.color
+        title.alpha = a
+        title.textAlign = Paint.Align.LEFT
+        val oldTitle = title.textSize
+        title.textSize = 12f * d
+        c.drawText(TextUtils.ellipsize(b.title, title, avail, TextUtils.TruncateAt.END).toString(), textL, top + 2 * d - title.ascent(), title)
+        title.textSize = oldTitle
+        title.textAlign = Paint.Align.CENTER
+        line.color = Color.WHITE
+        line.alpha = a
+        val old = line.textSize
+        line.textSize = 12.5f * d
+        val text = b.sub
+        val n = line.breakText(text, true, avail, null)
+        var first = text.substring(0, n)
+        var rest = text.substring(n)
+        // Break at a space when there is one.
+        if (rest.isNotEmpty()) {
+            val sp = first.lastIndexOf(' ')
+            if (sp > first.length / 2) {
+                rest = first.substring(sp + 1) + rest
+                first = first.substring(0, sp)
+            }
+        }
+        val y1 = top + 20 * d - line.ascent()
+        c.drawText(first, textL, y1, line)
+        if (rest.isNotBlank()) {
+            c.drawText(TextUtils.ellipsize(rest.trim(), line, avail, TextUtils.TruncateAt.END).toString(), textL, y1 + 16 * d, line)
+        }
+        line.textSize = old
+        line.color = 0xFFC8C8C8.toInt()
     }
 
     private fun scorerText(e: Ev): String {

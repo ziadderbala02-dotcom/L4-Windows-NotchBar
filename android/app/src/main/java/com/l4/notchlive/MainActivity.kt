@@ -46,7 +46,8 @@ class MainActivity : Activity() {
     private lateinit var liveFilter: EditText
     private lateinit var report: TextView
     private var live: List<Match> = emptyList()
-    private var downloadId = -1L
+    private lateinit var bar: android.widget.ProgressBar
+    private lateinit var note: TextView
     private val main = Handler(Looper.getMainLooper())
     private val io = Executors.newSingleThreadExecutor()
 
@@ -144,7 +145,11 @@ class MainActivity : Activity() {
         demo.addView(button("طرد 🟥") { LiveService.start(this, LiveService.ACTION_DEMO, "red") }, lp(0, WRAP, 1f, start = dp(6)))
         demo.addView(button("صفارة") { LiveService.start(this, LiveService.ACTION_DEMO, "whistle") }, lp(0, WRAP, 1f, start = dp(6)))
         demo.addView(button("التشكيل") { LiveService.start(this, LiveService.ACTION_DEMO, "lineups") }, lp(0, WRAP, 1f, start = dp(6)))
+        val demo2 = row()
+        demo2.addView(button("جون علينا") { LiveService.start(this, LiveService.ACTION_DEMO, "against") }, lp(0, WRAP, 1f))
+        demo2.addView(button("خبر") { LiveService.start(this, LiveService.ACTION_DEMO, "news") }, lp(0, WRAP, 1f, start = dp(6)))
         pos.addView(demo, lp(MATCH, WRAP, top = dp(12)))
+        pos.addView(demo2, lp(MATCH, WRAP, top = dp(6)))
         pos.addView(text("في التجربة: دوس على النوتش تكبر، ودوس تاني تفتح 365. اسحبها يمين تستخبى، وشمال ترجع.", 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
         root.addView(pos, lp(MATCH, WRAP, top = dp(12)))
 
@@ -152,6 +157,7 @@ class MainActivity : Activity() {
         val opts = card()
         opts.addView(toggle("صوت الجول والكروت", prefs.sound) { prefs.sound = it })
         opts.addView(toggle("اهتزاز مع الجون والطرد", prefs.vibrate) { prefs.vibrate = it }, lp(MATCH, WRAP, top = dp(8)))
+        opts.addView(toggle("أخبار فرقك في النوتش (كل ربع ساعة)", prefs.news) { prefs.news = it }, lp(MATCH, WRAP, top = dp(8)))
         opts.addView(
             toggle("تظهر فوق الألعاب والفيديو (full screen)", prefs.overFullscreen) {
                 prefs.overFullscreen = it
@@ -201,11 +207,6 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        try {
-            unregisterReceiver(downloaded)
-        } catch (e: Exception) {
-            // Not registered.
-        }
         super.onDestroy()
     }
 
@@ -266,6 +267,8 @@ class MainActivity : Activity() {
     /* ---------- new version ---------- */
 
     private fun checkUpdate() {
+        // Don't rebuild the banner (and lose the progress bar) mid-download.
+        if (downloading) return
         io.execute {
             val r = try {
                 Updater.latest()
@@ -283,50 +286,63 @@ class MainActivity : Activity() {
                 update.addView(text("نسخة جديدة: ${r.version}", 15f, Ui.ACCENT, bold = true))
                 update.addView(text("هتتنزل وتتسطّب فوق النسخة دي. أول مرة أندرويد هيطلب تسمح للتطبيق يسطّب.", 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
                 update.addView(button("حمّل وسطّب", primary = true) { download(r) }, lp(MATCH, WRAP, top = dp(8)))
+                bar = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+                    max = 100
+                    visibility = View.GONE
+                }
+                update.addView(bar, lp(MATCH, WRAP, top = dp(8)))
+                note = text("", 12f, Ui.MUTED)
+                update.addView(note, lp(MATCH, WRAP, top = dp(4)))
             }
         }
     }
 
-    private val downloaded = object : android.content.BroadcastReceiver() {
-        override fun onReceive(c: android.content.Context, i: Intent) {
-            val id = i.getLongExtra(android.app.DownloadManager.EXTRA_DOWNLOAD_ID, -1)
-            if (id != downloadId) return
-            val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
-            val uri = dm.getUriForDownloadedFile(id) ?: return
-            install(uri)
-        }
-    }
+    private var downloading = false
 
+    /** Download with a progress bar, then the system's install screen. */
     private fun download(r: Updater.Release) {
+        if (downloading) return
         if (Build.VERSION.SDK_INT >= 26 && !packageManager.canRequestPackageInstalls()) {
+            note.text = "اسمح لـ Notch Live يسطّب تطبيقات في الصفحة اللي هتفتح، وارجع دوس تاني."
             startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName")))
             return
         }
-        val dm = getSystemService(DOWNLOAD_SERVICE) as android.app.DownloadManager
-        val req = android.app.DownloadManager.Request(Uri.parse(r.apkUrl))
-            .setTitle("Notch Live ${r.version}")
-            .setMimeType("application/vnd.android.package-archive")
-            .setNotificationVisibility(android.app.DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setDestinationInExternalFilesDir(this, android.os.Environment.DIRECTORY_DOWNLOADS, "NotchLive_${r.version}.apk")
-        val f = IntentFilter(android.app.DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        try {
-            if (Build.VERSION.SDK_INT >= 33) registerReceiver(downloaded, f, RECEIVER_EXPORTED) else registerReceiver(downloaded, f)
-        } catch (e: Exception) {
-            // Already listening.
-        }
-        downloadId = dm.enqueue(req)
-        update.addView(text("بيتحمّل… هيفتح التسطيب لوحده لما يخلص.", 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
-    }
-
-    private fun install(uri: Uri) {
-        try {
-            startActivity(
-                Intent(Intent.ACTION_VIEW)
-                    .setDataAndType(uri, "application/vnd.android.package-archive")
-                    .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
-            )
-        } catch (e: Exception) {
-            // Open it from the download notification instead.
+        downloading = true
+        InstallReceiver.lastError = null
+        bar.visibility = View.VISIBLE
+        bar.isIndeterminate = true
+        note.text = "بيبدأ التحميل…"
+        io.execute {
+            try {
+                Installer.downloadAndInstall(this, r) { done, total ->
+                    main.post {
+                        val mb = { b: Long -> "%.1f".format(b / 1_048_576.0) }
+                        if (total > 0) {
+                            bar.isIndeterminate = false
+                            bar.progress = (done * 100 / total).toInt()
+                            note.text = "بيتحمّل ${bar.progress}% (${mb(done)} من ${mb(total)} ميجا)"
+                        } else {
+                            note.text = "بيتحمّل ${mb(done)} ميجا…"
+                        }
+                    }
+                }
+                main.post {
+                    bar.isIndeterminate = false
+                    bar.progress = 100
+                    note.text = "اتحمّل ✓ وافق على التسطيب في الشاشة اللي هتظهر."
+                    downloading = false
+                    // If the install screen never shows, say why.
+                    main.postDelayed({
+                        InstallReceiver.lastError?.let { note.text = "التسطيب ماكملش: $it. دوس تاني." }
+                    }, 4000)
+                }
+            } catch (e: Exception) {
+                main.post {
+                    bar.visibility = View.GONE
+                    note.text = "التحميل فشل (${e.message ?: "مشكلة في النت"}). دوس تاني."
+                    downloading = false
+                }
+            }
         }
     }
 

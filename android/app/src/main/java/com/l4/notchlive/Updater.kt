@@ -60,3 +60,96 @@ object Updater {
 
     private fun max(a: Int, b: Int) = if (a > b) a else b
 }
+
+/**
+ * Downloads the APK straight into an Android install session (no file, no DownloadManager),
+ * reporting progress, then hands it to the system installer, which asks the user to confirm.
+ */
+object Installer {
+    /** Runs on a background thread. [progress] gets (bytes so far, total or -1). Throws on failure. */
+    fun downloadAndInstall(ctx: android.content.Context, r: Updater.Release, progress: (Long, Long) -> Unit) {
+        val pi = ctx.packageManager.packageInstaller
+        val params = android.content.pm.PackageInstaller.SessionParams(android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+        params.setAppPackageName(ctx.packageName)
+        val id = pi.createSession(params)
+        val session = pi.openSession(id)
+        try {
+            var url = URL(r.apkUrl)
+            var c: HttpURLConnection
+            // GitHub sends a redirect to its file host; follow it by hand to be safe.
+            var hops = 0
+            while (true) {
+                c = url.openConnection() as HttpURLConnection
+                c.instanceFollowRedirects = false
+                c.connectTimeout = 15_000
+                c.readTimeout = 30_000
+                c.setRequestProperty("User-Agent", "NotchLive")
+                val code = c.responseCode
+                if (code in 300..399 && hops < 5) {
+                    url = URL(url, c.getHeaderField("Location"))
+                    c.disconnect()
+                    hops++
+                    continue
+                }
+                if (code !in 200..299) throw java.io.IOException("HTTP $code")
+                break
+            }
+            val total = c.contentLengthLong
+            c.inputStream.use { input ->
+                session.openWrite("NotchLive.apk", 0, if (total > 0) total else -1).use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    var done = 0L
+                    var last = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        done += n
+                        val now = System.currentTimeMillis()
+                        if (now - last > 150) {
+                            progress(done, total)
+                            last = now
+                        }
+                    }
+                    progress(done, total)
+                    session.fsync(out)
+                }
+            }
+            c.disconnect()
+            val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                if (android.os.Build.VERSION.SDK_INT >= 31) android.app.PendingIntent.FLAG_MUTABLE else 0
+            val done = android.app.PendingIntent.getBroadcast(
+                ctx, id, android.content.Intent(ctx, InstallReceiver::class.java), flags,
+            )
+            session.commit(done.intentSender)
+            session.close()
+        } catch (e: Exception) {
+            session.abandon()
+            throw e
+        }
+    }
+}
+
+/** The system's answer to the install: show its confirm screen, or tell the app it failed. */
+class InstallReceiver : android.content.BroadcastReceiver() {
+    override fun onReceive(ctx: android.content.Context, i: android.content.Intent) {
+        val status = i.getIntExtra(android.content.pm.PackageInstaller.EXTRA_STATUS, -999)
+        if (status == android.content.pm.PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            @Suppress("DEPRECATION")
+            val confirm = i.getParcelableExtra<android.content.Intent>(android.content.Intent.EXTRA_INTENT) ?: return
+            confirm.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                ctx.startActivity(confirm)
+            } catch (e: Exception) {
+                lastError = "مقدرتش أفتح شاشة التسطيب"
+            }
+        } else if (status != android.content.pm.PackageInstaller.STATUS_SUCCESS) {
+            lastError = i.getStringExtra(android.content.pm.PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "التسطيب اتلغى أو فشل"
+        }
+    }
+
+    companion object {
+        @Volatile
+        var lastError: String? = null
+    }
+}

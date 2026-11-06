@@ -354,6 +354,19 @@ object Api {
         return withSlug(parse(r.getJSONObject("game")), compSlugs(r))
     }
 
+    class News(val id: String, val title: String, val url: String, val at: Long)
+
+    /** Latest news about one team, newest first. */
+    fun news(teamId: Int): List<News> {
+        val r = get(url("news/?competitors=$teamId"))
+        return r.optJSONArray("news").objects().mapNotNull {
+            val title = it.str("title")
+            val link = it.str("url")
+            if (title.isBlank() || link.isBlank()) null
+            else News("365:${it.optInt("id")}", title, link, parseDate(it.str("publishDate")))
+        }.sortedByDescending { it.at }
+    }
+
     fun search(q: String): List<TeamOption> {
         val r = get(url("search/?query=${URLEncoder.encode(q, "UTF-8")}"))
         return r.optJSONArray("competitors").objects()

@@ -26,6 +26,16 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("circle", true)
         set(v) = p.edit().putBoolean("circle", v).apply()
 
+    /** News about the favourite teams in the notch. */
+    var news: Boolean
+        get() = p.getBoolean("news", true)
+        set(v) = p.edit().putBoolean("news", v).apply()
+
+    /** News already seen (ids), so only new ones show. */
+    var seenNews: Set<String>
+        get() = p.getStringSet("seenNews", emptySet()) ?: emptySet()
+        set(v) = p.edit().putStringSet("seenNews", v).apply()
+
     /** Hidden from the Quick Settings tile: no notch, alerts come as notifications. */
     var paused: Boolean
         get() = p.getBoolean("paused", false)

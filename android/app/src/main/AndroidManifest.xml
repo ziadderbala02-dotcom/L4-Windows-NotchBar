@@ -74,6 +74,10 @@
         </service>
 
         <receiver
+            android:name=".InstallReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".BootReceiver"
             android:exported="true">
             <intent-filter>

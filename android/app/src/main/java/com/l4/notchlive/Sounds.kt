@@ -19,11 +19,13 @@ class Sounds(ctx: Context) {
     private val goal = pool.load(ctx, R.raw.goal, 1)
     private val whistle = pool.load(ctx, R.raw.whistle, 1)
     private val ding = pool.load(ctx, R.raw.ding, 1)
+    private val conceded = pool.load(ctx, R.raw.conceded, 1)
 
     fun play(kind: String) {
         val id = when (kind) {
             "goal" -> goal
-            "notice" -> ding
+            "conceded" -> conceded
+            "notice", "news" -> ding
             else -> whistle
         }
         pool.play(id, 1f, 1f, 1, 0, 1f)
