@@ -21,6 +21,16 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("hideOnAudio", false)
         set(v) = p.edit().putBoolean("hideOnAudio", v).apply()
 
+    /** While Xiaomi's own island is busy (music, a call): shrink to a small circle on its right. */
+    var circle: Boolean
+        get() = p.getBoolean("circle", true)
+        set(v) = p.edit().putBoolean("circle", v).apply()
+
+    /** Hidden from the Quick Settings tile: no notch, alerts come as notifications. */
+    var paused: Boolean
+        get() = p.getBoolean("paused", false)
+        set(v) = p.edit().putBoolean("paused", v).apply()
+
     /** Vertical nudge in dp (-20..20) around the camera. */
     var offsetY: Int
         get() = p.getInt("offsetY", 0)

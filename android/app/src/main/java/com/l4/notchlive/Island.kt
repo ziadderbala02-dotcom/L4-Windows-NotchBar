@@ -82,6 +82,10 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
                 cut = w.defaultDisplay.cutout?.boundingRects ?: emptyList()
             }
         }
+        if (screenW > screenH) {
+            // Landscape: the camera is on a side; the pill goes to the top centre instead.
+            return Geo(screenW / 2f, 6 * density, 0f, screenW, false)
+        }
         // The punch hole: a small cut-out at the top, closest to the middle.
         val hole = cut.filter { it.top <= sb && it.width() < screenW / 3 }.minByOrNull { abs(it.centerX() - screenW / 2) }
         return if (hole != null) {
@@ -97,7 +101,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      * Draw [match] (null = hide). [burst] or [info] widen it; [tucked] leaves only a small mark.
      * [clock] is the minute label, [added] the announced added time ("+4" or "").
      */
-    fun update(match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean) {
+    fun update(match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean) {
         if (match == null) {
             hide()
             return
@@ -106,6 +110,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.match = match
         v.clock = clock
         v.added = added
+        val wasCircle = v.circle
+        v.circle = circle && !v.landscape
         val wantBig = burst != null || info
         if (burst !== shownBurst || wantBig != big) {
             shownBurst = burst
@@ -128,6 +134,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         } else if (!big) {
             v.tucked = tucked
         }
+        if (wasCircle != v.circle && !big) v.t = 0f
         if (!big && anim?.isRunning != true) layout()
         applyVisibility()
         v.invalidate()
@@ -179,13 +186,15 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val (h, type) = pickHost() ?: return null
         val w = h.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val g = measure(w)
-        if (!g.portrait) return null
         val v = IslandView(h, gestures)
         v.camR = g.r
         v.scale = prefs.scale / 100f
-        // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each side).
-        v.leftMax = g.cx - g.screenW * LEFT_EDGE
-        v.rightMax = g.screenW * RIGHT_EDGE - g.cx
+        v.landscape = !g.portrait
+        if (g.portrait) {
+            // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each side).
+            v.leftMax = g.cx - g.screenW * LEFT_EDGE
+            v.rightMax = g.screenW * RIGHT_EDGE - g.cx
+        }
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
                 statusBarVisible = ins.isVisible(WindowInsets.Type.statusBars())
@@ -240,6 +249,12 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             height = max(ch, v.bigHeight())
             x = (g.cx - width / 2f).toInt()
             v.camX = g.cx - x
+        } else if (v.circle) {
+            // Right of Xiaomi's island, just before the status icons.
+            width = ch
+            height = ch
+            x = (g.screenW * RIGHT_EDGE - ch - 4 * density).toInt()
+            v.camX = g.cx - x
         } else if (v.tucked) {
             width = v.tuckWidth()
             height = ch
@@ -252,7 +267,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             x = (g.cx - lw).toInt()
             v.camX = g.cx - x
         }
-        val y = (g.cy - ch / 2f + prefs.offsetY * density).toInt()
+        val y = if (g.portrait) (g.cy - ch / 2f + prefs.offsetY * density).toInt() else g.cy.toInt()
         if (p.width == width && p.height == height && p.x == x && p.y == y) return
         p.width = width
         p.height = height

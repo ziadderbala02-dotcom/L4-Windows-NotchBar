@@ -60,6 +60,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     /** The tap view (names + scorers) instead of a burst. */
     var info = false
     var tucked = false
+    /** Landscape: a pill at the top centre, no camera to wrap around (a "–" between the scores). */
+    var landscape = false
+    /** Xiaomi's island is busy: a small circle with the score. */
+    var circle = false
 
     /** 0 = compact, 1 = big (animated). */
     var t = 0f
@@ -123,12 +127,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     fun compactHeight(): Int = max(2 * (camR + 5 * d), 28 * d).toInt()
 
-    private fun gap() = camR + 6 * d
+    private fun gap() = if (landscape) 9 * d else camR + 6 * d
+
+    /** Scores, or nothing before kickoff (the countdown says it all). */
+    private fun scoreText(m: Match, home: Boolean) = if (m.state == Api.PRE) "" else m.side(home).score.toString()
+
+    private fun bigScore(m: Match) = if (m.state == Api.PRE) "×" else "${m.home.score} - ${m.away.score}"
     private fun crestSize() = compactHeight() - 10 * d
     private fun reds(home: Boolean) = match?.reds(home) ?: 0
     private fun redsWidth(home: Boolean) = if (reds(home) > 0) min(reds(home), 3) * 4 * d + 3 * d else 0f
 
     private fun minuteColor(m: Match): Int = when {
+        m.state == Api.PRE -> 0xFFFBBF24.toInt()
         m.state == Api.POST -> 0xFFB4B4B4.toInt()
         m.phase == "break" -> 0xFFFBBF24.toInt()
         m.phase == "var" -> 0xFF60A5FA.toInt()
@@ -146,7 +156,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun leftWidth(k: Int): Float {
         sizes()
         val m = match ?: return gap()
-        var w = gap() + score.measureText(m.home.score.toString()) + 10 * d
+        var w = gap() + score.measureText(scoreText(m, true)) + 10 * d
         if (k < 2) w += 5 * d + crestSize()
         if (k < 1) {
             w += 6 * d + minute.measureText(clockLabel(m))
@@ -158,7 +168,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun rightWidth(k: Int): Float {
         sizes()
         val m = match ?: return gap()
-        var w = gap() + score.measureText(m.away.score.toString()) + 10 * d
+        var w = gap() + score.measureText(scoreText(m, false)) + 10 * d
         if (k < 2) w += 5 * d + crestSize()
         w += redsWidth(false)
         w += 6 * d + 6 * d
@@ -219,6 +229,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             drawTuck(c)
             return
         }
+        if (circle && burst == null && t == 0f) {
+            drawCircle(c)
+            return
+        }
         val m = match ?: return
         val ch = compactHeight().toFloat()
         val (lw, rw) = compactExtent()
@@ -251,6 +265,35 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
             else if (info) drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
         }
+    }
+
+    /** The small circle beside Xiaomi's island: the score, ringed by the live colour. */
+    private fun drawCircle(c: Canvas) {
+        val m = match ?: return
+        val size = compactHeight().toFloat()
+        val r = size / 2
+        c.drawCircle(r, r, r, bg)
+        val (color, breathe) = when {
+            m.state == Api.POST -> 0xFF6B7280.toInt() to false
+            m.state == Api.PRE || m.phase == "break" -> 0xFFFBBF24.toInt() to false
+            m.phase == "var" -> 0xFF60A5FA.toInt() to true
+            else -> 0xFF34D399.toInt() to true
+        }
+        val level = if (breathe) 0.45f + 0.55f * ((sin(System.currentTimeMillis() / 450.0) + 1) / 2).toFloat() else 1f
+        stroke.color = color
+        stroke.alpha = (255 * level).toInt()
+        stroke.strokeWidth = 1.6f * d
+        c.drawCircle(r, r, r - 1.6f * d, stroke)
+        val txt = if (m.state == Api.PRE) clock.filter { it.isDigit() }.ifBlank { "•" } else "${m.home.score}-${m.away.score}"
+        val old = score.textSize
+        score.textSize = (if (txt.length > 3) 8.5f else 10.5f) * d
+        score.color = Color.WHITE
+        score.alpha = 255
+        score.textAlign = Paint.Align.CENTER
+        c.drawText(txt, r, baseline(score, r), score)
+        score.textAlign = Paint.Align.LEFT
+        score.textSize = old
+        if (breathe) postInvalidateDelayed(50)
     }
 
     private fun drawTuck(c: Canvas) {
@@ -293,7 +336,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
         // Left of the camera, outward: home score, crest (+ red cards), minute (+ added time).
         var x = camX - gap()
-        val hs = m.home.score.toString()
+        val hs = scoreText(m, true)
         x -= score.measureText(hs)
         drawScore(c, hs, x, cy, m.home.color, homeFlash, a)
         if (k < 2) {
@@ -314,9 +357,17 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             }
         }
 
+        if (landscape && m.state != Api.PRE) {
+            minute.color = 0xFF9CA3AF.toInt()
+            minute.alpha = a
+            minute.textAlign = Paint.Align.CENTER
+            c.drawText("–", camX, baseline(minute, cy), minute)
+            minute.textAlign = Paint.Align.LEFT
+        }
+
         // Right of the camera, outward: away score, crest, red cards.
         x = camX + gap()
-        val aw = m.away.score.toString()
+        val aw = scoreText(m, false)
         drawScore(c, aw, x, cy, m.away.color, awayFlash, a)
         x += score.measureText(aw)
         if (k < 2) {
@@ -333,6 +384,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val now = System.currentTimeMillis()
         val (color, breathe) = when {
             m.state == Api.POST -> 0xFF6B7280.toInt() to false
+            m.state == Api.PRE -> 0xFFFBBF24.toInt() to false
             m.phase == "break" -> 0xFFFBBF24.toInt() to false
             m.phase == "var" -> 0xFF60A5FA.toInt() to true
             else -> 0xFF34D399.toInt() to true
@@ -405,7 +457,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (b.kind == "whistle") drawWhistle(c, left + crest / 2, mid, b.color, alpha)
         else drawCrest(c, if (b.home) m.home.logo else m.away.logo, left, mid - crest / 2, crest, alpha)
 
-        val sc = "${m.home.score} - ${m.away.score}"
+        val sc = bigScore(m)
         score.alpha = a
         val big = score.textSize
         score.textSize = 18f * d
@@ -448,7 +500,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val crest = 26 * d
         val rowMid = top + 16 * d
 
-        val sc = "${m.home.score} - ${m.away.score}"
+        val sc = bigScore(m)
         score.alpha = a
         val big = score.textSize
         score.textSize = 19f * d

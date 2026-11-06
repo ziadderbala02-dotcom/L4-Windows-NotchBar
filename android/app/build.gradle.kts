@@ -11,8 +11,8 @@ android {
         applicationId = "com.l4.notchlive"
         minSdk = 28
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.1.1"
+        versionCode = 4
+        versionName = "1.2.0"
     }
 
     // A fixed key in the repo, so every new APK installs over the old one (personal sideloaded app).

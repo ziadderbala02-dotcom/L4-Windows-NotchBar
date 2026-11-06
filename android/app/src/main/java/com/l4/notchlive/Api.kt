@@ -69,6 +69,8 @@ data class Match(
     val fetchedAt: Long = System.currentTimeMillis(),
     /** 1 = first half, 2 = second half, 3+ = extra time; 0 unknown. */
     val period: Int = 0,
+    /** The line-ups are out (usually about an hour before kickoff). */
+    val hasLineups: Boolean = false,
 ) {
     fun side(home: Boolean) = if (home) this.home else away
     fun reds(home: Boolean) = events.count { it.kind == "red" && it.home == home }
@@ -233,6 +235,7 @@ object Api {
             added = addedTime(g),
             clockSec = precise?.takeIf { it.optBoolean("autoProgress") && it.has("minutes") && phase == "play" }
                 ?.let { it.optInt("minutes") * 60 + it.optInt("seconds") },
+            hasLineups = g.optBoolean("hasLineups"),
             period = g.str("shortStatusText").trim().toIntOrNull() ?: when {
                 g.str("statusText").contains("الأول") -> 1
                 g.str("statusText").contains("الثاني") -> 2

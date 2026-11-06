@@ -54,6 +54,11 @@ class LiveService : Service(), IslandView.Gestures {
         private const val ROTATE_MS = 10_000L
         private const val BURST_MS = 6_500L
         private const val INFO_MS = 5_000L
+        private const val CIRCLE_OPEN_MS = 8_000L
+        /** Scorers and cards are refetched this often (or at once when the score changes). */
+        private const val DETAIL_MS = 20_000L
+        /** The countdown shows from this long before kickoff. */
+        private const val SOON_MS = 15 * 60_000L
 
         fun start(ctx: Context, action: String? = null, extra: String? = null) {
             val i = Intent(ctx, LiveService::class.java)
@@ -90,6 +95,11 @@ class LiveService : Service(), IslandView.Gestures {
     private var infoMatch: Int? = null
     private var infoUntil = 0L
     private var onScreen: Match? = null
+    private var circleNow = false
+
+    // Polling (net thread): the last full game per id, and the teams of pinned matches.
+    private val details = java.util.concurrent.ConcurrentHashMap<Int, Match>()
+    private val pinTeams = java.util.concurrent.ConcurrentHashMap<Int, Pair<Int, Int>>()
     private var demo: Match? = null
     private var demoUntil = 0L
     private var lastNotif = ""
@@ -189,7 +199,15 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
-        if (prefs.tucked && current == null && infoMatch == null) {
+        if (circleNow) {
+            // Beside Xiaomi's island: tap opens the full view over it, tap again closes it.
+            if (infoMatch == m.id) {
+                infoMatch = null
+            } else {
+                infoMatch = m.id
+                infoUntil = now + CIRCLE_OPEN_MS
+            }
+        } else if (prefs.tucked && current == null && infoMatch == null) {
             prefs.tucked = false
         } else if ((infoMatch == m.id && now < infoUntil) || current?.matchId == m.id) {
             // Second tap (or a tap on a burst): the match in 365Scores.
@@ -203,6 +221,11 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     override fun swipe(right: Boolean) {
+        if (circleNow) {
+            infoMatch = null
+            render()
+            return
+        }
         prefs.tucked = right
         infoMatch = null
         render()
@@ -228,36 +251,59 @@ class LiveService : Service(), IslandView.Gestures {
         if (g != gen) return
         var next = SLOW_MS
         try {
-            val ids = prefs.teams.map { it.id }
+            val favs = prefs.teams.map { it.id }.toSet()
+            val pins = prefs.pinned
+            // One light request for the favourite teams and the teams of pinned matches.
+            val ids = (favs + pins.flatMap { pinTeams[it]?.toList() ?: emptyList() }).toList()
             var list = if (ids.isEmpty()) emptyList() else Api.teamGames(ids)
-            // Pinned matches of any team.
-            val extra = prefs.pinned.filter { id -> list.none { it.id == id } }.mapNotNull { id ->
+            list = list.filter { it.home.id in favs || it.away.id in favs || it.id in pins }
+            // Pinned matches we don't know the teams of yet: fetch them whole once.
+            val extra = pins.filter { id -> list.none { it.id == id } }.mapNotNull { id ->
                 try {
-                    Api.game(id)
+                    Api.game(id).also {
+                        details[id] = it
+                        pinTeams[id] = it.home.id to it.away.id
+                    }
                 } catch (e: Exception) {
                     null
                 }
             }
             list = list + extra
-            val live = list.filter { it.state == Api.LIVE && it.id !in extra.map { e -> e.id } }
-            if (live.isNotEmpty()) {
-                // The list has no events: fetch each live game for scorers and cards.
-                val details = live.mapNotNull { m ->
-                    try {
-                        Api.game(m.id).copy(comp = m.comp)
-                    } catch (e: Exception) {
-                        null
-                    }
-                }.associateBy { it.id }
-                list = list.map { details[it.id] ?: it }
-            }
             val now = System.currentTimeMillis()
-            val hot = list.any {
-                it.state == Api.LIVE || (it.state == Api.PRE && it.kickoff - now < 10 * 60_000 && now - it.kickoff < 3 * 3600_000)
+            // Live ones: the light list has score and minute; scorers and cards come from the full
+            // game every 20 s, or at once when the score or phase changes.
+            list = list.map { m ->
+                if (m.state != Api.LIVE || m in extra) return@map m
+                val d = details[m.id]
+                val stale = d == null || now - d.fetchedAt > DETAIL_MS ||
+                    d.home.score != m.home.score || d.away.score != m.away.score || d.phase != m.phase || d.state != m.state
+                if (stale) {
+                    try {
+                        return@map Api.game(m.id).copy(comp = m.comp).also { details[m.id] = it }
+                    } catch (e: Exception) {
+                        // Use what we had.
+                    }
+                }
+                if (d == null) m else m.copy(
+                    events = d.events,
+                    compSlug = m.compSlug.ifBlank { d.compSlug },
+                    added = m.added ?: d.added,
+                    minute = listOfNotNull(m.minute, d.minute).maxOrNull(),
+                    clockSec = if (m.phase == "play") d.clockSec else null,
+                    fetchedAt = d.fetchedAt,
+                    period = if (m.period != 0) m.period else d.period,
+                )
             }
-            next = if (hot) FAST_MS else {
+            for (id in details.keys) if (list.none { it.id == id && it.state == Api.LIVE } && id !in pins) details.remove(id)
+            val hot = list.any {
+                it.state == Api.LIVE || (it.state == Api.PRE && it.kickoff - now < 75 * 60_000 && now - it.kickoff < 3 * 3600_000)
+            }
+            next = if (hot) {
+                // Before kickoff (line-ups, countdown) a minute is plenty.
+                if (list.any { it.state == Api.LIVE } || list.any { it.state == Api.PRE && it.kickoff - now < SOON_MS }) FAST_MS else 60_000L
+            } else {
                 val k = list.filter { it.state == Api.PRE && it.kickoff > now }.minOfOrNull { it.kickoff }
-                if (k != null) (k - 10 * 60_000 - now).coerceIn(30_000L, SLOW_MS) else SLOW_MS
+                if (k != null) (k - 75 * 60_000 - now).coerceIn(30_000L, SLOW_MS) else SLOW_MS
             }
             main.post { onData(list) }
         } catch (e: Exception) {
@@ -278,6 +324,9 @@ class LiveService : Service(), IslandView.Gestures {
                 if (before.state == Api.LIVE && m.state == Api.POST) {
                     endedAt[m.id] = now
                     push(Burst("whistle", "انتهت المباراة", "${m.home.short} ${m.home.score} - ${m.away.score} ${m.away.short}", true, 0xFFE5E7EB.toInt(), m.id))
+                }
+                if (before.state == Api.PRE && m.state == Api.PRE && !before.hasLineups && m.hasLineups) {
+                    push(Burst("notice", "التشكيل نزل", "${teams(m)} • دوس تشوفه", true, 0xFF34D399.toInt(), m.id))
                 }
                 if (before.state == Api.PRE && m.state == Api.LIVE) {
                     push(Burst("whistle", "الماتش بدأ", teams(m), true, 0xFFE5E7EB.toInt(), m.id))
@@ -388,6 +437,10 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     private fun clockText(m: Match, now: Long): String {
+        if (m.state == Api.PRE) {
+            val mins = ((m.kickoff - now + 59_999) / 60_000).toInt()
+            return if (mins > 0) "بعد ${mins}د" else "دلوقتي"
+        }
         if (m.state != Api.LIVE || m.phase != "play") return m.clock
         val n = minuteNow(m, now) ?: return m.clock
         return "$n'"
@@ -407,11 +460,14 @@ class LiveService : Service(), IslandView.Gestures {
 
     /* ---------- what the notch shows ---------- */
 
+    private fun soon(m: Match, now: Long) =
+        m.state == Api.PRE && m.kickoff - now <= SOON_MS && now - m.kickoff < 30 * 60_000
+
     private fun featured(list: List<Match>, now: Long): Match? {
+        current?.let { b -> list.firstOrNull { it.id == b.matchId }?.let { return it } }
+        if (now < infoUntil) infoMatch?.let { id -> list.firstOrNull { it.id == id }?.let { return it } }
         val live = list.filter { it.state == Api.LIVE || (it.state == Api.POST && now - (endedAt[it.id] ?: 0L) < FINAL_MS) }
-        if (live.isEmpty()) return null
-        current?.let { b -> live.firstOrNull { it.id == b.matchId }?.let { return it } }
-        if (now < infoUntil) infoMatch?.let { id -> live.firstOrNull { it.id == id }?.let { return it } }
+        if (live.isEmpty()) return list.filter { soon(it, now) }.minByOrNull { it.kickoff }
         live.firstOrNull { it.phase == "var" }?.let { return it }
         val running = live.filter { it.state == Api.LIVE }.sortedWith(compareBy({ it.kickoff }, { it.id }))
         if (running.isNotEmpty()) return running[((now / ROTATE_MS) % running.size).toInt()]
@@ -442,15 +498,21 @@ class LiveService : Service(), IslandView.Gestures {
         }
         val m = featured(list, now)
         onScreen = m
-        val hidden = !prefs.enabled || inCall() || !island.portrait() || (prefs.hideOnAudio && audio.isMusicActive)
+        // Xiaomi's island is busy (a call or music): circle beside it, or hidden if that's off.
+        val busy = inCall() || audio.isMusicActive
+        val wasCircle = circleNow
+        circleNow = busy && prefs.circle && island.portrait()
+        if (wasCircle && !circleNow) infoMatch = null
+        val hidden = !prefs.enabled || prefs.paused || (busy && !prefs.circle && island.portrait())
         if (m == null || hidden) {
-            island.update(null, "", "", null, false, false)
+            island.update(null, "", "", null, false, false, false)
         } else {
             island.update(
                 m, clockText(m, now), addedText(m, now),
                 current?.takeIf { it.matchId == m.id },
                 infoMatch == m.id,
-                prefs.tucked,
+                prefs.tucked && !circleNow,
+                circleNow,
             )
         }
         updateOngoing(m, now)
@@ -460,7 +522,7 @@ class LiveService : Service(), IslandView.Gestures {
         if (prefs.sound && !inCall()) sounds.play(b.kind)
         if (prefs.vibrate && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
         // The notch can't show it (no permission, a call, landscape): a normal notification instead.
-        if (!island.canShow() || !island.showing || inCall() || !island.portrait()) {
+        if (!island.canShow() || !island.showing || prefs.paused || inCall()) {
             if (b.kind == "notice" || b.kind == "whistle") return
             val n = Notification.Builder(this, CH_ALERT)
                 .setSmallIcon(R.drawable.ic_ball)
@@ -491,6 +553,14 @@ class LiveService : Service(), IslandView.Gestures {
 
     /* ---------- battery and data report ---------- */
 
+    /** Bytes this app really sent and received (compressed, as on the wire). */
+    private fun traffic(): Long {
+        val uid = android.os.Process.myUid()
+        val rx = android.net.TrafficStats.getUidRxBytes(uid)
+        val tx = android.net.TrafficStats.getUidTxBytes(uid)
+        return if (rx < 0 || tx < 0) Api.bytes.get() else rx + tx
+    }
+
     private fun battery(): Int =
         (getSystemService(BATTERY_SERVICE) as BatteryManager).getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
 
@@ -502,16 +572,16 @@ class LiveService : Service(), IslandView.Gestures {
         if (live && runStart == 0L) {
             runStart = now
             runBattery = battery()
-            runBytes = Api.bytes.get()
+            runBytes = traffic()
             runCharged = charging()
         } else if (live && charging()) {
             runCharged = true
         } else if (!live && runStart != 0L) {
             val mins = (now - runStart) / 60_000
-            val mb = (Api.bytes.get() - runBytes) / 1_048_576.0
+            val mb = (traffic() - runBytes) / 1_048_576.0
             val drop = runBattery - battery()
             val bat = if (runCharged) "كان على الشاحن" else "البطارية نزلت $drop%"
-            prefs.report = "آخر ماتشات: $mins دقيقة • ${"%.1f".format(mb)} ميجا تقريباً • $bat (مع استخدامك العادي)"
+            prefs.report = "آخر ماتشات: $mins دقيقة • ${"%.1f".format(mb)} ميجا داتا • $bat (مع استخدامك العادي للموبايل)"
             runStart = 0L
             // Next time a match starts, the notch is out again even if it was swiped away.
             prefs.tucked = false
@@ -605,6 +675,11 @@ class LiveService : Service(), IslandView.Gestures {
             "goal" -> push(Burst("goal", "جووووول ⚽", "تريزيجيه • 88'", true, home.color, -1))
             "red" -> push(Burst("red", "🟥 طرد", "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
             "whistle" -> push(Burst("whistle", "استكمال المباراة", "الشوط التاني بدأ", true, 0xFFE5E7EB.toInt(), -1))
+            "lineups" -> {
+                // Before kickoff: the countdown, then the line-ups notice.
+                demo = m.copy(state = Api.PRE, clock = "", phase = "", kickoff = now + 12 * 60_000, events = emptyList(), minute = null, added = null, clockSec = null)
+                push(Burst("notice", "التشكيل نزل", "${a.name} × ${b.name} • دوس تشوفه", true, 0xFF34D399.toInt(), -1))
+            }
         }
         nextBurstAt = now + 2500
         render()

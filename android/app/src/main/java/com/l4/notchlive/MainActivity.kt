@@ -143,6 +143,7 @@ class MainActivity : Activity() {
         demo.addView(button("جرّب جول ⚽", primary = true) { LiveService.start(this, LiveService.ACTION_DEMO, "goal") }, lp(0, WRAP, 1f))
         demo.addView(button("طرد 🟥") { LiveService.start(this, LiveService.ACTION_DEMO, "red") }, lp(0, WRAP, 1f, start = dp(6)))
         demo.addView(button("صفارة") { LiveService.start(this, LiveService.ACTION_DEMO, "whistle") }, lp(0, WRAP, 1f, start = dp(6)))
+        demo.addView(button("التشكيل") { LiveService.start(this, LiveService.ACTION_DEMO, "lineups") }, lp(0, WRAP, 1f, start = dp(6)))
         pos.addView(demo, lp(MATCH, WRAP, top = dp(12)))
         pos.addView(text("في التجربة: دوس على النوتش تكبر، ودوس تاني تفتح 365. اسحبها يمين تستخبى، وشمال ترجع.", 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
         root.addView(pos, lp(MATCH, WRAP, top = dp(12)))
@@ -159,12 +160,13 @@ class MainActivity : Activity() {
             lp(MATCH, WRAP, top = dp(8)),
         )
         opts.addView(
-            toggle("اخفيها لما يكون في صوت شغال (أغاني أو فيديو)", prefs.hideOnAudio) { prefs.hideOnAudio = it },
+            toggle("لما جزيرة شاومي شغالة (أغاني أو مكالمة): دايرة صغيرة جنبها بدل ما تستخبى", prefs.circle) { prefs.circle = it },
             lp(MATCH, WRAP, top = dp(8)),
         )
-        val diag = text("", 11f, Ui.MUTED)
-        opts.addView(button("اختبار فتح 365") { test365(diag) }, lp(MATCH, WRAP, top = dp(12)))
-        opts.addView(diag, lp(MATCH, WRAP, top = dp(6)))
+        opts.addView(
+            text("تقدر تخفي النوتش وتظهرها من الإعدادات السريعة (اللي بتنزلها من فوق): دوس على القلم وضيف مربع Notch Live.", 11f, Ui.MUTED),
+            lp(MATCH, WRAP, top = dp(12)),
+        )
         root.addView(opts, lp(MATCH, WRAP, top = dp(12)))
 
         report = text("", 11f, Ui.MUTED)
@@ -391,21 +393,6 @@ class MainActivity : Activity() {
                 .putExtra(":settings:fragment_args_key", component)
                 .putExtra(":settings:show_fragment_args", args),
         )
-    }
-
-    /** Which of our links the 365Scores app takes, to find its deep-link format. */
-    private fun test365(out: TextView) {
-        if (!MatchActivity.installed(this)) {
-            out.text = "تطبيق 365Scores مش متسطّب (أو مش ظاهر لـ Notch Live)."
-            return
-        }
-        val links = Api.appLinks(4888778, "league-5514/home-away-13204-57660-5514#id=4888778")
-        val lines = links.map { l ->
-            val ok = MatchActivity.appLink(this, listOf(l)) != null
-            (if (ok) "✓ " else "✗ ") + l.substringBefore("/football/match/").substringBefore("?") + if (l.contains("/football/match/")) " (match)" else ""
-        }
-        out.text = "تطبيق 365Scores متسطّب.\n" + lines.joinToString("\n") +
-            "\n\nابعت screenshot من هنا لـ Claude لو الضغطة لسه بتفتح المتصفح."
     }
 
     private fun appDetails() {
