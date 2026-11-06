@@ -1,47 +1,49 @@
 package com.l4.notchlive
 
 import android.app.Activity
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
 
 /**
- * Opens a match in 365Scores: its app if it's installed and takes the link, else the browser.
- * No screen of its own (the notch and notifications start it, then it's gone).
+ * Opens a match in the 365Scores app when it takes one of our links, else the match page in
+ * the browser. No screen of its own (the notch and notifications start it, then it's gone).
  */
 class MatchActivity : Activity() {
     companion object {
-        private const val PKG_365 = "com.scores365"
+        const val PKG_365 = "com.scores365"
 
-        fun intent(ctx: Context, url: String): Intent =
+        fun intent(ctx: Context, m: Match): Intent =
             Intent(ctx, MatchActivity::class.java)
-                .putExtra("url", url)
+                .putStringArrayListExtra("app", ArrayList(Api.appLinks(m)))
+                .putExtra("web", Api.matchUrl(m))
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+
+        /** The first link the 365Scores app says it can open, or null. */
+        fun appLink(ctx: Context, links: List<String>): String? = links.firstOrNull { l ->
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse(l)).setPackage(PKG_365)
+            ctx.packageManager.resolveActivity(i, PackageManager.MATCH_DEFAULT_ONLY) != null
+        }
+
+        fun installed(ctx: Context): Boolean = ctx.packageManager.getLaunchIntentForPackage(PKG_365) != null
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val url = intent.getStringExtra("url")
-        if (url != null) open(Uri.parse(url))
+        val app = intent.getStringArrayListExtra("app") ?: arrayListOf()
+        val web = intent.getStringExtra("web")
+        val link = appLink(this, app)
+        val opened = link != null && start(Intent(Intent.ACTION_VIEW, Uri.parse(link)).setPackage(PKG_365))
+        if (!opened && web != null) start(Intent(Intent.ACTION_VIEW, Uri.parse(web)))
         finish()
     }
 
-    private fun open(uri: Uri) {
-        val view = Intent(Intent.ACTION_VIEW, uri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        try {
-            startActivity(Intent(view).setPackage(PKG_365))
-            return
-        } catch (e: ActivityNotFoundException) {
-            // 365Scores isn't installed, or doesn't take web links.
-        } catch (e: SecurityException) {
-            // Same.
-        }
-        try {
-            startActivity(view)
-        } catch (e: Exception) {
-            // No browser either.
-        }
+    private fun start(i: Intent): Boolean = try {
+        startActivity(i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        true
+    } catch (e: Exception) {
+        false
     }
 }

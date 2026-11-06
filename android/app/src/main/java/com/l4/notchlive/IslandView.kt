@@ -42,6 +42,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     var match: Match? = null
+        set(v) {
+            val old = field
+            if (old != null && v != null && old.id == v.id) {
+                if (v.home.score != old.home.score) homeFlash = System.currentTimeMillis()
+                if (v.away.score != old.away.score) awayFlash = System.currentTimeMillis()
+            }
+            field = v
+        }
+
+    /** When each score last changed: it glows in the team colour for a moment. */
+    private var homeFlash = 0L
+    private var awayFlash = 0L
     var clock: String = ""
     var added: String = ""
     var burst: Burst? = null
@@ -63,7 +75,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var rightMax = Float.MAX_VALUE
     var scale = 1f
 
-    private val d get() = resources.displayMetrics.density * scale
+    /** Everything is drawn 10% above Android's base size (Omar: "a little bigger"), times the size slider. */
+    private val d get() = resources.displayMetrics.density * scale * 1.1f
 
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
     private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -148,6 +161,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         var w = gap() + score.measureText(m.away.score.toString()) + 10 * d
         if (k < 2) w += 5 * d + crestSize()
         w += redsWidth(false)
+        w += 6 * d + 6 * d
         return w
     }
 
@@ -281,7 +295,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         var x = camX - gap()
         val hs = m.home.score.toString()
         x -= score.measureText(hs)
-        c.drawText(hs, x, baseline(score, cy), score)
+        drawScore(c, hs, x, cy, m.home.color, homeFlash, a)
         if (k < 2) {
             x -= 5 * d + crest
             drawCrest(c, m.home.logo, x, cy - crest / 2, crest, alpha)
@@ -303,15 +317,61 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         // Right of the camera, outward: away score, crest, red cards.
         x = camX + gap()
         val aw = m.away.score.toString()
-        c.drawText(aw, x, baseline(score, cy), score)
+        drawScore(c, aw, x, cy, m.away.color, awayFlash, a)
         x += score.measureText(aw)
         if (k < 2) {
             x += 5 * d
             drawCrest(c, m.away.logo, x, cy - crest / 2, crest, alpha)
             x += crest
         }
-        if (reds(false) > 0) drawRedCards(c, reds(false), x + 3 * d, cy - 2.5f * d, alpha)
+        if (reds(false) > 0) {
+            drawRedCards(c, reds(false), x + 3 * d, cy - 2.5f * d, alpha)
+            x += redsWidth(false)
+        }
+
+        // The live dot: breathes while the ball is rolling, amber at a break, grey when over.
+        val now = System.currentTimeMillis()
+        val (color, breathe) = when {
+            m.state == Api.POST -> 0xFF6B7280.toInt() to false
+            m.phase == "break" -> 0xFFFBBF24.toInt() to false
+            m.phase == "var" -> 0xFF60A5FA.toInt() to true
+            else -> 0xFF34D399.toInt() to true
+        }
+        val level = if (breathe) 0.35f + 0.65f * ((sin(now / 450.0) + 1) / 2).toFloat() else 1f
+        dot.color = color
+        dot.alpha = (a * level).toInt()
+        c.drawCircle(x + 6 * d + 3 * d, cy, 3 * d, dot)
+        if (breathe) {
+            dot.alpha = (a * level * 0.25f).toInt()
+            c.drawCircle(x + 6 * d + 3 * d, cy, 5.5f * d, dot)
+            postInvalidateDelayed(50)
+        }
     }
+
+    /** A score; for 4 s after it changes it glows in the team colour and fades back to white. */
+    private fun drawScore(c: Canvas, s: String, x: Float, cy: Float, team: Int, since: Long, a: Int) {
+        val age = System.currentTimeMillis() - since
+        if (age in 0..4000) {
+            val f = 1f - age / 4000f
+            score.color = blend(Color.WHITE, team, f)
+            dot.color = team
+            dot.alpha = (a * f * 0.35f).toInt()
+            c.drawCircle(x + score.measureText(s) / 2, cy, 9 * d, dot)
+            postInvalidateDelayed(50)
+        } else {
+            score.color = Color.WHITE
+        }
+        score.alpha = a
+        c.drawText(s, x, baseline(score, cy), score)
+        score.color = Color.WHITE
+        score.alpha = a
+    }
+
+    private fun blend(a: Int, b: Int, f: Float): Int = Color.rgb(
+        (Color.red(a) + (Color.red(b) - Color.red(a)) * f).toInt(),
+        (Color.green(a) + (Color.green(b) - Color.green(a)) * f).toInt(),
+        (Color.blue(a) + (Color.blue(b) - Color.blue(a)) * f).toInt(),
+    )
 
     /** A little whistle: body, mouthpiece and sound lines. */
     private fun drawWhistle(c: Canvas, cx: Float, cy: Float, color: Int, alpha: Float) {

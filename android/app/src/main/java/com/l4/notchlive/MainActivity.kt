@@ -162,6 +162,9 @@ class MainActivity : Activity() {
             toggle("اخفيها لما يكون في صوت شغال (أغاني أو فيديو)", prefs.hideOnAudio) { prefs.hideOnAudio = it },
             lp(MATCH, WRAP, top = dp(8)),
         )
+        val diag = text("", 11f, Ui.MUTED)
+        opts.addView(button("اختبار فتح 365") { test365(diag) }, lp(MATCH, WRAP, top = dp(12)))
+        opts.addView(diag, lp(MATCH, WRAP, top = dp(6)))
         root.addView(opts, lp(MATCH, WRAP, top = dp(12)))
 
         report = text("", 11f, Ui.MUTED)
@@ -362,9 +365,47 @@ class MainActivity : Activity() {
                 appDetails()
             }
         }
-        permRow("الضغط والسحب على النوتش", "إمكانية الوصول ← التطبيقات المنزّلة ← Notch Live. من غيرها شريط الحالة بياكل الضغطات. لو قال \"إعداد مقيد\": معلومات التطبيق ← ⋮ ← اسمح بالإعدادات المقيدة", tap) {
-            startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+        permRow("الضغط والسحب على النوتش", "فعّل Notch Live في الصفحة اللي هتفتح. من غيرها شريط الحالة بياكل الضغطات. لو قال \"إعداد مقيد\": معلومات التطبيق ← ⋮ ← اسمح بالإعدادات المقيدة", tap) {
+            openAccessibility()
         }
+    }
+
+    /**
+     * Straight to Notch Live's own accessibility page where the ROM allows it; otherwise the
+     * accessibility list with Notch Live highlighted.
+     */
+    private fun openAccessibility() {
+        val component = ComponentName(this, TapService::class.java).flattenToString()
+        try {
+            startActivity(
+                Intent("android.settings.ACCESSIBILITY_DETAILS_SETTINGS")
+                    .putExtra(Intent.EXTRA_COMPONENT_NAME, component),
+            )
+            return
+        } catch (e: Exception) {
+            // Locked to system apps on most ROMs.
+        }
+        val args = Bundle().apply { putString(":settings:fragment_args_key", component) }
+        startActivity(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                .putExtra(":settings:fragment_args_key", component)
+                .putExtra(":settings:show_fragment_args", args),
+        )
+    }
+
+    /** Which of our links the 365Scores app takes, to find its deep-link format. */
+    private fun test365(out: TextView) {
+        if (!MatchActivity.installed(this)) {
+            out.text = "تطبيق 365Scores مش متسطّب (أو مش ظاهر لـ Notch Live)."
+            return
+        }
+        val links = Api.appLinks(4888778, "league-5514/home-away-13204-57660-5514#id=4888778")
+        val lines = links.map { l ->
+            val ok = MatchActivity.appLink(this, listOf(l)) != null
+            (if (ok) "✓ " else "✗ ") + l.substringBefore("/football/match/").substringBefore("?") + if (l.contains("/football/match/")) " (match)" else ""
+        }
+        out.text = "تطبيق 365Scores متسطّب.\n" + lines.joinToString("\n") +
+            "\n\nابعت screenshot من هنا لـ Claude لو الضغطة لسه بتفتح المتصفح."
     }
 
     private fun appDetails() {

@@ -256,13 +256,33 @@ object Api {
 
     private fun withSlug(m: Match, slugs: Map<Int, String>) = m.copy(compSlug = slugs[m.compId] ?: "")
 
-    /** The match page on 365scores.com (the 365Scores app opens the same link). */
-    fun matchUrl(m: Match): String {
+    /** The match page on 365scores.com, in Arabic (opens straight on the match in a browser). */
+    fun matchUrl(m: Match): String = "https://www.365scores.com/ar/football/match/${matchPath(m)}"
+
+    private fun matchPath(m: Match): String {
         val comp = "${m.compSlug.ifBlank { "league" }}-${m.compId}"
         val teams = "${m.home.slug.ifBlank { "home" }}-${m.away.slug.ifBlank { "away" }}"
         val ids = listOf(m.home.id, m.away.id).sorted().joinToString("-")
-        return "https://www.365scores.com/ar/football/match/$comp/$teams-$ids-${m.compId}#id=${m.id}"
+        return "$comp/$teams-$ids-${m.compId}#id=${m.id}"
     }
+
+    /**
+     * Links the 365Scores app might take, best guess first. Its deep-link format isn't
+     * published, so MatchActivity tries each against the installed app and falls back to
+     * [matchUrl] in the browser.
+     */
+    fun appLinks(m: Match): List<String> = appLinks(m.id, matchPath(m))
+
+    fun appLinks(id: Int, path: String): List<String> = listOf(
+        "https://www.365scores.com/football/match/$path",
+        "https://www.365scores.com/ar/football/match/$path",
+        "https://365scores.com/football/match/$path",
+        "https://www.365scores.com/game/$id",
+        "scores365://game?gameId=$id",
+        "scores365://gamecenter?gameId=$id",
+        "scores365://game/$id",
+        "365scores://game?gameId=$id",
+    )
 
     /** Every football match being played right now. */
     fun liveNow(): List<Match> {

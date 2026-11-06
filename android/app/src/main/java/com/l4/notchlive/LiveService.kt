@@ -211,7 +211,7 @@ class LiveService : Service(), IslandView.Gestures {
     private fun open365(m: Match) {
         if (m.id < 0) return
         try {
-            startActivity(MatchActivity.intent(this, Api.matchUrl(m)))
+            startActivity(MatchActivity.intent(this, m))
         } catch (e: Exception) {
             // Blocked from the background: the notification still opens it.
         }
@@ -547,7 +547,7 @@ class LiveService : Service(), IslandView.Gestures {
     )
 
     private fun matchIntent(m: Match): PendingIntent = PendingIntent.getActivity(
-        this, m.id, MatchActivity.intent(this, Api.matchUrl(m)),
+        this, m.id, MatchActivity.intent(this, m),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
