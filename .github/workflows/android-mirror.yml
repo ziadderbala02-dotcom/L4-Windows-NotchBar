@@ -1,0 +1,78 @@
+name: Android updates
+
+# After each Android build: copies NotchLive_X.Y.Z.apk to the public nl-updates repo (the app's
+# updater reads releases from there, so the code repo can stay private), then takes pictures of
+# the notch on an emulator (camera in the middle, in a corner, two holes, wide notch, waterfall,
+# none; phone, small phone and tablet) and attaches them there as screens_X.Y.Z.zip.
+# Needs the secret UPDATES_TOKEN: a fine-grained token with Contents read/write on nl-updates only.
+on:
+  workflow_run:
+    workflows: [Android]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PUBLIC: ziadderbala02-dotcom/nl-updates
+
+jobs:
+  mirror:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: echo "version=$(grep -oP 'versionName = "\K[^"]+' android/app/build.gradle.kts)" >> "$GITHUB_OUTPUT"
+      - name: Get the APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.version.outputs.version }}
+        run: gh release download "android-v$V" -p "NotchLive_$V.apk" -R "$GITHUB_REPOSITORY"
+      - name: Publish to nl-updates
+        env:
+          GH_TOKEN: ${{ secrets.UPDATES_TOKEN }}
+          V: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "android-v$V" -R "$PUBLIC" >/dev/null 2>&1; then
+            echo "android-v$V is already on $PUBLIC."
+            exit 0
+          fi
+          gh release create "android-v$V" "NotchLive_$V.apk" -R "$PUBLIC" --latest=false \
+            --title "Notch Live (Android) $V" \
+            --notes "Download \`NotchLive_$V.apk\` on the phone and open it. Installs over the previous version."
+
+  shots:
+    needs: mirror
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get the APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.mirror.outputs.version }}
+        run: gh release download "android-v$V" -p "NotchLive_$V.apk" -R "$GITHUB_REPOSITORY"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: false
+          script: bash android/tools/shots.sh NotchLive_${{ needs.mirror.outputs.version }}.apk shots
+      - name: Attach to the nl-updates release
+        env:
+          GH_TOKEN: ${{ secrets.UPDATES_TOKEN }}
+          V: ${{ needs.mirror.outputs.version }}
+        run: |
+          zip -qr "screens_$V.zip" shots
+          gh release upload "android-v$V" "screens_$V.zip" --clobber -R "$PUBLIC"
