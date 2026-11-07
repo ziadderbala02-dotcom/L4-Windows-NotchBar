@@ -84,18 +84,22 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         }
         if (screenW > screenH) {
             // Landscape: the camera is on a side; the pill goes to the top centre instead.
-            return Geo(screenW / 2f, 6 * density, 0f, screenW, false)
+            return Geo(screenW / 2f + prefs.offsetX * density, 6 * density, 0f, screenW, false)
         }
         // The punch hole: a small cut-out at the top, closest to the middle.
         val hole = cut.filter { it.top <= sb && it.width() < screenW / 3 }.minByOrNull { abs(it.centerX() - screenW / 2) }
+        // The user's left/right nudge, for phones whose camera Android reports a little off.
+        val dx = prefs.offsetX * density
         return if (hole != null) {
-            Geo(hole.exactCenterX(), hole.exactCenterY(), min(hole.width(), hole.height()) / 2f, screenW, screenH >= screenW)
+            Geo(hole.exactCenterX() + dx, hole.exactCenterY(), min(hole.width(), hole.height()) / 2f, screenW, screenH >= screenW)
         } else {
-            Geo(screenW / 2f, sb / 2f, sb * 0.28f, screenW, screenH >= screenW)
+            Geo(screenW / 2f + dx, sb / 2f, sb * 0.28f, screenW, screenH >= screenW)
         }
     }
 
     private var big = false
+
+    private fun density() = ctx.resources.displayMetrics.density
 
     /** Saver mode: the view skips endless animations. */
     var calm = false
@@ -114,12 +118,18 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      * Draw [match] (null = hide). [burst] or [info] widen it; [tucked] leaves only a small mark.
      * [clock] is the minute label, [added] the announced added time ("+4" or "").
      */
-    fun update(match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean) {
+    fun update(
+        match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean,
+        others: Int = 0, idle: Boolean = false,
+    ) {
         if (match == null) {
             hide()
             return
         }
         val v = view ?: attach() ?: return
+        v.others = others
+        v.idle = idle
+        v.roomy = roomy()
         v.match = match
         v.clock = clock
         v.added = added
@@ -157,6 +167,9 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      * Full screen (status bar hidden): shown on top by default; with the option off, the window
      * stays (to hear when the bar comes back) but draws nothing and lets touches through.
      */
+    /** Full screen with the "bigger in full screen" option: nothing to cover, so no squeezing. */
+    private fun roomy() = prefs.roomyFullscreen && !statusBarVisible && prefs.overFullscreen
+
     private fun applyVisibility() {
         val v = view ?: return
         val p = lp ?: return
@@ -205,14 +218,21 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.scale = prefs.scale / 100f
         v.landscape = !g.portrait
         if (g.portrait) {
-            // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each side).
-            v.leftMax = g.cx - g.screenW * LEFT_EDGE
-            v.rightMax = g.screenW * RIGHT_EDGE - g.cx
+            // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each
+            // side), widened or narrowed per side by the user for other phones.
+            v.leftMax = g.cx - g.screenW * LEFT_EDGE + prefs.roomLeft * density()
+            v.rightMax = g.screenW * RIGHT_EDGE - g.cx + prefs.roomRight * density()
         }
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
+                val was = statusBarVisible
                 statusBarVisible = ins.isVisible(WindowInsets.Type.statusBars())
                 applyVisibility()
+                if (was != statusBarVisible) {
+                    v.roomy = roomy()
+                    if (!big) layout()
+                    v.invalidate()
+                }
             }
             ins
         }
@@ -267,7 +287,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             // Right of Xiaomi's island, just before the status icons.
             width = ch
             height = ch
-            x = (g.screenW * RIGHT_EDGE - ch - 4 * density).toInt()
+            x = (g.screenW * RIGHT_EDGE + prefs.roomRight * density + prefs.offsetX * density - ch - 4 * density).toInt()
             v.camX = g.cx - x
         } else if (v.tucked) {
             width = v.tuckWidth()

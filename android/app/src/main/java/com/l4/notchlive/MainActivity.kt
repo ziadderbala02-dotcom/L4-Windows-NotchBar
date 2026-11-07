@@ -75,6 +75,8 @@ class MainActivity : Activity() {
     private val tick = object : Runnable {
         override fun run() {
             if (!onboarding && page == null && tab == 0) drawHome()
+            // The matches list stays fresh while it's open: every 30 s.
+            if (!onboarding && page == null && tab == 1 && !loadingList && System.currentTimeMillis() - loadedAt > 30_000L) load(quiet = true)
             main.postDelayed(this, 5000)
         }
     }
@@ -93,6 +95,20 @@ class MainActivity : Activity() {
         setContentView(root)
         // After setContentView: before it, some ROMs (HyperOS) have no window decor yet and crash.
         Ui.bars(this)
+        // Android 15 draws the app under the status bar, the navigation bar and the keyboard:
+        // keep the content clear of all three.
+        root.setOnApplyWindowInsetsListener { v, ins ->
+            if (Build.VERSION.SDK_INT >= 30) {
+                val b = ins.getInsets(android.view.WindowInsets.Type.systemBars() or android.view.WindowInsets.Type.ime() or android.view.WindowInsets.Type.displayCutout())
+                v.setPadding(b.left, b.top, b.right, b.bottom)
+                android.view.WindowInsets.CONSUMED
+            } else {
+                @Suppress("DEPRECATION")
+                v.setPadding(ins.systemWindowInsetLeft, ins.systemWindowInsetTop, ins.systemWindowInsetRight, ins.systemWindowInsetBottom)
+                @Suppress("DEPRECATION")
+                ins.consumeSystemWindowInsets()
+            }
+        }
         onboarding = !prefs.onboarded || savedInstanceState?.getBoolean("onboarding") == true
         checkUpdate()
     }
@@ -126,10 +142,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
-            page != null -> {
-                page = null
-                draw()
-            }
+            page != null -> goBack()
             !onboarding && tab != 0 -> {
                 tab = 0
                 draw()
@@ -141,7 +154,7 @@ class MainActivity : Activity() {
     /* ======================= frame: content + bottom bar ======================= */
 
     private fun draw() {
-        if (onboarding) {
+        if (onboarding && page == null) {
             drawOnboarding()
             return
         }
@@ -154,6 +167,10 @@ class MainActivity : Activity() {
         when (page) {
             "position" -> positionPage(content)
             "teams" -> teamsPage(content)
+            "comps" -> compsPage(content)
+            "sounds" -> soundsPage(content)
+            "search_team" -> searchPage(content, comps = false)
+            "search_comp" -> searchPage(content, comps = true)
             else -> when (tab) {
                 0 -> home(content)
                 1 -> matches(content)
@@ -248,6 +265,8 @@ class MainActivity : Activity() {
         val nc = card()
         nc.addView(text(L.t("next"), 13f, Ui.MUTED))
         if (next != null) {
+            nc.isClickable = true
+            nc.setOnClickListener { startActivity(MatchActivity.intent(this, next)) }
             val r = row()
             r.addView(teamBadge(next.home), lp(0, WRAP, 1f))
             val mid = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
@@ -273,20 +292,64 @@ class MainActivity : Activity() {
             draw()
         })
         box.addView(th, lp(MATCH, WRAP, top = dp(16)))
-        val tr = row()
-        prefs.teams.take(4).forEachIndexed { i, t ->
-            val tc = card(12).apply { gravity = Gravity.CENTER_HORIZONTAL }
-            tc.addView(crest(t.logo, 34))
-            tc.addView(text(t.name, 13f, bold = true).apply {
-                gravity = Gravity.CENTER
-                maxLines = 1
-            }, lp(MATCH, WRAP, top = dp(6)))
-            val playing = known.any { it.state == Api.LIVE && (it.home.id == t.id || it.away.id == t.id) }
-            if (playing) tc.addView(text(L.t("live"), 11f, Ui.ACCENT).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
-            tr.addView(tc, lp(0, WRAP, 1f, start = if (i > 0) dp(10) else 0))
+        // All of them, four a row. A long press shows × on each to remove it.
+        for (chunk in prefs.teams.chunked(4)) {
+            val tr = row()
+            for (i in 0 until 4) {
+                val t = chunk.getOrNull(i)
+                if (t == null) {
+                    tr.addView(View(this), lp(0, WRAP, 1f, start = if (i > 0) dp(10) else 0))
+                    continue
+                }
+                val cell = FrameLayout(this)
+                val tc = card(12).apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    isLongClickable = true
+                    setOnLongClickListener {
+                        editTeams = !editTeams
+                        drawHome()
+                        true
+                    }
+                    setOnClickListener {
+                        if (editTeams) {
+                            editTeams = false
+                            drawHome()
+                        }
+                    }
+                }
+                tc.addView(crest(t.logo, 34))
+                tc.addView(text(t.name, 13f, bold = true).apply {
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, lp(MATCH, WRAP, top = dp(6)))
+                val playing = known.any { it.state == Api.LIVE && (it.home.id == t.id || it.away.id == t.id) }
+                if (playing) tc.addView(text(L.t("live"), 11f, Ui.ACCENT).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
+                cell.addView(tc, FrameLayout.LayoutParams(MATCH, WRAP))
+                if (editTeams) {
+                    val x = text("×", 16f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                        gravity = Gravity.CENTER
+                        background = Ui.rounded(0xFFEF4444.toInt(), dp(12).toFloat())
+                        contentDescription = L.t("remove")
+                        isClickable = true
+                        setOnClickListener {
+                            prefs.teams = prefs.teams.filter { it.id != t.id }
+                            LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
+                            drawHome()
+                        }
+                    }
+                    cell.addView(x, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.TOP or Gravity.END))
+                }
+                tr.addView(cell, lp(0, WRAP, 1f, start = if (i > 0) dp(10) else 0))
+            }
+            box.addView(tr, lp(MATCH, WRAP, top = dp(8)))
         }
-        box.addView(tr, lp(MATCH, WRAP, top = dp(6)))
+        if (prefs.teams.isEmpty()) box.addView(text(L.t("no_teams"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+        else box.addView(text(L.t(if (editTeams) "remove_done" else "remove_hint"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
     }
+
+    /** Home: × shown on the team cards (after a long press). */
+    private var editTeams = false
 
     private fun logoMark(): View {
         val v = FrameLayout(this).apply {
@@ -365,7 +428,10 @@ class MainActivity : Activity() {
     private var listBox: LinearLayout? = null
 
     private fun matches(c: LinearLayout) {
-        c.addView(text(L.t("tab_matches"), 24f, bold = true))
+        val head = row()
+        head.addView(text(L.t("tab_matches"), 24f, bold = true), lp(0, WRAP, 1f))
+        head.addView(link(L.t("refresh")) { load() })
+        c.addView(head)
         val search = row().apply {
             background = Ui.rounded(Ui.CARD, dp(14).toFloat())
             setPadding(dp(14), 0, dp(14), 0)
@@ -415,15 +481,32 @@ class MainActivity : Activity() {
             addView(chips)
         }, lp(MATCH, WRAP, top = dp(12)))
         c.addView(text(L.t("pin_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
+        if (filter == "live" || filter == "today") {
+            // Followed competitions only (and the favourites' matches), or everything.
+            val f = row()
+            f.addView(text(L.t(if (prefs.allComps) "showing_all" else "only_followed"), 12f, Ui.MUTED), lp(0, WRAP, 1f))
+            f.addView(link(L.t(if (prefs.allComps) "show_followed" else "show_all")) {
+                prefs.allComps = !prefs.allComps
+                draw()
+            })
+            c.addView(f, lp(MATCH, WRAP, top = dp(2)))
+        }
         listBox = column()
         c.addView(listBox, lp(MATCH, WRAP, top = dp(4)))
         if (loaded == null) load() else drawList()
     }
 
-    private fun load() {
-        loadError = false
-        listBox?.removeAllViews()
-        listBox?.addView(text(L.t("loading"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+    private var loadingList = false
+    private var loadedAt = 0L
+
+    /** [quiet]: the 30 s refresh, which keeps the list on screen while it loads. */
+    private fun load(quiet: Boolean = false) {
+        if (!quiet) {
+            loadError = false
+            listBox?.removeAllViews()
+            listBox?.addView(text(L.t("loading"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+        }
+        loadingList = true
         val f = filter
         io.execute {
             val r = try {
@@ -444,7 +527,10 @@ class MainActivity : Activity() {
                 null
             }
             main.post {
+                loadingList = false
+                loadedAt = System.currentTimeMillis()
                 if (f != filter) return@post
+                if (quiet && r == null && loaded != null) return@post
                 loadError = r == null
                 loaded = r ?: emptyList()
                 drawList()
@@ -463,10 +549,19 @@ class MainActivity : Activity() {
         val pins = prefs.pinned
         val favs = prefs.teams.map { it.id }.toSet()
         val q = query
+        val comps = prefs.comps.map { it.id }.toSet()
+        val onlyFollowed = (filter == "live" || filter == "today") && !prefs.allComps && q.isEmpty()
         val list = all
+            .filter { !onlyFollowed || it.compId in comps || it.home.id in favs || it.away.id in favs || it.id in pins }
             .filter { q.isEmpty() || it.home.name.contains(q, true) || it.away.name.contains(q, true) || it.comp.contains(q, true) }
             .sortedWith(compareBy({ it.id !in pins }, { it.comp }, { it.kickoff }))
         if (list.isEmpty()) box.addView(text(L.t("no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+        if (onlyFollowed && list.size < all.size) {
+            box.addView(link(L.f("hidden_n", all.size - list.size)) {
+                prefs.allComps = true
+                draw()
+            }, lp(WRAP, WRAP, top = dp(4)))
+        }
         var lastComp = ""
         for (m in list.take(60)) {
             if (m.comp != lastComp) {
@@ -482,6 +577,15 @@ class MainActivity : Activity() {
         val r = row().apply {
             background = if (pinned) Ui.rounded(Ui.CARD, dp(16).toFloat(), Ui.ACCENT, dp(2)) else Ui.rounded(Ui.CARD, dp(16).toFloat())
             setPadding(dp(14), dp(12), dp(14), dp(12))
+            // The whole row opens the match page; the pin button keeps its own tap.
+            isClickable = true
+            setOnClickListener {
+                try {
+                    startActivity(MatchActivity.intent(this@MainActivity, m))
+                } catch (e: Exception) {
+                    // No browser.
+                }
+            }
         }
         val teams = column()
         for (home in listOf(true, false)) {
@@ -659,8 +763,23 @@ class MainActivity : Activity() {
             draw()
         })
         n.addView(divider())
+        n.addView(navRow(L.t("comps"), "${prefs.comps.size}") {
+            page = "comps"
+            draw()
+        })
+        n.addView(divider())
         n.addView(toggleRow(L.t("over_full"), null, prefs.overFullscreen) {
             prefs.overFullscreen = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+        })
+        n.addView(divider())
+        n.addView(toggleRow(L.t("roomy"), L.t("roomy_d"), prefs.roomyFullscreen) {
+            prefs.roomyFullscreen = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+        })
+        n.addView(divider())
+        n.addView(toggleRow(L.t("idle"), L.t("idle_d"), prefs.idleNotch) {
+            prefs.idleNotch = it
             LiveService.start(this, LiveService.ACTION_REFRESH)
         })
         n.addView(divider())
@@ -671,9 +790,25 @@ class MainActivity : Activity() {
         val a = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
         a.addView(toggleRow(L.t("sound"), null, prefs.sound) { prefs.sound = it })
         a.addView(divider())
+        a.addView(navRow(L.t("sounds"), "") {
+            page = "sounds"
+            draw()
+        })
+        a.addView(divider())
         a.addView(toggleRow(L.t("vibrate"), null, prefs.vibrate) { prefs.vibrate = it })
         a.addView(divider())
-        a.addView(toggleRow(L.t("news"), L.t("news_d"), prefs.news) { prefs.news = it })
+        a.addView(toggleRow(L.t("news"), L.t("news_d"), prefs.news) {
+            prefs.news = it
+            draw()
+        })
+        if (prefs.news) {
+            a.addView(text(L.t("news_lang"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(4)))
+            a.addView(segmented(listOf("app" to "nl_app", "ar" to "_العربية", "en" to "_English"), prefs.newsLang) {
+                prefs.newsLang = it
+                draw()
+            }, lp(MATCH, WRAP, top = dp(6)))
+            a.addView(View(this), lp(MATCH, dp(10)))
+        }
         a.addView(divider())
         a.addView(toggleRow(L.t("cards"), L.t("cards_d"), prefs.cards) { prefs.cards = it })
         c.addView(a, lp(MATCH, WRAP, top = dp(8)))
@@ -696,7 +831,7 @@ class MainActivity : Activity() {
         })
         if (prefs.phone) {
             p.addView(divider())
-            p.addView(navRow(L.t("phone_apps"), L.f("phone_apps_n", prefs.phoneApps.size)) { pickApps() })
+            p.addView(navRow(L.t("phone_apps"), L.f("phone_apps_n", prefs.phoneApps.size)) { pickApps(prefs.phoneApps) { prefs.phoneApps = it } })
             p.addView(divider())
             p.addView(toggleRow(L.t("phone_hide"), null, prefs.phoneHide) { prefs.phoneHide = it })
             p.addView(divider())
@@ -704,6 +839,40 @@ class MainActivity : Activity() {
         }
         p.addView(text(L.t("phone_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(4)))
         c.addView(p, lp(MATCH, WRAP, top = dp(8)))
+
+        // Beta: the notification inspector (gets 1.6 ready: rides, maps, timers in the notch).
+        val ih = row()
+        ih.addView(label(L.t("inspector")))
+        ih.addView(text(L.t("beta"), 10f, Ui.BLUE, bold = true).apply {
+            background = Ui.rounded(Ui.BLUE_SOFT, dp(6).toFloat())
+            setPadding(dp(6), dp(2), dp(6), dp(2))
+        }, lp(WRAP, WRAP, start = dp(8)))
+        c.addView(ih, lp(MATCH, WRAP, top = dp(16)))
+        val ins = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(12)) }
+        ins.addView(toggleRow(L.t("inspector_on"), null, prefs.inspector) {
+            prefs.inspector = it
+            if (it && !listenerGranted()) {
+                toast(L.t("phone_perm"))
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+            draw()
+        })
+        if (prefs.inspector) {
+            ins.addView(divider())
+            ins.addView(navRow(L.t("phone_apps"), L.f("phone_apps_n", prefs.inspectorApps.size)) {
+                pickApps(prefs.inspectorApps) { prefs.inspectorApps = it }
+            })
+            ins.addView(divider())
+            val log = NotifListener.logFile(this)
+            ins.addView(navRow(L.t("inspector_share"), if (log.exists()) "${log.length() / 1024} KB" else "") { shareLog() })
+            ins.addView(divider())
+            ins.addView(navRow(L.t("inspector_clear"), "") {
+                log.delete()
+                draw()
+            })
+        }
+        ins.addView(text(L.t("inspector_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(4)))
+        c.addView(ins, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("permissions")), lp(MATCH, WRAP, top = dp(16)))
         val pr = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
@@ -778,15 +947,26 @@ class MainActivity : Activity() {
 
     /* ----- sub-page: position and size, with the demo buttons ----- */
 
+    /** Where a search page goes back to (the teams or competitions page, or the setup). */
+    private var backTo: String? = null
+
+    private fun goBack() {
+        val p = page
+        page = if (p != null && p.startsWith("search")) backTo else null
+        if (p != null && p.startsWith("search")) {
+            main.removeCallbacks(searchRun)
+            searchBox = null
+            currentFocus?.let { (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).hideSoftInputFromWindow(it.windowToken, 0) }
+        }
+        draw()
+    }
+
     private fun backRow(c: LinearLayout, title: String) {
         val r = row().apply {
             minimumHeight = dp(48)
             isClickable = true
             contentDescription = L.t("back")
-            setOnClickListener {
-                page = null
-                draw()
-            }
+            setOnClickListener { goBack() }
         }
         r.addView(Icon(this, "back", 22).apply {
             color = Ui.TEXT
@@ -801,7 +981,21 @@ class MainActivity : Activity() {
         val k = card()
         k.addView(text(L.t("pos_note"), 13f, Ui.MUTED))
         k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(12)))
-        k.addView(slider(L.t("size"), 80, 140, prefs.scale) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("left_right"), -40, 40, prefs.offsetX) { prefs.offsetX = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("size"), 50, 140, prefs.scale) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(text(L.t("room_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+        k.addView(slider(L.t("room_left"), -40, 60, prefs.roomLeft) { prefs.roomLeft = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("room_right"), -40, 60, prefs.roomRight) { prefs.roomRight = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(button(L.t("reset_pos")) {
+            prefs.offsetY = 0
+            prefs.offsetX = 0
+            prefs.scale = 100
+            prefs.roomLeft = 0
+            prefs.roomRight = 0
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            LiveService.start(this, LiveService.ACTION_DEMO, "none")
+            draw()
+        }, lp(MATCH, WRAP, top = dp(10)))
         c.addView(k, lp(MATCH, WRAP, top = dp(12)))
 
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
@@ -816,7 +1010,7 @@ class MainActivity : Activity() {
         c.addView(text(L.t("try_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
     }
 
-    private fun slider(title: String, lo: Int, hi: Int, value: Int, save: (Int) -> Unit): View {
+    private fun slider(title: String, lo: Int, hi: Int, value: Int, restart: Boolean = true, save: (Int) -> Unit): View {
         val box = column()
         val t = text("$title: $value", 13f, Ui.MUTED)
         box.addView(t)
@@ -834,8 +1028,10 @@ class MainActivity : Activity() {
 
                 override fun onStopTrackingTouch(s: SeekBar) {
                     save(s.progress + lo)
-                    LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
-                    LiveService.start(this@MainActivity, LiveService.ACTION_DEMO, "none")
+                    if (restart) {
+                        LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
+                        LiveService.start(this@MainActivity, LiveService.ACTION_DEMO, "none")
+                    }
                 }
             })
         }, lp(MATCH, dp(44), top = dp(4)))
@@ -849,86 +1045,229 @@ class MainActivity : Activity() {
         teamsEditor(c)
     }
 
+    /** The favourites, highest priority first: ↑ ↓ to reorder, × to remove, + to search. */
     private fun teamsEditor(c: LinearLayout) {
-        val list = column()
-        val results = column()
-        fun drawTeams() {
-            list.removeAllViews()
-            for (t in prefs.teams) {
-                val r = row().apply { minimumHeight = dp(52) }
-                r.addView(crest(t.logo, 28))
-                r.addView(text(t.name, 14f, bold = true), lp(0, WRAP, 1f, start = dp(10)))
-                r.addView(button(L.t("remove")) {
-                    prefs.teams = prefs.teams.filter { it.id != t.id }
-                    drawTeams()
-                    LiveService.start(this, LiveService.ACTION_REFRESH)
-                })
-                list.addView(r)
-            }
-            if (prefs.teams.isEmpty()) list.addView(text(L.t("no_teams"), 13f, Ui.MUTED))
-        }
         val k = card()
-        k.addView(list)
-        val search = row().apply {
-            background = Ui.rounded(Ui.CARD2, dp(12).toFloat())
-            setPadding(dp(12), 0, dp(6), 0)
+        val teams = prefs.teams
+        teams.forEachIndexed { i, t ->
+            if (i > 0) k.addView(divider())
+            k.addView(orderRow(t, i, teams.size,
+                move = { d ->
+                    val l = prefs.teams.toMutableList()
+                    val j = i + d
+                    if (j in l.indices) {
+                        val x = l[i]
+                        l[i] = l[j]
+                        l[j] = x
+                        prefs.teams = l
+                        LiveService.start(this, LiveService.ACTION_REFRESH)
+                        draw()
+                    }
+                },
+                remove = {
+                    prefs.teams = prefs.teams.filter { it.id != t.id }
+                    LiveService.start(this, LiveService.ACTION_REFRESH)
+                    draw()
+                }))
         }
+        if (teams.isEmpty()) k.addView(text(L.t("no_teams"), 13f, Ui.MUTED))
+        k.addView(button("+  " + L.t("add_team"), primary = true) {
+            backTo = page
+            searchQuery = ""
+            page = "search_team"
+            draw()
+        }, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        if (teams.size > 1) c.addView(text(L.t("order_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+    }
+
+    /** One team or competition: crest, name, and (for teams) ↑ ↓, then ×. */
+    private fun orderRow(t: TeamOption, i: Int, n: Int, move: ((Int) -> Unit)?, remove: () -> Unit): View {
+        val r = row().apply { minimumHeight = dp(52) }
+        r.addView(crest(t.logo, 28))
+        r.addView(text(t.name, 14f, bold = true).apply {
+            maxLines = 1
+            ellipsize = android.text.TextUtils.TruncateAt.END
+        }, lp(0, WRAP, 1f, start = dp(10)))
+        fun small(label: String, desc: String, enabled: Boolean, color: Int, act: () -> Unit) = text(label, 16f, if (enabled) color else Ui.LINE, bold = true).apply {
+            gravity = Gravity.CENTER
+            contentDescription = desc
+            isClickable = enabled
+            if (enabled) setOnClickListener { act() }
+        }
+        if (move != null) {
+            r.addView(small("↑", L.t("move_up"), i > 0, Ui.TEXT) { move(-1) }, lp(dp(40), dp(44)))
+            r.addView(small("↓", L.t("move_down"), i < n - 1, Ui.TEXT) { move(1) }, lp(dp(40), dp(44)))
+        }
+        r.addView(small("×", L.t("remove"), true, Ui.RED) { remove() }, lp(dp(40), dp(44)))
+        return r
+    }
+
+    /* ----- sub-page: followed competitions ----- */
+
+    private fun compsPage(c: LinearLayout) {
+        backRow(c, L.t("comps"))
+        c.addView(text(L.t("comps_note"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        compsEditor(c)
+    }
+
+    private fun compsEditor(c: LinearLayout) {
+        val k = card()
+        val comps = prefs.comps
+        comps.forEachIndexed { i, t ->
+            if (i > 0) k.addView(divider())
+            k.addView(orderRow(t, i, comps.size, null) {
+                prefs.comps = prefs.comps.filter { it.id != t.id }
+                draw()
+            })
+        }
+        if (comps.isEmpty()) k.addView(text(L.t("no_comps"), 13f, Ui.MUTED))
+        k.addView(button("+  " + L.t("add_comp"), primary = true) {
+            backTo = page
+            searchQuery = ""
+            page = "search_comp"
+            draw()
+        }, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+    }
+
+    /* ----- sub-page: search a team or a competition, results while typing ----- */
+
+    private var searchQuery = ""
+    private val searchRun = Runnable { runSearch() }
+    private var searchBox: LinearLayout? = null
+    private var searchComps = false
+    private var searchSeq = 0
+
+    private fun searchPage(c: LinearLayout, comps: Boolean) {
+        searchComps = comps
+        backRow(c, L.t(if (comps) "add_comp" else "add_team"))
+        // The field sits at the top, so the keyboard never covers it.
+        val field = row().apply {
+            background = Ui.rounded(Ui.CARD, dp(14).toFloat(), Ui.ACCENT, dp(1))
+            setPadding(dp(14), 0, dp(14), 0)
+            minimumHeight = dp(50)
+        }
+        field.addView(Icon(this, "search", 18).apply { color = Ui.ACCENT })
         val box = EditText(this).apply {
-            hint = L.t("add_team")
+            hint = L.t(if (comps) "search_comp_hint" else "search_team_hint")
+            setText(searchQuery)
+            setSelection(searchQuery.length)
             setHintTextColor(Ui.MUTED)
             setTextColor(Ui.TEXT)
-            textSize = 14f
+            textSize = 15f
             background = null
-            inputType = InputType.TYPE_CLASS_TEXT
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
             imeOptions = EditorInfo.IME_ACTION_SEARCH
-        }
-        val go = {
-            val q = box.text.toString().trim()
-            if (q.length >= 2) {
-                results.removeAllViews()
-                results.addView(text(L.t("searching"), 12f, Ui.MUTED))
-                io.execute {
-                    val found = try {
-                        Api.search(q)
-                    } catch (e: Exception) {
-                        null
-                    }
-                    main.post {
-                        results.removeAllViews()
-                        when {
-                            found == null -> results.addView(text(L.t("no_net"), 12f, Ui.RED))
-                            found.isEmpty() -> results.addView(text(L.t("no_results"), 12f, Ui.MUTED))
-                        }
-                        for (t in found ?: emptyList()) {
-                            val r = row().apply { minimumHeight = dp(52) }
-                            r.addView(crest(t.logo, 24))
-                            r.addView(text(t.name, 13f), lp(0, WRAP, 1f, start = dp(10)))
-                            val have = prefs.teams.any { it.id == t.id }
-                            r.addView(button(L.t(if (have) "added" else "add"), primary = !have) {
-                                if (prefs.teams.none { it.id == t.id }) {
-                                    prefs.teams = prefs.teams + t
-                                    drawTeams()
-                                    LiveService.start(this, LiveService.ACTION_REFRESH)
-                                }
-                            })
-                            results.addView(r)
-                        }
-                    }
+            addTextChangedListener(object : android.text.TextWatcher {
+                override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                override fun afterTextChanged(s: android.text.Editable?) {
+                    searchQuery = s?.toString()?.trim() ?: ""
+                    // Searches by itself a moment after the last letter.
+                    main.removeCallbacks(searchRun)
+                    main.postDelayed(searchRun, 450)
                 }
+            })
+            setOnEditorActionListener { _, _, _ ->
+                main.removeCallbacks(searchRun)
+                runSearch()
+                true
             }
         }
-        box.setOnEditorActionListener { _, _, _ -> go(); true }
-        search.addView(box, lp(0, WRAP, 1f))
-        search.addView(Icon(this, "search", 20).apply {
-            color = Ui.ACCENT
-            isClickable = true
-            contentDescription = L.t("add_team")
-            setOnClickListener { go() }
-        }, lp(dp(44), dp(44)))
-        k.addView(search, lp(MATCH, WRAP, top = dp(10)))
-        k.addView(results, lp(MATCH, WRAP, top = dp(6)))
-        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
-        drawTeams()
+        field.addView(box, lp(0, WRAP, 1f, start = dp(8)))
+        c.addView(field, lp(MATCH, WRAP, top = dp(12)))
+        searchBox = column()
+        c.addView(searchBox, lp(MATCH, WRAP, top = dp(8)))
+        box.requestFocus()
+        box.postDelayed({
+            (getSystemService(INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager).showSoftInput(box, 0)
+        }, 150)
+        runSearch()
+    }
+
+    private fun runSearch() {
+        val out = searchBox ?: return
+        val q = searchQuery
+        val comps = searchComps
+        val seq = ++searchSeq
+        out.removeAllViews()
+        if (q.length < 2) {
+            out.addView(text(L.t("type_more"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+            return
+        }
+        out.addView(text(L.t("searching"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        io.execute {
+            val found = try {
+                if (comps) Api.searchComps(q) else Api.search(q)
+            } catch (e: Exception) {
+                null
+            }
+            main.post {
+                if (seq != searchSeq || searchBox !== out) return@post
+                out.removeAllViews()
+                when {
+                    found == null -> out.addView(text(L.t("no_net"), 12f, Ui.RED), lp(MATCH, WRAP, top = dp(8)))
+                    found.isEmpty() -> out.addView(text(L.t("no_results"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+                }
+                for (t in found ?: emptyList()) out.addView(resultRow(t, comps), lp(MATCH, WRAP, top = dp(6)))
+            }
+        }
+    }
+
+    private fun resultRow(t: TeamOption, comps: Boolean): View {
+        fun have() = (if (comps) prefs.comps else prefs.teams).any { it.id == t.id }
+        val r = row().apply {
+            background = Ui.rounded(Ui.CARD, dp(14).toFloat())
+            setPadding(dp(12), dp(8), dp(8), dp(8))
+            minimumHeight = dp(56)
+        }
+        r.addView(crest(t.logo, 30))
+        val names = column()
+        names.addView(text(t.name, 14f, bold = true).apply { maxLines = 1 })
+        if (t.sub.isNotBlank()) names.addView(text(t.sub, 12f, Ui.MUTED).apply { maxLines = 1 })
+        r.addView(names, lp(0, WRAP, 1f, start = dp(10)))
+        val btn = text(L.t(if (have()) "added" else "add"), 13f, if (have()) Ui.MUTED else Ui.ACCENT, bold = true).apply {
+            gravity = Gravity.CENTER
+            minHeight = dp(40)
+            setPadding(dp(12), 0, dp(12), 0)
+        }
+        r.addView(btn)
+        r.isClickable = true
+        r.setOnClickListener {
+            if (have()) return@setOnClickListener
+            val clean = t.copy(sub = "")
+            if (comps) prefs.comps = prefs.comps + clean else prefs.teams = prefs.teams + clean
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            btn.text = L.t("added")
+            btn.setTextColor(Ui.MUTED)
+        }
+        return r
+    }
+
+    /* ----- sub-page: sounds ----- */
+
+    private fun soundsPage(c: LinearLayout) {
+        backRow(c, L.t("sounds"))
+        for (g in listOf("goal", "card", "whistle", "news")) {
+            c.addView(label(L.t("snd_$g")), lp(MATCH, WRAP, top = dp(16)))
+            c.addView(segmented(listOf("app" to "s_app", "phone" to "s_phone", "off" to "s_off"), prefs.soundFor(g)) {
+                prefs.setSoundFor(g, it)
+                draw()
+            }, lp(MATCH, WRAP, top = dp(8)))
+        }
+        val k = card()
+        k.addView(slider(L.t("volume"), 0, 100, prefs.volume, restart = false) { prefs.volume = it }, lp(MATCH, WRAP))
+        k.addView(button(L.t("test_sound")) {
+            val s = Sounds(this)
+            // SoundPool loads in the background: play once it's ready.
+            main.postDelayed({
+                s.play("goal")
+                main.postDelayed({ s.release() }, 4000)
+            }, 400)
+        }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(text(L.t("volume_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        c.addView(k, lp(MATCH, WRAP, top = dp(16)))
     }
 
     /* ----- phone notifications: pick apps ----- */
@@ -936,14 +1275,28 @@ class MainActivity : Activity() {
     private fun listenerGranted(): Boolean =
         Settings.Secure.getString(contentResolver, "enabled_notification_listeners")?.contains(packageName) == true
 
-    private fun pickApps() {
+    private fun shareLog() {
+        val log = NotifListener.logFile(this)
+        if (!log.exists() || log.length() == 0L) {
+            toast(L.t("inspector_empty"))
+            return
+        }
+        val copy = java.io.File(ShareCard.dir(this), "notch-inspector.txt")
+        log.copyTo(copy, overwrite = true)
+        val uri = Uri.parse("content://$packageName.share/${copy.name}")
+        val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_STREAM, uri).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        send.clipData = android.content.ClipData.newRawUri("", uri)
+        startActivity(Intent.createChooser(send, L.t("inspector_share")))
+    }
+
+    private fun pickApps(current: Set<String>, save: (Set<String>) -> Unit) {
         val pm = packageManager
         val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
             .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
             .filter { it.first != packageName }
             .distinctBy { it.first }
             .sortedBy { it.second.lowercase() }
-        val chosen = prefs.phoneApps.toMutableSet()
+        val chosen = current.toMutableSet()
         val checked = BooleanArray(apps.size) { apps[it].first in chosen }
         AlertDialog.Builder(this)
             .setTitle(L.t("pick_apps"))
@@ -951,7 +1304,7 @@ class MainActivity : Activity() {
                 if (on) chosen += apps[i].first else chosen -= apps[i].first
             }
             .setPositiveButton(L.t("done")) { _, _ ->
-                prefs.phoneApps = chosen
+                save(chosen)
                 draw()
             }
             .show()
@@ -1118,6 +1471,13 @@ class MainActivity : Activity() {
                 }, lp(MATCH, WRAP, top = dp(8)))
                 c.addView(label(L.t("ob_teams")), lp(MATCH, WRAP, top = dp(16)))
                 teamsEditor(c)
+                c.addView(label(L.t("comps")), lp(MATCH, WRAP, top = dp(16)))
+                val ck = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+                ck.addView(navRow(L.t("comps_pick"), "${prefs.comps.size}") {
+                    page = "comps"
+                    draw()
+                })
+                c.addView(ck, lp(MATCH, WRAP, top = dp(8)))
             }
             1 -> action = { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
             2 -> {

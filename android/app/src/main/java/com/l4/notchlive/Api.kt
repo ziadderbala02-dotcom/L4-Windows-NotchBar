@@ -76,7 +76,8 @@ data class Match(
     fun reds(home: Boolean) = events.count { it.kind == "red" && it.home == home }
 }
 
-data class TeamOption(val id: Int, val name: String, val logo: String)
+/** A team or a competition to follow; [sub] is the country, shown in search results only. */
+data class TeamOption(val id: Int, val name: String, val logo: String, val sub: String = "")
 
 data class Stat(val name: String, val home: String, val away: String, val homeShare: Float)
 
@@ -368,8 +369,8 @@ object Api {
     class News(val id: String, val title: String, val url: String, val at: Long)
 
     /** Latest news about one team, newest first. */
-    fun news(teamId: Int): List<News> {
-        val r = get(url("news/?competitors=$teamId"))
+    fun news(teamId: Int, langId: Int = L.apiLang): List<News> {
+        val r = get("$BASE/news/?competitors=$teamId&langId=$langId&timezoneName=Africa/Cairo&userCountryId=131&appTypeId=5")
         return r.optJSONArray("news").objects().mapNotNull {
             val title = it.str("title")
             val link = it.str("url")
@@ -378,12 +379,33 @@ object Api {
         }.sortedByDescending { it.at }
     }
 
+    fun compLogo(id: Int, country: Int = 0, version: Int = 1) =
+        "https://imagecache.365scores.com/image/upload/f_png,w_68,h_68,c_limit,q_auto:eco,dpr_2,d_Countries:Round:$country.png/v$version/Competitions/$id"
+
+    private fun countries(r: JSONObject): Map<Int, String> =
+        r.optJSONArray("countries").objects().associate { it.optInt("id") to it.str("name") }
+
+    /** Football teams matching [q], with their country to tell same names apart. */
     fun search(q: String): List<TeamOption> {
         val r = get(url("search/?query=${URLEncoder.encode(q, "UTF-8")}"))
+        val cs = countries(r)
         return r.optJSONArray("competitors").objects()
             .filter { it.optInt("sportId") == 1 }
-            .take(8)
-            .map { TeamOption(it.optInt("id"), it.str("name"), crest(it.optInt("id"), it.optInt("imageVersion", 1))) }
+            .take(12)
+            .map { TeamOption(it.optInt("id"), it.str("name"), crest(it.optInt("id"), it.optInt("imageVersion", 1)), cs[it.optInt("countryId")].orEmpty()) }
+    }
+
+    /** Football competitions matching [q]. */
+    fun searchComps(q: String): List<TeamOption> {
+        val r = get(url("search/?query=${URLEncoder.encode(q, "UTF-8")}"))
+        val cs = countries(r)
+        return r.optJSONArray("competitions").objects()
+            .filter { it.optInt("sportId") == 1 }
+            .take(12)
+            .map {
+                val c = it.optInt("countryId")
+                TeamOption(it.optInt("id"), it.str("name"), compLogo(it.optInt("id"), c, it.optInt("imageVersion", 1)), cs[c].orEmpty())
+            }
     }
 
     /** Possession, xG, shots, on target, corners, fouls, offsides, cards, in that order. */

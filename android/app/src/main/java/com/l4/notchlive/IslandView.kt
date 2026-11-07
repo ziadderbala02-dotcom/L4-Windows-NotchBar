@@ -34,7 +34,11 @@ class Burst(
     val icon: android.graphics.Bitmap? = null,
     /** menu: the rows. */
     val items: List<String> = emptyList(),
+    /** A goal in a pinned match with no favourite: a quiet celebration in the team colour. */
+    val neutral: Boolean = false,
 ) {
+    /** News: the first tap shows the whole headline. */
+    var expanded = false
     /** stats: filled in when they arrive (null = loading). */
     @Volatile
     var stats: List<Stat>? = null
@@ -86,6 +90,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var landscape = false
     /** Xiaomi's island is busy: a small circle with the score. */
     var circle = false
+    /** The status bar is hidden (full screen) and the user allowed it: no squeezing, team names shown. */
+    var roomy = false
+    /** How many other followed matches are live (a small second dot). */
+    var others = 0
+    /** No live match: the always-on capsule (next match or last result), drawn dimmer. */
+    var idle = false
 
     /** 0 = compact, 1 = big (animated). */
     var t = 0f
@@ -155,9 +165,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun scoreText(m: Match, home: Boolean) = if (m.state == Api.PRE) "" else m.side(home).score.toString()
 
     private fun bigScore(m: Match) = if (m.state == Api.PRE) "×" else "${m.home.score} - ${m.away.score}"
-    private fun crestSize() = compactHeight() - 10 * d
+    /** The crest is capped (a big camera hole used to make it huge and push everything out). */
+    private fun baseCrest() = if (roomy) min(compactHeight() - 8 * d, 26 * d) else min(compactHeight() - 10 * d, 20 * d)
+    private fun crestAt(level: Int) = if (level >= 1 && !roomy) baseCrest() * 0.8f else baseCrest()
     private fun reds(home: Boolean) = match?.reds(home) ?: 0
     private fun redsWidth(home: Boolean) = if (reds(home) > 0) min(reds(home), 3) * 4 * d + 3 * d else 0f
+    private fun teamName(home: Boolean) = match?.side(home)?.short.orEmpty()
+    private fun nameWidth(home: Boolean): Float =
+        if (!roomy || teamName(home).isEmpty()) 0f else 5 * d + min(80 * d, name.measureText(teamName(home)))
 
     private fun minuteColor(m: Match): Int = when {
         m.state == Api.PRE -> 0xFFFBBF24.toInt()
@@ -169,9 +184,21 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private fun clockLabel(m: Match) = if (m.phase == "var") "VAR" else clock
 
-    /** 0 = everything, 1 = no minute, 2 = scores only. The first one that fits the room. */
-    private fun tier(): Int {
-        for (k in 0..2) if (leftWidth(k) <= leftMax && rightWidth(k) <= rightMax) return k
+    /*
+     * Each side shrinks on its own, one step at a time, until it fits its room:
+     *   left:  0 everything · 1 crest at 80% · 2 no "+N" · 3 no minute · 4 no crest
+     *   right: 0 everything · 1 crest at 80% · 2 no crest
+     * The score and the live dot always stay; red cards sit on the crest's corner.
+     */
+    private fun leftLevel(): Int {
+        if (roomy) return 0
+        for (k in 0..3) if (leftWidth(k) <= leftMax) return k
+        return 4
+    }
+
+    private fun rightLevel(): Int {
+        if (roomy) return 0
+        for (k in 0..1) if (rightWidth(k) <= rightMax) return k
         return 2
     }
 
@@ -179,10 +206,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         sizes()
         val m = match ?: return gap()
         var w = gap() + score.measureText(scoreText(m, true)) + 10 * d
-        if (k < 2) w += 5 * d + crestSize()
-        if (k < 1) {
+        w += if (k < 4) 5 * d + crestAt(k) + nameWidth(true) else redsWidth(true)
+        if (k < 3) {
             w += 6 * d + minute.measureText(clockLabel(m))
-            if (added.isNotEmpty()) w += 2 * d + small.measureText(added)
+            if (k < 2 && added.isNotEmpty()) w += 2 * d + small.measureText(added)
         }
         return w
     }
@@ -191,17 +218,16 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         sizes()
         val m = match ?: return gap()
         var w = gap() + score.measureText(scoreText(m, false)) + 10 * d
-        if (k < 2) w += 5 * d + crestSize()
-        w += redsWidth(false)
+        w += if (k < 2) 5 * d + crestAt(k) + nameWidth(false) else redsWidth(false)
         w += 6 * d + 6 * d
+        if (others > 0) w += 7 * d
         return w
     }
 
     /** Pill extent from the camera centre: (left, right). */
     fun compactExtent(): Pair<Float, Float> {
         if (tucked) return 0f to 0f
-        val k = tier()
-        return leftWidth(k) to rightWidth(k)
+        return leftWidth(leftLevel()) to rightWidth(rightLevel())
     }
 
     /** The tucked mark: a window right of the camera, wide enough to swipe on. */
@@ -215,9 +241,42 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private fun infoLines(): Int = min(4, max(goals(true).size, goals(false).size).let { if (it > 3) 4 else it })
 
+    /** Width the headline gets in the news view. */
+    private fun newsAvail(): Float = bigWidth(resources.displayMetrics.widthPixels) - 28 * d - 30 * d - 10 * d
+
+    /** Splits text into lines that fit [avail], breaking at spaces; the last line is cut with "…". */
+    private fun wrap(text: String, p: Paint, avail: Float, maxLines: Int): List<String> {
+        val out = ArrayList<String>()
+        var rest = text.trim()
+        while (rest.isNotEmpty() && out.size < maxLines) {
+            if (out.size == maxLines - 1) {
+                out += TextUtils.ellipsize(rest, p as TextPaint, avail, TextUtils.TruncateAt.END).toString()
+                break
+            }
+            var n = p.breakText(rest, true, avail, null)
+            if (n <= 0) break
+            if (n < rest.length) {
+                val sp = rest.lastIndexOf(' ', n)
+                if (sp > n / 2) n = sp
+            }
+            out += rest.substring(0, n).trim()
+            rest = rest.substring(n).trim()
+        }
+        return out
+    }
+
+    private fun newsLines(b: Burst): List<String> {
+        val old = line.textSize
+        line.textSize = 12.5f * d
+        val l = wrap(b.sub, line, max(40f, newsAvail()), if (b.expanded) 5 else if (b.kind == "phone") 2 else 1)
+        line.textSize = old
+        return l
+    }
+
     fun bigHeight(): Int = when {
-        info && burst == null -> (top() + 70 * d + infoLines() * 15 * d + 8 * d).toInt()
-        burst?.kind == "news" || burst?.kind == "phone" -> (top() + 62 * d).toInt()
+        info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + 6 * d).toInt()
+        burst?.kind == "news" || burst?.kind == "phone" ->
+            (top() + 22 * d + max(1, newsLines(burst!!).size) * 16 * d + 8 * d).toInt()
         burst?.kind == "menu" -> (top() + (burst?.items?.size ?: 3) * MENU_ROW * d + 8 * d).toInt()
         burst?.kind == "stats" -> (top() + max(1, min(4, burst?.stats?.size ?: 1)) * 30 * d + 12 * d).toInt()
         else -> (top() + 52 * d).toInt()
@@ -318,7 +377,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         rect.set(l, 0f, r, h)
         c.drawRoundRect(rect, radius, radius, bg)
         // A goal for: the notch flashes in the team colour.
-        if (b != null && b.kind == "goal" && !b.against && age < 900 && t > 0.3f && !calm) {
+        if (b != null && b.kind == "goal" && !b.against && !b.neutral && age < 900 && t > 0.3f && !calm) {
             dot.color = b.color
             dot.alpha = (110 * (1f - age / 900f) * min(1f, t)).toInt()
             c.drawRoundRect(rect, radius, radius, dot)
@@ -329,7 +388,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             border.color = accent
             border.strokeWidth = 1.5f * d
             // Whistle and goal pulse a little.
-            val pulse = if (b != null && ((b.kind == "goal" && !b.against) || b.kind == "whistle")) 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
+            val pulse = if (b != null && ((b.kind == "goal" && !b.against && !b.neutral) || b.kind == "whistle")) 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
             border.alpha = (min(1f, t) * 220 * pulse).toInt()
             rect.inset(border.strokeWidth / 2, border.strokeWidth / 2)
             c.drawRoundRect(rect, radius, radius, border)
@@ -409,23 +468,35 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun baseline(p: Paint, cy: Float) = cy - (p.descent() + p.ascent()) / 2
 
     private fun drawCompact(c: Canvas, m: Match, ch: Float, alpha: Float) {
-        val a = (alpha * 255).toInt()
-        val k = tier()
-        val crest = crestSize()
+        val a = (alpha * (if (idle) 0.85f else 1f) * 255).toInt()
+        val al = a / 255f
+        val lk = leftLevel()
+        val rk = rightLevel()
         val cy = ch / 2
         score.alpha = a
 
-        // Left of the camera, outward: home score, crest (+ red cards), minute (+ added time).
+        // Left of the camera, outward: home score, crest (red cards on its corner), name (full screen), minute (+ added).
         var x = camX - gap()
         val hs = scoreText(m, true)
         x -= score.measureText(hs)
         drawScore(c, hs, x, cy, m.home.color, homeFlash, a)
-        if (k < 2) {
+        if (lk < 4) {
+            val crest = crestAt(lk)
             x -= 5 * d + crest
-            drawCrest(c, m.home.logo, x, cy - crest / 2, crest, alpha)
-            if (reds(true) > 0) drawRedCards(c, reds(true), x - 2 * d, cy + crest / 2 - 5 * d, alpha)
+            drawCrest(c, m.home.logo, x, cy - crest / 2, crest, al)
+            if (reds(true) > 0) drawRedCards(c, reds(true), x - 2 * d, cy + crest / 2 - 5 * d, al)
+            if (nameWidth(true) > 0f) {
+                val nw = nameWidth(true) - 5 * d
+                name.alpha = a
+                name.textAlign = Paint.Align.LEFT
+                x -= 5 * d + nw
+                c.drawText(TextUtils.ellipsize(teamName(true), name, nw, TextUtils.TruncateAt.END).toString(), x, baseline(name, cy), name)
+            }
+        } else if (reds(true) > 0) {
+            x -= redsWidth(true)
+            drawRedCards(c, reds(true), x, cy - 2.5f * d, al)
         }
-        if (k < 1) {
+        if (lk < 3) {
             val label = clockLabel(m)
             minute.color = minuteColor(m)
             minute.alpha = a
@@ -436,7 +507,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             }
             x -= 6 * d + minute.measureText(label)
             c.drawText(label, x, baseline(minute, cy), minute)
-            if (added.isNotEmpty()) {
+            if (lk < 2 && added.isNotEmpty()) {
                 small.alpha = a
                 x -= 2 * d + small.measureText(added)
                 c.drawText(added, x, cy - 1 * d, small)
@@ -451,24 +522,36 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             minute.textAlign = Paint.Align.LEFT
         }
 
-        // Right of the camera, outward: away score, crest, red cards.
+        // Right of the camera, outward: away score, crest (red cards on its corner), name, the live dot.
         x = camX + gap()
         val aw = scoreText(m, false)
         drawScore(c, aw, x, cy, m.away.color, awayFlash, a)
         x += score.measureText(aw)
-        if (k < 2) {
+        if (rk < 2) {
+            val crest = crestAt(rk)
             x += 5 * d
-            drawCrest(c, m.away.logo, x, cy - crest / 2, crest, alpha)
+            drawCrest(c, m.away.logo, x, cy - crest / 2, crest, al)
             x += crest
-        }
-        if (reds(false) > 0) {
-            drawRedCards(c, reds(false), x + 3 * d, cy - 2.5f * d, alpha)
+            if (reds(false) > 0) {
+                val n = min(reds(false), 3)
+                drawRedCards(c, reds(false), x - n * 4 * d + 2 * d, cy + crest / 2 - 5 * d, al)
+            }
+            if (nameWidth(false) > 0f) {
+                val nw = nameWidth(false) - 5 * d
+                name.alpha = a
+                name.textAlign = Paint.Align.LEFT
+                c.drawText(TextUtils.ellipsize(teamName(false), name, nw, TextUtils.TruncateAt.END).toString(), x + 5 * d, baseline(name, cy), name)
+                x += 5 * d + nw
+            }
+        } else if (reds(false) > 0) {
+            drawRedCards(c, reds(false), x + 3 * d, cy - 2.5f * d, al)
             x += redsWidth(false)
         }
 
         // The live dot: breathes while the ball is rolling, amber at a break, grey when over.
         val now = System.currentTimeMillis()
         val (color, breathe) = when {
+            idle -> 0xFF6B7280.toInt() to false
             m.state == Api.POST -> 0xFF6B7280.toInt() to false
             m.state == Api.PRE -> 0xFFFBBF24.toInt() to false
             m.phase == "break" -> 0xFFFBBF24.toInt() to false
@@ -478,11 +561,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val level = if (breathe && !calm) 0.35f + 0.65f * ((sin(now / 450.0) + 1) / 2).toFloat() else 1f
         dot.color = color
         dot.alpha = (a * level).toInt()
-        c.drawCircle(x + 6 * d + 3 * d, cy, 3 * d, dot)
+        val dx = x + 6 * d + 3 * d
+        c.drawCircle(dx, cy, 3 * d, dot)
         if (breathe && !calm) {
             dot.alpha = (a * level * 0.25f).toInt()
-            c.drawCircle(x + 6 * d + 3 * d, cy, 5.5f * d, dot)
+            c.drawCircle(dx, cy, 5.5f * d, dot)
             postInvalidateDelayed(50)
+        }
+        // Another followed match is live: a small white dot beside it.
+        if (others > 0) {
+            dot.color = Color.WHITE
+            dot.alpha = (a * 0.7f).toInt()
+            c.drawCircle(dx + 7 * d, cy, 2 * d, dot)
         }
     }
 
@@ -548,7 +638,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         }
 
         // Goal for: rings in the team colour spread out from the crest.
-        if (b.kind == "goal" && !b.against) {
+        if (b.kind == "goal" && !b.against && !b.neutral) {
             c.save()
             rect.set(l, 0f, r, h)
             c.clipRect(rect)
@@ -578,7 +668,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             drawWhistle(c, cx, mid, b.color, alpha)
         } else {
             // The crest bounces in on a goal.
-            val bounce = if (b.kind == "goal" && !b.against) 1f + 0.22f * kotlin.math.exp(-age / 450.0).toFloat() * abs(sin(age / 85.0)).toFloat() else 1f
+            val bounce = if (b.kind == "goal" && !b.against && !b.neutral) 1f + 0.22f * kotlin.math.exp(-age / 450.0).toFloat() * abs(sin(age / 85.0)).toFloat() else 1f
             val sz = crest * bounce
             drawCrest(c, if (b.home) m.home.logo else m.away.logo, cx - sz / 2, mid - sz / 2, sz, alpha)
         }
@@ -633,7 +723,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun drawNews(c: Canvas, b: Burst, left: Float, right: Float, top: Float, bottom: Float, alpha: Float) {
         val a = (alpha * 255).toInt()
         val crest = 30 * d
-        val mid = (top + bottom) / 2
+        val mid = min((top + bottom) / 2, top + 4 * d + crest / 2)
         if (b.icon != null) {
             bmp.alpha = (alpha * 255).toInt()
             rect.set(left, mid - crest / 2, left + crest, mid + crest / 2)
@@ -647,42 +737,32 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         title.alpha = a
         title.textAlign = Paint.Align.LEFT
         val oldTitle = title.textSize
-        title.textSize = 12f * d
+        title.textSize = 11f * d
         c.drawText(TextUtils.ellipsize(b.title, title, avail, TextUtils.TruncateAt.END).toString(), textL, top + 2 * d - title.ascent(), title)
         title.textSize = oldTitle
         title.textAlign = Paint.Align.CENTER
+        // The headline: one line (cut) at first, the whole of it after a tap.
+        val lines = newsLines(b)
         line.color = Color.WHITE
         line.alpha = a
         val old = line.textSize
         line.textSize = 12.5f * d
-        val text = b.sub
-        val n = line.breakText(text, true, avail, null)
-        var first = text.substring(0, n)
-        var rest = text.substring(n)
-        // Break at a space when there is one.
-        if (rest.isNotEmpty()) {
-            val sp = first.lastIndexOf(' ')
-            if (sp > first.length / 2) {
-                rest = first.substring(sp + 1) + rest
-                first = first.substring(0, sp)
-            }
-        }
-        val y1 = top + 20 * d - line.ascent()
-        c.drawText(first, textL, y1, line)
-        if (rest.isNotBlank()) {
-            c.drawText(TextUtils.ellipsize(rest.trim(), line, avail, TextUtils.TruncateAt.END).toString(), textL, y1 + 16 * d, line)
+        lines.forEachIndexed { i, s ->
+            c.drawText(s, textL, top + 18 * d - line.ascent() + i * 16 * d, line)
         }
         line.textSize = old
         line.color = 0xFFC8C8C8.toInt()
     }
 
-    private fun scorerText(e: Ev): String {
+    /** "Salah (P) 45'"; with no name from 365, the team's name and the minute. */
+    private fun scorerText(m: Match, e: Ev): String {
         val tag = when {
             e.own -> L.t("own_goal")
             e.pen -> L.t("pen_short")
             else -> ""
         }
-        return "${e.player ?: "⚽"}$tag ${e.minute}".trim()
+        val who = e.player?.takeIf { it.isNotBlank() } ?: m.side(e.home).short
+        return "$who$tag ${e.minute}".trim()
     }
 
     /** After a tap: crest + name each side, the score and minute in the middle, scorers below. */
@@ -720,52 +800,16 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawText(TextUtils.ellipsize(m.away.short, name, nameW, TextUtils.TruncateAt.END).toString(), right - crest - 6 * d, baseline(name, rowMid), name)
         name.textAlign = Paint.Align.LEFT
 
-        // The 90 minutes: played part in green, goals above (home) / below (away) the line, cards.
-        val ty = top + 46 * d
-        val tl = left + 4 * d
-        val tr = right - 4 * d
-        val span = tr - tl
-        val played = ((m.minute ?: if (m.state == Api.POST) 90 else 0) / 90f).coerceIn(0f, 1f)
-        stroke.strokeCap = Paint.Cap.ROUND
-        stroke.strokeWidth = 3 * d
-        stroke.color = 0xFF2A2D38.toInt()
-        stroke.alpha = a
-        c.drawLine(tl, ty, tr, ty, stroke)
-        stroke.color = 0xFF34D399.toInt()
-        stroke.alpha = a
-        if (played > 0f) c.drawLine(tl, ty, tl + span * played, ty, stroke)
-        stroke.strokeWidth = 1.5f * d
-        stroke.color = 0xFF71717A.toInt()
-        stroke.alpha = a
-        c.drawLine(tl + span / 2, ty - 6 * d, tl + span / 2, ty + 6 * d, stroke)
-        for (e in m.events) {
-            val x = tl + span * (e.at.toFloat() / 90f).coerceIn(0f, 1f)
-            when (e.kind) {
-                "goal" -> {
-                    dot.color = Color.WHITE
-                    dot.alpha = a
-                    c.drawCircle(x, if (e.home) ty - 9 * d else ty + 9 * d, 3.5f * d, dot)
-                }
-                "red", "yellow" -> {
-                    dot.color = if (e.kind == "red") 0xFFEF4444.toInt() else 0xFFFBBF24.toInt()
-                    dot.alpha = a
-                    val y0 = if (e.home) ty - 13 * d else ty + 5 * d
-                    rect.set(x - 2.5f * d, y0, x + 2.5f * d, y0 + 8 * d)
-                    c.drawRoundRect(rect, 1 * d, 1 * d, dot)
-                }
-            }
-        }
-
         // Scorers: up to 3 a side, then "+N".
         line.alpha = a
         val colW = (right - left) / 2 - 8 * d
         for (home in listOf(true, false)) {
             val gs = goals(home)
-            val shown = gs.take(3).map { "⚽ " + scorerText(it) }.toMutableList()
+            val shown = gs.take(3).map { "⚽ " + scorerText(m, it) }.toMutableList()
             if (gs.size > 3) shown += "+${gs.size - 3}"
             line.textAlign = if (home) Paint.Align.LEFT else Paint.Align.RIGHT
             shown.forEachIndexed { i, s ->
-                val y = top + 64 * d + i * 15 * d - line.ascent()
+                val y = top + 40 * d + i * 15 * d - line.ascent()
                 c.drawText(TextUtils.ellipsize(s, line, colW, TextUtils.TruncateAt.END).toString(), if (home) left else right, y, line)
             }
         }

@@ -30,7 +30,8 @@ import kotlin.math.max
  *   - goal / goal ruled out / red card / VAR / penalty / kickoff / second half / full time → a burst
  *   - tap: the info view for 5 s; tap again: the match in 365Scores
  *   - swipe right: tucked to a small mark; swipe left: back. Bursts still show while tucked.
- *   - several live matches take turns every 10 s; a finished one stays 30 s with "انتهت"
+ *   - one main match stays (favourite order, then pinned); others show only for their events
+ *   - a finished one stays 30 s with "انتهت"
  *   - the notch only exists while a match is on
  * Runs as a foreground service with a quiet ongoing notification, so MIUI doesn't kill it.
  */
@@ -231,7 +232,7 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     /** For the app's home screen: what the notch shows now, and what's known. */
-    fun snapshot(): Pair<Match?, List<Match>> = onScreen?.takeIf { it.id >= 0 } to matches
+    fun snapshot(): Pair<Match?, List<Match>> = onScreen?.takeIf { it.id >= 0 && !idleNow } to matches
 
     /** The accessibility service came or went: move the window to the new host. */
     fun hostChanged() = main.post {
@@ -244,6 +245,11 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
+        if (idleNow && current == null) {
+            // The always-on capsule: quick actions.
+            idleMenu()
+            return
+        }
         if (current?.kind == "menu" || current?.kind == "stats") {
             current = null
             render()
@@ -258,6 +264,14 @@ class LiveService : Service(), IslandView.Gestures {
                     // The notification is gone.
                 }
             }
+            render()
+            return
+        }
+        current?.takeIf { it.kind == "news" && !it.expanded }?.let { b ->
+            // First tap: the whole headline. The second one opens the article.
+            b.expanded = true
+            currentUntil = max(currentUntil, now + 12_000L)
+            island.relayout()
             render()
             return
         }
@@ -292,34 +306,86 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
+    /* ---------- long-press menu ---------- */
+
+    /** What each row of the open menu does. */
+    private var menuActions: List<String> = emptyList()
+
+    private fun showMenu(id: Int, actions: List<String>) {
+        menuActions = actions
+        menuIdle = false
+        val items = actions.map { a ->
+            when (a) {
+                "mute" -> L.t(if (id in muted) "menu_unmute" else "menu_mute")
+                "pin" -> L.t(if (id in prefs.pinned) "menu_unpin" else "menu_pin")
+                "sound" -> L.t(if (prefs.sound) "menu_sound_off" else "menu_sound_on")
+                "saver" -> L.t(if (prefs.speed == "saver") "menu_saver_off" else "menu_saver_on")
+                else -> L.t("menu_$a")
+            }
+        }
+        showOverlay(Burst("menu", "", "", true, 0xFF3F3F46.toInt(), id, items = items), 6_000L)
+    }
+
+    /** The always-on capsule's quick actions. */
+    private fun idleMenu() {
+        val m = onScreen ?: return
+        val acts = mutableListOf("sound", "saver", "hide_idle")
+        if (lastResult() != null) acts += "last"
+        acts += "app"
+        showMenu(m.id, acts)
+        menuIdle = true
+    }
+
+    /** The open menu belongs to the always-on capsule. */
+    private var menuIdle = false
+
+    private fun lastResult(): Match? = matches.filter { it.state == Api.POST }.maxByOrNull { it.kickoff }
+
     /** Mute (no sound or vibration) per match, for this session. */
     private val muted = HashSet<Int>()
     private var hiddenUntil = 0L
 
     override fun longPress() {
         val m = onScreen ?: return
+        if (idleNow) {
+            idleMenu()
+            return
+        }
         if (m.id < 0) return
-        val items = listOf(
-            L.t(if (m.id in muted) "menu_unmute" else "menu_mute"),
-            L.t(if (m.id in prefs.pinned) "menu_unpin" else "menu_pin"),
-            L.t("menu_hide"),
-        )
-        showOverlay(Burst("menu", "", "", true, 0xFF3F3F46.toInt(), m.id, items = items), 6_000L)
+        val acts = mutableListOf<String>()
+        // Another followed match is live: make it the main one.
+        if (liveNow().size > 1) acts += "switch"
+        acts += listOf("mute", "pin", "hide")
+        showMenu(m.id, acts)
     }
 
     override fun menuPick(index: Int) {
         val b = current?.takeIf { it.kind == "menu" } ?: return
         val id = b.matchId
-        when (index) {
-            0 -> if (!muted.add(id)) muted.remove(id)
-            1 -> {
+        current = null
+        when (menuActions.getOrNull(index)) {
+            "mute" -> if (!muted.add(id)) muted.remove(id)
+            "pin" -> {
                 val p = prefs.pinned
                 prefs.pinned = if (id in p) p - id else p + id
                 refresh()
             }
-            2 -> hiddenUntil = System.currentTimeMillis() + 10 * 60_000L
+            "hide" -> hiddenUntil = System.currentTimeMillis() + 10 * 60_000L
+            "switch" -> {
+                val live = liveNow()
+                val i = live.indexOfFirst { it.id == id }
+                live.getOrNull((i + 1) % live.size)?.let { prefs.primary = it.id }
+            }
+            "sound" -> prefs.sound = !prefs.sound
+            "saver" -> prefs.speed = if (prefs.speed == "saver") "fast" else "saver"
+            "hide_idle" -> idleHiddenUntil = System.currentTimeMillis() + 3 * 3600_000L
+            "last" -> lastResult()?.let { open365(it) }
+            "app" -> try {
+                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+                // Blocked from the background.
+            }
         }
-        current = null
         render()
     }
 
@@ -498,6 +564,9 @@ class LiveService : Service(), IslandView.Gestures {
             m.state == Api.POST && now - (endedAt[id] ?: 0L) > FINAL_MS
         }
         if (done.isNotEmpty()) prefs.pinned = pins - done.toSet()
+        // The chosen main match goes back to automatic once it's over.
+        val pri = prefs.primary
+        if (pri != 0 && list.none { it.id == pri && it.state != Api.POST }) prefs.primary = 0
 
         shown.clear()
         for (m in list) shown[m.id] = m
@@ -506,18 +575,30 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
-    /** A goal against: the other side is a favourite and the scorer isn't. */
-    private fun against(m: Match, home: Boolean): Boolean {
-        val favs = prefs.teams.map { it.id }.toSet()
-        return m.side(home).id !in favs && m.side(!home).id in favs
+    /**
+     * Whose goal it is for the user: "for", "against" or "neutral" (a pinned match with no favourite).
+     * With favourites on both sides, the one higher in the list is "yours".
+     */
+    private fun goalFor(m: Match, home: Boolean): String {
+        val ids = prefs.teams.map { it.id }
+        val me = ids.indexOf(m.side(home).id)
+        val them = ids.indexOf(m.side(!home).id)
+        return when {
+            me < 0 && them < 0 -> "neutral"
+            me < 0 -> "against"
+            them < 0 -> "for"
+            me < them -> "for"
+            else -> "against"
+        }
     }
 
     private fun goal(m: Match, home: Boolean) {
         val last = m.events.lastOrNull { it.kind == "goal" && it.home == home }
-        val bad = against(m, home)
+        val who = goalFor(m, home)
+        val bad = who == "against"
         val b = Burst(
             "goal", if (bad) L.t("goal_against") else L.t("goal"), scorerLine(m, home, last), home, m.side(home).color, m.id,
-            against = bad,
+            against = bad, neutral = who == "neutral",
         )
         // Goals jump the queue.
         queue.addFirst(b)
@@ -640,6 +721,12 @@ class LiveService : Service(), IslandView.Gestures {
 
     /* ---------- news about the favourite teams ---------- */
 
+    private fun newsLang(): Int = when (prefs.newsLang) {
+        "ar" -> 27
+        "en" -> 1
+        else -> L.apiLang
+    }
+
     /** A stand-in "match" so the notch can draw a news burst. */
     private fun newsMatch(b: Burst): Match {
         val side = Side(0, "", "", b.logo ?: "", b.color, 0)
@@ -655,7 +742,7 @@ class LiveService : Service(), IslandView.Gestures {
                 val fresh = ArrayList<Pair<TeamOption, Api.News>>()
                 for (t in prefs.teams) {
                     val items = try {
-                        Api.news(t.id).take(6)
+                        Api.news(t.id, newsLang()).take(6)
                     } catch (e: Exception) {
                         continue
                     }
@@ -741,15 +828,56 @@ class LiveService : Service(), IslandView.Gestures {
     private fun soon(m: Match, now: Long) =
         m.state == Api.PRE && m.kickoff - now <= SOON_MS && now - m.kickoff < 30 * 60_000
 
+    /** Priority of a match: the favourite highest in the list first, then pinned ones. */
+    private fun rank(m: Match): Int {
+        val ids = prefs.teams.map { it.id }
+        val i = listOf(ids.indexOf(m.home.id), ids.indexOf(m.away.id)).filter { it >= 0 }.minOrNull()
+        return i ?: if (m.id in prefs.pinned) 1000 else 2000
+    }
+
+    /** Followed matches on now (and the ones just over), main one first. */
+    private fun liveNow(list: List<Match> = matches + listOfNotNull(demo?.takeIf { System.currentTimeMillis() < demoUntil })): List<Match> {
+        val now = System.currentTimeMillis()
+        return list.filter { it.state == Api.LIVE || (it.state == Api.POST && now - (endedAt[it.id] ?: 0L) < FINAL_MS) }
+            .sortedWith(compareBy({ if (it.id == prefs.primary) -1 else 0 }, { if (it.state == Api.LIVE) 0 else 1 }, { rank(it) }, { it.kickoff }, { it.id }))
+    }
+
+    /**
+     * One main match stays on the notch (no more taking turns): the user's pick from the menu, else
+     * the favourite highest in the list, else a pinned one. Others only appear for their events.
+     */
     private fun featured(list: List<Match>, now: Long): Match? {
         current?.let { b -> list.firstOrNull { it.id == b.matchId }?.let { return it } }
         if (now < infoUntil) infoMatch?.let { id -> list.firstOrNull { it.id == id }?.let { return it } }
-        val live = list.filter { it.state == Api.LIVE || (it.state == Api.POST && now - (endedAt[it.id] ?: 0L) < FINAL_MS) }
-        if (live.isEmpty()) return list.filter { soon(it, now) }.minByOrNull { it.kickoff }
-        live.firstOrNull { it.phase == "var" }?.let { return it }
-        val running = live.filter { it.state == Api.LIVE }.sortedWith(compareBy({ it.kickoff }, { it.id }))
-        if (running.isNotEmpty()) return running[((now / ROTATE_MS) % running.size).toInt()]
-        return live.maxByOrNull { it.kickoff }
+        val live = liveNow(list)
+        if (live.isEmpty()) return list.filter { soon(it, now) }.sortedWith(compareBy({ rank(it) }, { it.kickoff })).firstOrNull()
+        return live.first()
+    }
+
+    /** The always-on capsule (option): the next match, else the last result. */
+    private var idleNow = false
+    private var idleHiddenUntil = 0L
+
+    private fun idleMatch(now: Long): Match? {
+        if (!prefs.idleNotch || now < idleHiddenUntil) return null
+        val next = matches.filter { it.state == Api.PRE && it.kickoff > now }.sortedWith(compareBy({ it.kickoff }, { rank(it) })).firstOrNull()
+        return next ?: lastResult()
+    }
+
+    /** "بعد يومين", "غداً 9:00 م", "اليوم 9:00 م" for the capsule; the result's "انتهت". */
+    private fun idleClock(m: Match, now: Long): String {
+        if (m.state != Api.PRE) return localClock(m.clock)
+        val zone = java.util.TimeZone.getDefault()
+        val day = 86_400_000L
+        val today = (now + zone.getOffset(now)) / day
+        val that = (m.kickoff + zone.getOffset(m.kickoff)) / day
+        val time = android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(m.kickoff))
+        return when (val n = (that - today).toInt()) {
+            0 -> if (m.kickoff - now <= SOON_MS) clockText(m, now) else L.f("idle_today", time)
+            1 -> L.f("idle_tomorrow", time)
+            2 -> L.t("idle_2days")
+            else -> L.f("idle_days", n)
+        }
     }
 
     private fun inCall(): Boolean = audio.mode == AudioManager.MODE_IN_CALL ||
@@ -777,33 +905,47 @@ class LiveService : Service(), IslandView.Gestures {
             }
         }
         val news = current?.takeIf { it.kind == "news" || it.kind == "phone" }
-        val m = if (news != null) newsMatch(news) else featured(list, now)
+        var m = if (news != null) newsMatch(news) else featured(list, now)
+        idleNow = false
+        val idleMenuOpen = current?.kind == "menu" && menuIdle
+        if ((m == null && current == null) || idleMenuOpen) {
+            idleMatch(now)?.let {
+                m = it
+                idleNow = true
+            }
+        }
         onScreen = m
         // Xiaomi's island is busy (a call or music): circle beside it, or hidden if that's off.
         val busy = inCall() || audio.isMusicActive
         val wasCircle = circleNow
         circleNow = busy && prefs.circle && island.portrait()
         if (wasCircle && !circleNow) infoMatch = null
-        val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait())
+        val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
+            // The capsule steps aside for Xiaomi's island.
+            (idleNow && busy && current == null)
         island.calm = effectiveSpeed(this) == "saver"
-        if (m == null || hidden) {
+        val shownM = m
+        if (shownM == null || hidden) {
             island.update(null, "", "", null, false, false, false)
         } else {
+            val others = if (shownM.id < 0 || idleNow) 0 else (liveNow(list).count { it.state == Api.LIVE } - 1).coerceAtLeast(0)
             island.update(
-                m, clockText(m, now), addedText(m, now),
-                current?.takeIf { it.matchId == m.id },
-                infoMatch == m.id,
-                prefs.tucked && !circleNow,
-                circleNow,
+                shownM, if (idleNow) idleClock(shownM, now) else clockText(shownM, now), if (idleNow) "" else addedText(shownM, now),
+                current?.takeIf { it.matchId == shownM.id },
+                infoMatch == shownM.id && !idleNow,
+                prefs.tucked && !circleNow && !idleNow,
+                circleNow && !idleNow,
+                others = others,
+                idle = idleNow,
             )
         }
-        updateOngoing(m, now)
+        updateOngoing(if (idleNow) null else shownM, now)
     }
 
     private fun announce(b: Burst, m: Match) {
         if (b.kind == "phone") return
         val quiet = b.matchId in muted
-        if (prefs.sound && !inCall() && !quiet) sounds.play(if (b.against) "conceded" else b.kind)
+        if (prefs.sound && !inCall() && !quiet) sounds.play(if (b.against) "conceded" else if (b.neutral) "neutral" else b.kind)
         if (prefs.vibrate && !quiet && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
         // The notch can't show it (no permission, a call, landscape): a normal notification instead.
         if (!island.canShow() || !island.showing || prefs.paused || inCall() || System.currentTimeMillis() < hiddenUntil) {
