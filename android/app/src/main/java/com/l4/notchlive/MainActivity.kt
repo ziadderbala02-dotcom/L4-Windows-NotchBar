@@ -1500,7 +1500,7 @@ class MainActivity : Activity() {
         for (rowItems in kinds.chunked(4)) {
             val r = row()
             rowItems.forEachIndexed { i, k ->
-                r.addView(button(Ambient.glyph(k) + " " + L.t("w_$k")) {
+                r.addView(button(L.t("w_$k")) {
                     LiveService.start(this, LiveService.ACTION_DEMO, "w_$k")
                 }, lp(0, WRAP, 1f, start = if (i > 0) dp(6) else 0))
             }

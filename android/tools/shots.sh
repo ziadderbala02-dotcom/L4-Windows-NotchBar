@@ -45,5 +45,21 @@ for size in $SIZES; do
     adb exec-out screencap -p > "$OUT/${name}_5idle.png"
   done
 done
+# Weather on the always-on notch: a 4-second video of each, on the first phone size.
 adb shell wm size reset; adb shell wm density reset
+for o in $(adb shell cmd overlay list | grep -o 'com.android.internal.display.cutout.emulation[.a-z0-9_]*'); do adb shell cmd overlay disable "$o" >/dev/null 2>&1; done
+sleep 3
+for w in sun clouds rain storm snow fog wind; do
+  adb shell am force-stop $PKG
+  demo "w_$w"; sleep 1
+  adb shell screenrecord --time-limit 4 --size 1080x2400 "/sdcard/w_$w.mp4"
+  adb pull "/sdcard/w_$w.mp4" "$OUT/weather_$w.mp4" >/dev/null
+done
+# News and goal inside the notch (videos).
+for k in news goal; do
+  adb shell am force-stop $PKG
+  demo "$k"; sleep 0.5
+  adb shell screenrecord --time-limit 7 --size 1080x2400 "/sdcard/ev_$k.mp4"
+  adb pull "/sdcard/ev_$k.mp4" "$OUT/event_$k.mp4" >/dev/null
+done
 ls -la "$OUT"

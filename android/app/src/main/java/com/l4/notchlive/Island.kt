@@ -306,7 +306,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         if (inline != null) {
             // An event playing inside the notch: it grows only where its text needs room.
             width = (inline.first + inline.second).toInt() + 1
-            height = ch
+            height = v.inlineHeight()
             x = (g.cx - inline.first).toInt()
             v.camX = g.cx - x
         } else if (big) {

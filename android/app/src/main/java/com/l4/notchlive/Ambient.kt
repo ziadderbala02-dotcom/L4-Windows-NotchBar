@@ -37,16 +37,10 @@ object Ambient {
     @Volatile
     var night = false
 
-    /** The weather's glyph and its word, for the always-on notch. */
+    /** The weather's icon (drawn by WeatherFx.icon) and its word, for the always-on notch. */
     fun glyph(k: String = kind): String = when (k) {
-        "sun" -> "☀️"
-        "clouds" -> "☁️"
-        "rain" -> "🌧️"
-        "storm" -> "⛈️"
-        "snow" -> "❄️"
-        "fog" -> "🌫️"
-        "wind" -> "💨"
-        else -> if (night) "🌙" else if (temp != null) "☀️" else ""
+        "sun", "clouds", "rain", "storm", "snow", "fog", "wind" -> k
+        else -> if (night) "night" else if (temp != null) "sun" else ""
     }
 
     fun word(k: String = kind): String = when (k) {

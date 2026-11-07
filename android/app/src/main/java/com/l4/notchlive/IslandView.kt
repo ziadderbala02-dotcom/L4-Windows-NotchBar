@@ -330,10 +330,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return gap() + score.measureText(scoreText(m, true)) + 5 * d + baseCrest() + 7 * d
     }
 
-    private fun inlineWords(b: Burst): List<String> {
-        val first = b.title
-        val who = b.sub.substringBefore(" • ").substringBefore("•").trim()
-        return if (who.isNotEmpty() && b.kind != "whistle" && b.kind != "lineups") listOf(first, who) else listOf(first)
+    private fun inlineWords(b: Burst): List<String> = listOf(b.title)
+
+    /** The second line under the camera: the headline, or who scored and when ("صلاح · 88'"). */
+    private fun rowText(b: Burst): String = if (b.kind == "news") b.sub else b.sub.replace("•", "·").trim()
+
+    private fun hasRow(b: Burst) = rowText(b).isNotBlank()
+    private fun rowHeight() = 22 * d
+
+    /** Height of an event playing inside the notch: one row more when there's a second line. */
+    fun inlineHeight(): Int {
+        val b = burst ?: return compactHeight()
+        return compactHeight() + if (isInline(b) && hasRow(b)) rowHeight().toInt() else 0
     }
 
     private fun inlineWordWidth(b: Burst): Float {
@@ -418,7 +426,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     fun bigHeight(): Int = when {
-        isInline(burst) -> compactHeight()
+        isInline(burst) -> inlineHeight()
         info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + statsHeight() + 6 * d + HINT_ROW * d).toInt()
         burst?.kind == "shortcuts" -> (top() + 6 * d + 2 * SLOT_ROW * d + (if (burst?.sub.isNullOrBlank()) 0f else 40 * d) + 8 * d).toInt()
         burst?.kind == "news" || burst?.kind == "phone" ->
@@ -663,9 +671,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             path.reset()
             path.addRoundRect(rect, ch / 2, ch / 2, Path.Direction.CW)
             c.clipPath(path)
-            drawWeather(c, weather, rect.left, rect.right, ch, now)
+            val f = fx?.takeIf { it.kind == weather } ?: WeatherFx(weather).also { fx = it }
+            f.draw(c, rect.left, rect.right, ch, now)
             c.restore()
-            postInvalidateDelayed(33)
+            postInvalidateOnAnimation()
         }
         val cy = ch / 2
         val busyBg = weather.isNotEmpty() && (weatherAlways || now < weatherUntil)
@@ -694,13 +703,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             val right = rect.right - ch / 2
             c.drawText(label, right, baseline(minute, cy), minute)
             if (weatherGlyph.isNotEmpty()) {
-                val gx = right - minute.measureText(label) - 4 * d
-                small.textSize = 11f * d
-                small.textAlign = Paint.Align.RIGHT
-                small.alpha = 255
-                c.drawText(weatherGlyph, gx, baseline(small, cy), small)
-                small.textAlign = Paint.Align.LEFT
-                small.textSize = 8.5f * d
+                val sz = 15 * d
+                WeatherFx.icon(c, weatherGlyph, right - minute.measureText(label) - 4 * d - sz / 2, cy, sz)
             }
             shadowed(minute, false)
             minute.textAlign = Paint.Align.LEFT
@@ -715,100 +719,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private val path = Path()
 
-    /** Weather inside the pill: drawn from the clock alone (no particle state to keep). */
-    private fun drawWeather(c: Canvas, kind: String, l: Float, r: Float, h: Float, now: Long) {
-        val w = r - l
-        fun fr(x: Double) = (x - kotlin.math.floor(x)).toFloat()
-        when (kind) {
-            "rain", "storm" -> {
-                val storm = kind == "storm"
-                if (storm) {
-                    // A flash every few seconds.
-                    val ph = (now % 4200) / 4200f
-                    if (ph < 0.06f) {
-                        dot.color = 0xFFDCE6FF.toInt()
-                        dot.alpha = ((0.06f - ph) / 0.06f * 140).toInt()
-                        c.drawRect(l, 0f, r, h, dot)
-                    }
-                }
-                stroke.color = if (storm) 0xFF96AADC.toInt() else 0xFF8CB4FF.toInt()
-                stroke.strokeWidth = 1.2f * d
-                stroke.alpha = 190
-                val n = if (storm) 60 else 40
-                val v = if (storm) 0.26 else 0.17
-                for (i in 0 until n) {
-                    val y = fr(i * 0.618 + now * v / h * d / 10) * (h + 10 * d) - 5 * d
-                    val x = l + fr(i * 0.381 + now * (if (storm) 0.00012 else 0.00004)) * (w + 20 * d) - (y / h) * 6 * d
-                    c.drawLine(x, y, x + (if (storm) 3.5f else 1.6f) * d, y - 6 * d, stroke)
-                }
-            }
-            "snow" -> {
-                dot.color = Color.WHITE
-                dot.alpha = 220
-                for (i in 0 until 34) {
-                    val y = fr(i * 0.618 + now * 0.00025) * (h + 6 * d) - 3 * d
-                    val x = l + fr(i * 0.381) * w + sin(now / 900.0 + i).toFloat() * 3 * d
-                    c.drawCircle(x, y, (0.8f + (i % 3) * 0.5f) * d, dot)
-                }
-            }
-            "sun" -> {
-                val x = l + h * 0.9f
-                val pulse = 0.85f + 0.15f * sin(now / 700.0).toFloat()
-                shine.shader = android.graphics.RadialGradient(
-                    x, h / 2, max(1f, 70 * d * pulse),
-                    intArrayOf(0xD9FFC44D.toInt(), 0x47FF9628, 0x00FF9628), floatArrayOf(0f, 0.35f, 1f), android.graphics.Shader.TileMode.CLAMP,
-                )
-                shine.alpha = 255
-                c.drawRect(l, 0f, r, h, shine)
-                stroke.color = 0xFFFFD278.toInt()
-                stroke.strokeWidth = 1.4f * d
-                stroke.alpha = 140
-                c.save()
-                c.rotate((now / 4000f * 57.3f) % 360f, x, h / 2)
-                for (k in 0 until 8) {
-                    c.rotate(45f, x, h / 2)
-                    c.drawLine(x + 9 * d, h / 2, x + 13 * d, h / 2, stroke)
-                }
-                c.restore()
-                dot.color = 0xFFFFCF5A.toInt()
-                dot.alpha = 255
-                c.drawCircle(x, h / 2, 5.5f * d, dot)
-            }
-            "clouds" -> {
-                dot.color = 0xFFC8D2E6.toInt()
-                dot.alpha = 95
-                for (i in 0 until 4) {
-                    val x = l + fr(i * 0.27 + now * 0.000025) * (w + 60 * d) - 30 * d
-                    val sc = 0.8f + (i % 2) * 0.4f
-                    c.drawCircle(x, h / 2 + 2 * d * sc, 9 * d * sc, dot)
-                    c.drawCircle(x + 9 * d * sc, h / 2 - 2 * d * sc, 11 * d * sc, dot)
-                    c.drawCircle(x + 20 * d * sc, h / 2 + 2 * d * sc, 8 * d * sc, dot)
-                }
-            }
-            "wind" -> {
-                stroke.strokeWidth = 1.3f * d
-                stroke.color = 0xFFE6F0FF.toInt()
-                for (i in 0 until 12) {
-                    val len = (14 + (i * 7) % 18) * d
-                    val x = l + fr(i * 0.381 + now * 0.0006) * (w + len) 
-                    val y = h * (0.2f + fr(i * 0.618) * 0.6f)
-                    stroke.alpha = 150
-                    c.drawLine(x - len, y, x, y, stroke)
-                }
-            }
-            "fog" -> {
-                for (k in 0 until 3) {
-                    val off = fr(now / (30000.0 + k * 9000)) * w
-                    shine.shader = android.graphics.LinearGradient(
-                        l - w + off, 0f, l + off, 0f,
-                        intArrayOf(0x00DCE1EB, 0x40DCE1EB + k * 0x0D000000, 0x00DCE1EB), null, android.graphics.Shader.TileMode.MIRROR,
-                    )
-                    shine.alpha = 255
-                    c.drawRect(l, h * (0.1f + k * 0.27f), r, h * (0.1f + k * 0.27f) + h * 0.4f, shine)
-                }
-            }
-        }
-    }
+    /** The running weather animation (kept between frames). */
+    private var fx: WeatherFx? = null
 
     /**
      * An event played inside the notch, at the notch's height (a tap opens it big).
@@ -829,21 +741,45 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         rect.set(l, 0f, r, ch)
 
         if (b.kind == "news") {
-            // The notch flips over: the match on the way in, the headline once it has turned.
-            val flip = abs(kotlin.math.cos(t * Math.PI)).toFloat().coerceAtLeast(0.04f)
-            c.scale(1f, flip, 0f, cy)
-            c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+            // The notch flips over (first half of the move), then grows a line under the camera.
             if (t < 0.5f) {
+                val flip = abs(kotlin.math.cos(t * Math.PI)).toFloat().coerceAtLeast(0.04f)
+                c.scale(1f, flip, 0f, cy)
+                c.drawRoundRect(rect, ch / 2, ch / 2, bg)
                 // The front: the match if there is one (news on a quiet notch has a blank front).
                 if (m.id >= 0) drawCompact(c, m, ch, 1f)
             } else {
-                drawInlineNews(c, b, l, r, ch)
+                val grow = ease((t - 0.5f) * 2f)
+                pillWithRow(c, l, r, ch, grow)
+                drawInlineNews(c, b, l, r, ch, grow)
             }
             c.restore()
             return
         }
 
-        c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+        val grow = if (hasRow(b)) ease((age - 1100) / 350f) else 0f
+        pillWithRow(c, l, r, ch, grow)
+        if (grow > 0f) {
+            // Who scored (or got the card), on its own line under the camera: nothing hides it.
+            val old = line.textSize
+            line.textSize = 12f * d
+            line.color = Color.WHITE
+            line.alpha = (255 * ((grow - 0.4f) / 0.6f).coerceIn(0f, 1f)).toInt()
+            val txt = rowText(b)
+            val y = ch + rowHeight() * grow / 2 - 1 * d
+            if (line.measureText(txt) <= r - l - ch) {
+                line.textAlign = Paint.Align.CENTER
+                c.drawText(txt, (l + r) / 2, baseline(line, y), line)
+                line.textAlign = Paint.Align.LEFT
+            } else {
+                marquee(c, txt, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 1500)
+            }
+            line.textSize = old
+            line.color = 0xFFC8C8C8.toInt()
+            line.alpha = 255
+            if (grow < 1f) postInvalidateOnAnimation()
+        }
+        rect.set(l, 0f, r, ch)
         val goalFor = b.kind == "goal" && !b.against
         // The colour wave (goals for; softer for a neutral pinned match).
         if (goalFor && !calm && age < 1500) {
@@ -871,7 +807,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
         // The word over the minute: "هدف!" (or the card, VAR…), then who it was.
         val words = inlineWords(b)
-        val word = if (words.size > 1 && age > 2600) words[1] else words[0]
+        val word = words[0]
         val wordRight = camX - inlineWordRight()
         val reveal = ease((age - 200) / 500f)
         if (reveal > 0f) {
@@ -894,7 +830,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             // Written from the right, like Arabic handwriting; a long name then slides to show the rest.
             c.save()
             c.clipRect(wordRight - tw * reveal - 2 * d, 0f, wordRight + 2 * d, ch)
-            marquee(c, word, title, areaL, wordRight, baseline(title, cy), b.startedAt + if (word === words[0]) 0L else 2600L)
+            marquee(c, word, title, areaL, wordRight, baseline(title, cy), b.startedAt)
             c.restore()
             title.textAlign = Paint.Align.CENTER
             title.textSize = old
@@ -907,9 +843,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (!calm && age in runFrom..(runFrom + runFor)) {
             val p = (age - runFrom) / 1200f
             val inset = 1.2f * d
+            // Round the whole shape, the line under the camera included.
+            rect.set(l, 0f, r, ch + rowHeight() * grow)
             rect.inset(inset, inset)
             path.reset()
-            path.addRoundRect(rect, ch / 2 - inset, ch / 2 - inset, Path.Direction.CW)
+            val bot = lerp(ch / 2, 14 * d, grow) - inset
+            val top = ch / 2 - inset
+            path.addRoundRect(rect, floatArrayOf(top, top, top, top, bot, bot, bot, bot), Path.Direction.CW)
             val per = 2 * (rect.width() - rect.height()) + Math.PI.toFloat() * rect.height()
             border.pathEffect = android.graphics.DashPathEffect(floatArrayOf(per * 0.22f, per * 0.78f), -per * p)
             border.color = b.color
@@ -929,8 +869,27 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return 1f - (1f - t) * (1f - t) * (1f - t)
     }
 
-    /** The headline inside the notch: the crest at the edge, then the headline gliding across (behind the camera too). */
-    private fun drawInlineNews(c: Canvas, b: Burst, l: Float, r: Float, ch: Float) {
+    /** The notch with a second line hanging under the camera ([grow] 0..1): round on top, softer below. */
+    private fun pillWithRow(c: Canvas, l: Float, r: Float, ch: Float, grow: Float) {
+        val h = ch + rowHeight() * grow
+        if (grow <= 0f) {
+            rect.set(l, 0f, r, ch)
+            c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+            return
+        }
+        val top = ch / 2
+        val bottom = lerp(ch / 2, 14 * d, grow)
+        path.reset()
+        rect.set(l, 0f, r, h)
+        path.addRoundRect(rect, floatArrayOf(top, top, top, top, bottom, bottom, bottom, bottom), Path.Direction.CW)
+        c.drawPath(path, bg)
+    }
+
+    /**
+     * News inside the notch: on the camera's line the crest and "أخبار برشلونة", the headline on its
+     * own line under the camera (no letter hides behind it), gliding through once if it's long.
+     */
+    private fun drawInlineNews(c: Canvas, b: Burst, l: Float, r: Float, ch: Float, grow: Float) {
         val cy = ch / 2
         val crest = ch - 12 * d
         val cx = l + ch / 2 - 2 * d
@@ -941,14 +900,29 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         } else if (b.logo != null) {
             drawCrest(c, b.logo, cx, cy - crest / 2, crest, 1f)
         }
+        small.color = 0xFF60A5FA.toInt()
+        small.alpha = 255
+        val oldSmall = small.textSize
+        small.textSize = 10.5f * d
+        val labelL = cx + crest + 6 * d
+        val labelR = camX - gap() - 2 * d
+        if (labelR - labelL > 12 * d) {
+            small.textAlign = Paint.Align.LEFT
+            c.drawText(TextUtils.ellipsize(b.title, small, labelR - labelL, TextUtils.TruncateAt.END).toString(), labelL, baseline(small, cy), small)
+        }
+        small.textSize = oldSmall
+        small.color = 0xFF9CA3AF.toInt()
+        if (grow <= 0.3f) return
         val old = line.textSize
-        line.textSize = 11.5f * d
+        line.textSize = 12f * d
         line.color = Color.WHITE
-        line.alpha = 255
-        // Starts once the flip is done.
-        marquee(c, b.sub, line, cx + crest + 8 * d, r - ch / 2, baseline(line, cy), b.startedAt + 350)
+        line.alpha = (255 * ((grow - 0.3f) / 0.7f).coerceIn(0f, 1f)).toInt()
+        val y = ch + rowHeight() * grow / 2 - 1 * d
+        marquee(c, b.sub, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 900)
         line.textSize = old
         line.color = 0xFFC8C8C8.toInt()
+        line.alpha = 255
+        if (grow < 1f) postInvalidateOnAnimation()
     }
 
     /** Recording the screen: a red dot breathing and the time. */
