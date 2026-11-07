@@ -61,7 +61,7 @@ class MainActivity : Activity() {
     private var onboarding = false
 
     // Matches tab state.
-    private var filter = "live"
+    private var filter = "today"
     private var query = ""
     private var loaded: List<Match>? = null
     private var loadError = false
@@ -74,7 +74,8 @@ class MainActivity : Activity() {
 
     private val tick = object : Runnable {
         override fun run() {
-            if (!onboarding && page == null && tab == 0) drawHome()
+            // Not while the teams are being rearranged (a redraw would drop the card under the finger).
+            if (!onboarding && page == null && tab == 0 && !editTeams) drawHome()
             // The matches list stays fresh while it's open: every 30 s.
             if (!onboarding && page == null && tab == 1 && !loadingList && System.currentTimeMillis() - loadedAt > 30_000L) load(quiet = true)
             main.postDelayed(this, 5000)
@@ -303,60 +304,62 @@ class MainActivity : Activity() {
             draw()
         })
         box.addView(th, lp(MATCH, WRAP, top = dp(16)))
-        // All of them, four a row. A long press shows × on each to remove it.
-        for (chunk in prefs.teams.chunked(4)) {
-            val tr = row()
-            for (i in 0 until 4) {
-                val t = chunk.getOrNull(i)
-                if (t == null) {
-                    tr.addView(View(this), lp(0, WRAP, 1f, start = if (i > 0) dp(10) else 0))
-                    continue
-                }
-                val cell = FrameLayout(this)
-                val tc = card(12).apply {
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    isLongClickable = true
-                    setOnLongClickListener {
-                        editTeams = !editTeams
-                        drawHome()
-                        true
+        // All of them, four a row. Long-press one to drag it (the order is the priority); × removes.
+        val grid = DragGrid(this, 4, dp(10), swap = false,
+            onMove = { f, t ->
+                val l = prefs.teams.toMutableList()
+                l.add(t, l.removeAt(f))
+                prefs.teams = l
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                drawHome()
+            },
+            onEditing = {
+                editTeams = it
+                drawHomeHint()
+            })
+        for (t in prefs.teams) {
+            val cell = FrameLayout(this)
+            val tc = card(12).apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                isClickable = true
+                setOnClickListener {
+                    if (editTeams) {
+                        editTeams = false
+                        grid.editing = false
+                        drawHomeHint()
                     }
-                    setOnClickListener {
-                        if (editTeams) {
-                            editTeams = false
-                            drawHome()
-                        }
-                    }
                 }
-                tc.addView(crest(t.logo, 34))
-                tc.addView(text(t.name, 13f, bold = true).apply {
-                    gravity = Gravity.CENTER
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, lp(MATCH, WRAP, top = dp(6)))
-                val playing = known.any { it.state == Api.LIVE && (it.home.id == t.id || it.away.id == t.id) }
-                if (playing) tc.addView(text(L.t("live"), 11f, Ui.ACCENT).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
-                cell.addView(tc, FrameLayout.LayoutParams(MATCH, WRAP))
-                if (editTeams) {
-                    val x = text("×", 16f, 0xFFFFFFFF.toInt(), bold = true).apply {
-                        gravity = Gravity.CENTER
-                        background = Ui.rounded(0xFFEF4444.toInt(), dp(12).toFloat())
-                        contentDescription = L.t("remove")
-                        isClickable = true
-                        setOnClickListener {
-                            prefs.teams = prefs.teams.filter { it.id != t.id }
-                            LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
-                            drawHome()
-                        }
-                    }
-                    cell.addView(x, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.TOP or Gravity.END))
-                }
-                tr.addView(cell, lp(0, WRAP, 1f, start = if (i > 0) dp(10) else 0))
             }
-            box.addView(tr, lp(MATCH, WRAP, top = dp(8)))
+            tc.addView(crest(t.logo, 34))
+            tc.addView(text(t.name, 13f, bold = true).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, lp(MATCH, WRAP, top = dp(6)))
+            val playing = known.any { it.state == Api.LIVE && (it.home.id == t.id || it.away.id == t.id) }
+            tc.addView(text(if (playing) L.t("live") else " ", 11f, Ui.ACCENT).apply { gravity = Gravity.CENTER }, lp(MATCH, WRAP))
+            cell.addView(tc, FrameLayout.LayoutParams(MATCH, MATCH))
+            val x = text("×", 16f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                tag = "x"
+                gravity = Gravity.CENTER
+                background = Ui.rounded(0xFFEF4444.toInt(), dp(12).toFloat())
+                contentDescription = L.t("remove")
+                isClickable = true
+                setOnClickListener {
+                    prefs.teams = prefs.teams.filter { it.id != t.id }
+                    LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
+                    drawHome()
+                }
+            }
+            cell.addView(x, FrameLayout.LayoutParams(dp(26), dp(26), Gravity.TOP or Gravity.END))
+            // Pass the long press from the card to the cell, so the grid can lift it.
+            tc.setOnLongClickListener { cell.performLongClick() }
+            grid.addCell(cell)
         }
+        grid.editing = editTeams
+        box.addView(grid, lp(MATCH, WRAP, top = dp(8)))
         if (prefs.teams.isEmpty()) box.addView(text(L.t("no_teams"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
-        else box.addView(text(L.t(if (editTeams) "remove_done" else "remove_hint"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        else box.addView(text(L.t(if (editTeams) "remove_done" else "remove_hint"), 11f, Ui.MUTED).also { teamsHint = it }, lp(MATCH, WRAP, top = dp(8)))
 
         // Latest news: everything the notch showed or skipped.
         val news = prefs.newsLog.take(8)
@@ -390,6 +393,11 @@ class MainActivity : Activity() {
 
     /** Home: × shown on the team cards (after a long press). */
     private var editTeams = false
+    private var teamsHint: TextView? = null
+
+    private fun drawHomeHint() {
+        teamsHint?.text = L.t(if (editTeams) "remove_done" else "remove_hint")
+    }
 
     /** "9 ساعات و36 دقيقة", "يومان و3 ساعات" (Arabic counts follow the number). */
     private fun remaining(days: Int, hours: Int, mins: Int): String {
@@ -520,7 +528,7 @@ class MainActivity : Activity() {
         c.addView(search, lp(MATCH, WRAP, top = dp(14)))
 
         val chips = row()
-        listOf("live" to "f_live", "today" to "f_today", "mine" to "f_mine", "pinned" to "f_pinned", "comps" to "f_comps").forEachIndexed { i, (k, key) ->
+        listOf("today" to "f_today", "live" to "f_live", "mine" to "f_mine", "pinned" to "f_pinned", "comps" to "f_comps").forEachIndexed { i, (k, key) ->
             val on = filter == k
             val label = if (k == "pinned" && prefs.pinned.isNotEmpty()) "${L.t(key)} · ${prefs.pinned.size}" else L.t(key)
             chips.addView(text(label, 13f, if (on) Ui.ON_ACCENT else Ui.TEXT, bold = on).apply {
@@ -1134,22 +1142,28 @@ class MainActivity : Activity() {
         val k = card()
         k.addView(text(L.t("pos_note"), 13f, Ui.MUTED))
         k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(12)))
-        k.addView(slider(L.t("left_right"), -40, 40, prefs.offsetX) { prefs.offsetX = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(slider(L.t("size"), 50, 140, prefs.scale) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(text(L.t("room_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
-        k.addView(slider(L.t("room_left"), -40, 60, prefs.roomLeft) { prefs.roomLeft = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(slider(L.t("room_right"), -40, 60, prefs.roomRight) { prefs.roomRight = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize) {
+            prefs.idleSize = it
+            LiveService.start(this, LiveService.ACTION_DEMO, "idle")
+        }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(button(L.t("reset_pos")) {
             prefs.offsetY = 0
             prefs.offsetX = 0
             prefs.scale = 100
-            prefs.roomLeft = 0
-            prefs.roomRight = 0
+            prefs.idleSize = 100
             LiveService.start(this, LiveService.ACTION_REFRESH)
             LiveService.start(this, LiveService.ACTION_DEMO, "none")
             draw()
         }, lp(MATCH, WRAP, top = dp(10)))
         c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+
+        // Advanced: only for phones where Android reports the camera a little off.
+        c.addView(label(L.t("advanced")), lp(MATCH, WRAP, top = dp(16)))
+        val adv = card()
+        adv.addView(slider(L.t("cam_fix"), -40, 40, prefs.offsetX) { prefs.offsetX = it })
+        adv.addView(text(L.t("cam_fix_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+        c.addView(adv, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
         val demos = listOf("goal" to "d_goal", "red" to "d_red", "whistle" to "d_whistle", "lineups" to "d_lineups", "against" to "d_against", "news" to "d_news", "info" to "d_info", "grid" to "d_grid", "none" to "d_none")
@@ -1202,27 +1216,25 @@ class MainActivity : Activity() {
     private fun teamsEditor(c: LinearLayout) {
         val k = card()
         val teams = prefs.teams
-        teams.forEachIndexed { i, t ->
-            if (i > 0) k.addView(divider())
-            k.addView(orderRow(t, i, teams.size,
-                move = { d ->
-                    val l = prefs.teams.toMutableList()
-                    val j = i + d
-                    if (j in l.indices) {
-                        val x = l[i]
-                        l[i] = l[j]
-                        l[j] = x
-                        prefs.teams = l
-                        LiveService.start(this, LiveService.ACTION_REFRESH)
-                        draw()
-                    }
-                },
-                remove = {
-                    prefs.teams = prefs.teams.filter { it.id != t.id }
-                    LiveService.start(this, LiveService.ACTION_REFRESH)
-                    draw()
-                }))
+        // A list you rearrange by long-pressing a team and dragging it.
+        val list = DragGrid(this, 1, dp(2), swap = false, onMove = { f, t ->
+            val l = prefs.teams.toMutableList()
+            l.add(t, l.removeAt(f))
+            prefs.teams = l
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            draw()
+        })
+        for ((i, t) in teams.withIndex()) {
+            val r = orderRow(t, i, teams.size, null) {
+                prefs.teams = prefs.teams.filter { it.id != t.id }
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                draw()
+            }
+            r.background = Ui.rounded(Ui.CARD, dp(12).toFloat())
+            (r as LinearLayout).addView(text("≡", 18f, Ui.MUTED).apply { gravity = Gravity.CENTER }, 0, lp(dp(24), dp(44)))
+            list.addCell(r)
         }
+        k.addView(list, lp(MATCH, WRAP))
         if (teams.isEmpty()) k.addView(text(L.t("no_teams"), 13f, Ui.MUTED))
         k.addView(button("+  " + L.t("add_team"), primary = true) {
             backTo = page
@@ -1408,32 +1420,54 @@ class MainActivity : Activity() {
         backRow(c, L.t("slots"))
         c.addView(text(L.t("slots_note"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
         val slots = Shortcuts.load(this)
-        for (chunk in (0 until Shortcuts.SLOTS).chunked(4)) {
-            val r = row()
-            chunk.forEachIndexed { k, i ->
-                val s = slots[i]
-                val cell = column().apply {
-                    gravity = Gravity.CENTER_HORIZONTAL
-                    background = Ui.rounded(Ui.CARD, dp(16).toFloat())
-                    setPadding(dp(4), dp(10), dp(4), dp(10))
+        // Long-press a slot and drop it on another: the two trade places. × empties one.
+        val grid = DragGrid(this, 4, dp(8), swap = true, onMove = { f, t ->
+            val l = Shortcuts.load(this).toMutableList()
+            val x = l[f]
+            l[f] = l[t]
+            l[t] = x
+            Shortcuts.save(this, l)
+            draw()
+        })
+        for (i in 0 until Shortcuts.SLOTS) {
+            val s = slots[i]
+            val frame = FrameLayout(this)
+            val cell = column().apply {
+                gravity = Gravity.CENTER_HORIZONTAL
+                background = Ui.rounded(Ui.CARD, dp(16).toFloat())
+                setPadding(dp(4), dp(10), dp(4), dp(10))
+                isClickable = true
+                setOnClickListener {
+                    pickIndex = i
+                    backTo = "slots"
+                    page = "slot_pick"
+                    draw()
+                }
+                setOnLongClickListener { frame.performLongClick() }
+            }
+            cell.addView(slotIcon(s), lp(dp(32), dp(32)))
+            cell.addView(text(s?.let { Shortcuts.label(this, it) } ?: "+", 11f, if (s == null) Ui.MUTED else Ui.TEXT).apply {
+                gravity = Gravity.CENTER
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
+            }, lp(MATCH, WRAP, top = dp(6)))
+            frame.addView(cell, FrameLayout.LayoutParams(MATCH, MATCH))
+            if (s != null) {
+                frame.addView(text("×", 14f, 0xFFFFFFFF.toInt(), bold = true).apply {
+                    tag = "x"
+                    gravity = Gravity.CENTER
+                    background = Ui.rounded(0xFFEF4444.toInt(), dp(11).toFloat())
                     isClickable = true
                     setOnClickListener {
-                        pickIndex = i
-                        backTo = "slots"
-                        page = "slot_pick"
+                        Shortcuts.set(this@MainActivity, i, null)
                         draw()
                     }
-                }
-                cell.addView(slotIcon(s), lp(dp(32), dp(32)))
-                cell.addView(text(s?.let { Shortcuts.label(this, it) } ?: "+", 11f, if (s == null) Ui.MUTED else Ui.TEXT).apply {
-                    gravity = Gravity.CENTER
-                    maxLines = 1
-                    ellipsize = android.text.TextUtils.TruncateAt.END
-                }, lp(MATCH, WRAP, top = dp(6)))
-                r.addView(cell, lp(0, WRAP, 1f, start = if (k > 0) dp(8) else 0))
+                }, FrameLayout.LayoutParams(dp(22), dp(22), Gravity.TOP or Gravity.END))
             }
-            c.addView(r, lp(MATCH, WRAP, top = dp(10)))
+            grid.addCell(frame)
         }
+        c.addView(grid, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(text(L.t("slots_drag"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
     }
 
     /** A slot's picture: the app icon, the site icon, or the action's symbol. */
@@ -1464,6 +1498,9 @@ class MainActivity : Activity() {
             r.addView(text(Shortcuts.label(this, current), 14f, bold = true), lp(0, WRAP, 1f, start = dp(10)))
             r.addView(link(L.t("remove")) { done(null) }.apply { setTextColor(Ui.RED) })
             c.addView(r, lp(MATCH, WRAP, top = dp(10)))
+            if (current.type == "action" && current.value == "record") {
+                c.addView(navRow(L.t("rec_sound"), L.t("rs_" + prefs.recAudio)) { recSoundDialog { draw() } }, lp(MATCH, WRAP, top = dp(6)))
+            }
         }
         c.addView(segmented(listOf("action" to "slot_action", "app" to "slot_app", "link" to "slot_link"), pickType) {
             pickType = it
@@ -1490,7 +1527,9 @@ class MainActivity : Activity() {
                     Shortcuts.needsAccessibility(a) && TapService.instance == null -> L.t("sc_need_access")
                     else -> L.t("scd_$a").takeIf { it != "scd_$a" }
                 }
-                choice(text(Shortcuts.glyph(a), 20f).apply { gravity = Gravity.CENTER }, L.t("sc_$a"), sub) { done(Slot("action", a, "")) }
+                choice(text(Shortcuts.glyph(a), 20f).apply { gravity = Gravity.CENTER }, L.t("sc_$a"), sub) {
+                    if (a == "record") recSoundDialog { done(Slot("action", a, "")) } else done(Slot("action", a, ""))
+                }
             }
             "app" -> {
                 val field = EditText(this).apply {
@@ -1549,6 +1588,19 @@ class MainActivity : Activity() {
                 list.addView(text(L.t("link_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
             }
         }
+    }
+
+    /** Screen recording sound: the phone's, the mic, both, or none. */
+    private fun recSoundDialog(then: () -> Unit) {
+        val keys = listOf("internal", "mic", "both", "none")
+        android.app.AlertDialog.Builder(this)
+            .setTitle(L.t("rec_sound"))
+            .setSingleChoiceItems(keys.map { L.t("rs_$it") }.toTypedArray(), keys.indexOf(prefs.recAudio).coerceAtLeast(0)) { d, i ->
+                prefs.recAudio = keys[i]
+                d.dismiss()
+                then()
+            }
+            .show()
     }
 
     /* ----- sub-page: sounds ----- */

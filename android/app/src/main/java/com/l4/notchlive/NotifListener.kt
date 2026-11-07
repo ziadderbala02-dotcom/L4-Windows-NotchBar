@@ -22,6 +22,30 @@ class NotifListener : NotificationListenerService() {
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         val prefs = Prefs(this)
         if (prefs.inspector && sbn.packageName in prefs.inspectorApps) inspect(sbn)
+        scan()
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification) = scan()
+
+    override fun onListenerConnected() = scan()
+
+    /** Which ongoing notifications would show in the phone's own pill (see SystemPill). */
+    private fun scan() {
+        try {
+            val all = activeNotifications ?: return
+            val now = System.currentTimeMillis()
+            val pill = HashSet<String>()
+            val ongoing = HashMap<String, Long>()
+            for (sbn in all) {
+                if (sbn.packageName == packageName || !sbn.isOngoing) continue
+                ongoing[sbn.packageName] = SystemPill.allOngoing[sbn.packageName] ?: now
+                if (SystemPill.feedsPill(sbn)) pill += sbn.packageName
+            }
+            SystemPill.allOngoing = ongoing
+            SystemPill.ongoing = pill
+        } catch (e: Exception) {
+            // Listener not ready.
+        }
     }
 
     /** One block per update: what the app put in the notification (text fields, progress, timer, buttons). */

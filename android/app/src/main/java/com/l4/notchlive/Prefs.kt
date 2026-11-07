@@ -25,8 +25,9 @@ class Prefs(ctx: Context) {
         set(v) = p.edit().putBoolean("hideOnAudio", v).apply()
 
     /** While Xiaomi's own island is busy (music, a call): shrink to a small circle on its right. */
+    /** On by default only on phones whose own pill sits round the camera (Xiaomi, Honor, OPPO…). */
     var circle: Boolean
-        get() = p.getBoolean("circle", true)
+        get() = p.getBoolean("circle", SystemPill.hasPill)
         set(v) = p.edit().putBoolean("circle", v).apply()
 
     /** News about the favourite teams in the notch. */
@@ -138,6 +139,30 @@ class Prefs(ctx: Context) {
         for (n in all) a.put(JSONObject().put("team", n.team).put("logo", n.logo).put("title", n.title).put("url", n.url).put("at", n.at))
         p.edit().putString("newsLog", a.toString()).apply()
     }
+
+    /** Apps learned to bring up the phone's pill (the user swiped the notch away twice for them). */
+    var learnedPill: Set<String>
+        get() = p.getStringSet("learnedPill", emptySet()) ?: emptySet()
+        set(v) = p.edit().putStringSet("learnedPill", v).apply()
+
+    var pillVotes: Map<String, Int>
+        get() = try {
+            val o = JSONObject(p.getString("pillVotes", "{}") ?: "{}")
+            o.keys().asSequence().associateWith { o.getInt(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        set(v) = p.edit().putString("pillVotes", JSONObject(v as Map<*, *>).toString()).apply()
+
+    /** Size of the always-on ring, percent (50..150). */
+    var idleSize: Int
+        get() = p.getInt("idleSize", 100)
+        set(v) = p.edit().putInt("idleSize", v).apply()
+
+    /** Screen recording sound: "internal" (the phone's), "mic", "both" or "none". */
+    var recAudio: String
+        get() = p.getString("recAudio", "internal") ?: "internal"
+        set(v) = p.edit().putString("recAudio", v).apply()
 
     private fun readList(key: String): List<TeamOption>? {
         val raw = p.getString(key, null) ?: return null

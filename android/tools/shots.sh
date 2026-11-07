@@ -40,6 +40,9 @@ for size in $SIZES; do
     adb exec-out screencap -p > "$OUT/${name}_3tap.png"
     demo grid; sleep 4
     adb exec-out screencap -p > "$OUT/${name}_4shortcuts.png"
+    adb shell am force-stop $PKG
+    demo idle; sleep 3
+    adb exec-out screencap -p > "$OUT/${name}_5idle.png"
   done
 done
 adb shell wm size reset; adb shell wm density reset

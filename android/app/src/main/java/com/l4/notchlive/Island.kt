@@ -129,6 +129,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val v = view ?: attach() ?: return
         v.others = others
         v.idle = idle
+        v.idleK = prefs.idleSize / 100f
         v.recSince = rec
         if (v.infoStats?.size != stats?.size) {
             v.infoStats = stats
@@ -175,7 +176,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      * stays (to hear when the bar comes back) but draws nothing and lets touches through.
      */
     /** Full screen with the "bigger in full screen" option: nothing to cover, so no squeezing. */
-    private fun roomy() = prefs.roomyFullscreen && !statusBarVisible && prefs.overFullscreen
+    private fun roomy() = prefs.roomyFullscreen && prefs.overFullscreen && (!statusBarVisible || !portrait())
 
     private fun applyVisibility() {
         val v = view ?: return
@@ -227,8 +228,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         if (g.portrait) {
             // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each
             // side), widened or narrowed per side by the user for other phones.
-            v.leftMax = g.cx - g.screenW * LEFT_EDGE + prefs.roomLeft * density()
-            v.rightMax = g.screenW * RIGHT_EDGE - g.cx + prefs.roomRight * density()
+            v.leftMax = g.cx - g.screenW * LEFT_EDGE
+            v.rightMax = g.screenW * RIGHT_EDGE - g.cx
         }
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -294,7 +295,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             // Right of Xiaomi's island, just before the status icons.
             width = ch
             height = ch
-            x = (g.screenW * RIGHT_EDGE + prefs.roomRight * density + prefs.offsetX * density - ch - 4 * density).toInt()
+            x = (g.screenW * RIGHT_EDGE + prefs.offsetX * density - ch - 4 * density).toInt()
             v.camX = g.cx - x
         } else if (v.tucked) {
             width = v.tuckWidth()

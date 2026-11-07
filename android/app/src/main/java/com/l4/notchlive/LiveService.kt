@@ -164,6 +164,7 @@ class LiveService : Service(), IslandView.Gestures {
         prefs = Prefs(this)
         L.load(this)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
+        SystemPill.watchCharging(this)
         nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CH_LIVE, L.t("ch_live"), NotificationManager.IMPORTANCE_MIN).apply {
@@ -474,13 +475,23 @@ class LiveService : Service(), IslandView.Gestures {
             render()
             return
         }
-        if (idleNow || recNow) return
+        if (recNow) return
+        if (idleNow) {
+            // Swiped away (often because it sits on the phone's pill): out of the way for 30 min.
+            if (right) {
+                SystemPill.learnFromSwipe(this)
+                idleHiddenUntil = System.currentTimeMillis() + 30 * 60_000L
+                render()
+            }
+            return
+        }
         if (circleNow) {
             infoMatch = null
             render()
             return
         }
         prefs.tucked = right
+        if (right) SystemPill.learnFromSwipe(this)
         infoMatch = null
         render()
     }
@@ -961,20 +972,20 @@ class LiveService : Service(), IslandView.Gestures {
             if (Recorder.since > 0) {
                 m = blankMatch()
                 recNow = true
-            } else if (prefs.idleNotch && now >= idleHiddenUntil) {
+            } else if ((prefs.idleNotch && now >= idleHiddenUntil) || now < demoIdleUntil) {
                 m = blankMatch()
                 idleNow = true
             }
         }
         onScreen = m
-        // Xiaomi's island is busy (a call or music): circle beside it, or hidden if that's off.
-        val busy = inCall() || audio.isMusicActive
+        // The phone's own pill is showing (a call, music, a timer…): circle beside it, or hidden if that's off.
+        val busy = SystemPill.busy(this, audio, inCall())
         val wasCircle = circleNow
         circleNow = busy && prefs.circle && island.portrait()
         if (wasCircle && !circleNow) infoMatch = null
         val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
             // The capsule steps aside for Xiaomi's island.
-            (idleNow && busy && current == null && !recNow)
+            (idleNow && busy && current == null && !recNow && !prefs.circle)
         island.calm = effectiveSpeed(this) == "saver"
         val shownM = m
         if (shownM == null || hidden) {
@@ -989,7 +1000,7 @@ class LiveService : Service(), IslandView.Gestures {
                 current?.takeIf { it.matchId == shownM.id },
                 showInfo,
                 prefs.tucked && !circleNow && !blank,
-                circleNow && !blank,
+                circleNow && !recNow,
                 others = others,
                 idle = idleNow,
                 stats = if (showInfo) quickStats[shownM.id]?.second else null,
@@ -1176,7 +1187,16 @@ class LiveService : Service(), IslandView.Gestures {
 
     /* ---------- demo (to check the position without a live match) ---------- */
 
+    /** Shows the always-on ring for a moment (while the user moves its size slider). */
+    private var demoIdleUntil = 0L
+
     private fun startDemo(kind: String) {
+        if (kind == "idle") {
+            demoIdleUntil = System.currentTimeMillis() + 8_000L
+            demo = null
+            render()
+            return
+        }
         val teams = prefs.teams
         val a = teams.getOrNull(0) ?: Prefs.DEFAULT_TEAMS[0]
         val b = teams.getOrNull(1) ?: Prefs.DEFAULT_TEAMS[1]

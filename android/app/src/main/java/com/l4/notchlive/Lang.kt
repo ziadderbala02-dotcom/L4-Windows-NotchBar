@@ -276,8 +276,8 @@ object L {
         "order_note" to "الترتيب يحدد الأولوية: مباراة الفريق الأعلى هي الأساسية في النوتش، وإذا تقابل فريقان مفضلان فالأعلى هو «فريقك».",
         "move_up" to "تحريك لأعلى",
         "move_down" to "تحريك لأسفل",
-        "remove_hint" to "اضغط مطولًا على فريق لإزالته",
-        "remove_done" to "اضغط × للإزالة، أو اضغط مطولًا للإنهاء",
+        "remove_hint" to "اضغط مطولًا على فريق واسحبه لترتيبه، أو اضغط × لإزالته",
+        "remove_done" to "اسحب لترتيب الفرق، و× للإزالة. اضغط أي فريق للإنهاء.",
         // 1.5.1
         "sc_next" to "المباراة القادمة: %s · %s",
         "sc_missing" to "التطبيق غير موجود",
@@ -320,7 +320,7 @@ object L {
         "sc_saver" to "الوضع الموفّر",
         "sc_hide" to "إخفاء النوتش ساعة",
         "sc_app" to "Notch Live",
-        "scd_record" to "فيديو بدون صوت · يُحفظ في الاستوديو",
+        "scd_record" to "يُحفظ في الاستوديو · الصوت تختاره بعد الاختيار",
         "scd_qr" to "يفتح الرابط أو ينسخ النص",
         "scd_night" to "طبقة دافئة أغمق فوق الشاشة",
         "scd_awake" to "تمنع الشاشة من الانطفاء حتى تضغطه مرة أخرى",
@@ -359,6 +359,17 @@ object L {
         "d_info" to "الضغطة الأولى",
         "d_grid" to "الاختصارات",
         "d_none" to "النوتش عادية",
+        // 1.5.2
+        "idle_size" to "حجم النوتش الدائمة",
+        "advanced" to "متقدم",
+        "cam_fix" to "تصحيح مكان الكاميرا",
+        "cam_fix_d" to "لو كانت النوتش لا تلف حول الكاميرا بالضبط في هاتفك. اتركه على 0 في أغلب الهواتف.",
+        "slots_drag" to "اضغط مطولًا على خانة واسحبها فوق أخرى لتبديل مكانهما.",
+        "rec_sound" to "صوت التسجيل",
+        "rs_internal" to "صوت الهاتف",
+        "rs_mic" to "المايك",
+        "rs_both" to "صوت الهاتف والمايك",
+        "rs_none" to "بدون صوت",
     )
 
     private val EN = mapOf(
@@ -600,8 +611,8 @@ object L {
         "order_note" to "Order sets priority: the top team's match is the main one in the notch, and when two favourites meet, the higher one is \"yours\".",
         "move_up" to "Move up",
         "move_down" to "Move down",
-        "remove_hint" to "Long-press a team to remove it",
-        "remove_done" to "Tap × to remove, or long-press to finish",
+        "remove_hint" to "Long-press a team and drag to reorder, or × to remove",
+        "remove_done" to "Drag to reorder, × to remove. Tap any team to finish.",
         // 1.5.1
         "sc_next" to "Next: %s · %s",
         "sc_missing" to "App not found",
@@ -644,7 +655,7 @@ object L {
         "sc_saver" to "Saver mode",
         "sc_hide" to "Hide notch 1 h",
         "sc_app" to "Notch Live",
-        "scd_record" to "Video without sound · saved to the gallery",
+        "scd_record" to "Saved to the gallery · pick the sound next",
         "scd_qr" to "Opens the link or copies the text",
         "scd_night" to "A warmer, darker layer over the screen",
         "scd_awake" to "Keeps the screen from sleeping until tapped again",
@@ -683,5 +694,16 @@ object L {
         "d_info" to "First tap",
         "d_grid" to "Shortcuts",
         "d_none" to "Plain notch",
+        // 1.5.2
+        "idle_size" to "Always-on notch size",
+        "advanced" to "Advanced",
+        "cam_fix" to "Camera position fix",
+        "cam_fix_d" to "Only if the notch doesn't sit exactly round your camera. Leave it at 0 on most phones.",
+        "slots_drag" to "Long-press a slot and drag it onto another to swap them.",
+        "rec_sound" to "Recording sound",
+        "rs_internal" to "Phone sound",
+        "rs_mic" to "Microphone",
+        "rs_both" to "Phone + microphone",
+        "rs_none" to "No sound",
     )
 }

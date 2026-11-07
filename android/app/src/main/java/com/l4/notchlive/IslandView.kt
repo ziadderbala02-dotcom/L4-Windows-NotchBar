@@ -101,6 +101,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var others = 0
     /** No live match: the always-on capsule (next match or last result), drawn dimmer. */
     var idle = false
+    /** The always-on ring's size (the user's slider), 0.5..1.5. */
+    var idleK = 1f
     /** Screen recording since this time (0 = not recording): a red dot and a timer. */
     var recSince = 0L
     /** Quick stats for the tap view (possession, shots, on target), when they've arrived. */
@@ -166,7 +168,9 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     /* ---------- geometry ---------- */
 
-    fun compactHeight(): Int = max(2 * (camR + 5 * d), 28 * d).toInt()
+    fun compactHeight(): Int =
+        if (idle && burst == null && !info) (2 * (camR + (1.5f + 4.5f * idleK) * d)).toInt()
+        else max(2 * (camR + 5 * d), 28 * d).toInt()
 
     private fun gap() = if (landscape) 9 * d else camR + 6 * d
 
@@ -241,7 +245,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             return gap() + 10 * d + minute.measureText("00:00") + 12 * d to gap() + 8 * d
         }
         // The always-on capsule: just a ring round the camera and a grey dot.
-        if (idle) return gap() + 2 * d to gap() + 14 * d
+        if (idle) {
+            val r = compactHeight() / 2f
+            return r to r + 11 * d * idleK
+        }
         return leftWidth(leftLevel()) to rightWidth(rightLevel())
     }
 
@@ -469,6 +476,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val size = compactHeight().toFloat()
         val r = size / 2
         c.drawCircle(r, r, r, bg)
+        if (idle) {
+            // The always-on notch beside the phone's pill: a black circle with the grey dot.
+            dot.color = 0xFF6B7280.toInt()
+            dot.alpha = 255
+            c.drawCircle(r, r, 2.5f * d, dot)
+            return
+        }
         val (color, breathe) = when {
             m.state == Api.POST -> 0xFF6B7280.toInt() to false
             m.state == Api.PRE || m.phase == "break" -> 0xFFFBBF24.toInt() to false
@@ -500,7 +514,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawRoundRect(rect, ch / 2, ch / 2, bg)
         dot.color = 0xFF6B7280.toInt()
         dot.alpha = 255
-        c.drawCircle(camX + gap() + 6 * d, ch / 2, 2.5f * d, dot)
+        c.drawCircle(camX + ch / 2 + 4.5f * d * idleK, ch / 2, 2.5f * d * idleK.coerceAtLeast(0.7f), dot)
     }
 
     /** Recording the screen: a red dot breathing and the time. */
