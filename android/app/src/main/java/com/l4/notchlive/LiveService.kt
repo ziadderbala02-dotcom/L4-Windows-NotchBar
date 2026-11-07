@@ -900,15 +900,23 @@ class LiveService : Service(), IslandView.Gestures {
                 val fav = prefs.teams.map { it.id }
                 val mine = if (m.away.id in fav && m.home.id !in fav) m.away else m.home
                 val other = if (mine === m.home) m.away else m.home
-                items += "${mine.short} × ${other.short} · ${android.text.format.DateFormat.format(if (m.kickoff - now < 86_400_000L) "h:mm a" else "EEE h:mm a", m.kickoff)}"
+                // Short: "الأهلي ٩:٠٠" today, "الأهلي السبت" later.
+                val loc = if (L.ar) java.util.Locale("ar", "EG") else java.util.Locale.ENGLISH
+                val sameDay = android.text.format.DateUtils.isToday(m.kickoff)
+                items += "${mine.short} ${java.text.SimpleDateFormat(if (sameDay) "h:mm" else "EEEE", loc).format(java.util.Date(m.kickoff))}"
+                if (other.id == 0) return@let
             }
         }
         if (items.isEmpty()) return ""
         return items[((now / 10_000L) % items.size).toInt()]
     }
 
-    private fun idleRight(): String =
-        if ("weather" in prefs.idleShow) Ambient.temp?.let { "$it°" }.orEmpty() else ""
+    private fun idleRight(): String = when {
+        "weather" !in prefs.idleShow -> ""
+        Ambient.temp != null -> "${Ambient.temp}°"
+        System.currentTimeMillis() < demoIdleUntil -> "--°"
+        else -> ""
+    }
 
     /** New headlines waiting their turn: one shows every 5 minutes, so they don't pile up on screen. */
     private val newsWaiting = ArrayDeque<Pair<TeamOption, Api.News>>()
@@ -1063,12 +1071,17 @@ class LiveService : Service(), IslandView.Gestures {
         audio.mode == AudioManager.MODE_IN_COMMUNICATION ||
         audio.mode == AudioManager.MODE_RINGTONE
 
+    /** Something was showing on the last frame (when it goes, the weather plays again). */
+    private var hadBurst = false
+
     private fun render() {
         val now = System.currentTimeMillis()
         if (current != null && now >= currentUntil) {
             current = null
             nextBurstAt = now + 600
         }
+        if (hadBurst && current == null && queue.isEmpty()) weatherUntil = max(weatherUntil, now + 5_000L)
+        hadBurst = current != null
         if (infoMatch != null && now >= infoUntil) infoMatch = null
         val list = matches + listOfNotNull(demo?.takeIf { now < demoUntil })
         pumpNews(now)
@@ -1079,7 +1092,8 @@ class LiveService : Service(), IslandView.Gestures {
             if (owner != null) {
                 current = b
                 b.startedAt = now
-                currentUntil = now + if (b.kind == "news" || b.kind == "phone") 8_000L else BURST_MS
+                // News gets time for its headline to slide through.
+                currentUntil = now + if (b.kind == "news" || b.kind == "phone") 12_000L else BURST_MS
                 infoMatch = null
                 announce(b, owner)
             }
@@ -1108,7 +1122,8 @@ class LiveService : Service(), IslandView.Gestures {
         if (wasCircle && !circleNow) infoMatch = null
         val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
             // The capsule steps aside for Xiaomi's island.
-            (idleNow && busy && current == null && !recNow && !prefs.circle)
+            // The always-on notch steps aside completely for the phone's own pill.
+            (idleNow && busy && current == null && !recNow)
         island.calm = effectiveSpeed(this) == "saver"
         val shownM = m
         if (shownM == null || hidden) {
@@ -1130,7 +1145,10 @@ class LiveService : Service(), IslandView.Gestures {
                 rec = if (recNow) Recorder.since else 0L,
                 idleText = if (idleNow) idleLeft(now) else "",
                 idleTemp = if (idleNow) idleRight() else "",
-                weather = if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off") Ambient.kind else "",
+                weather = if (idleNow && now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather
+                    else if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off") Ambient.kind else "",
+                weatherGlyph = if (idleNow && "weather" in prefs.idleShow) Ambient.glyph(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
+                weatherWord = if (idleNow && "weather" in prefs.idleShow && Ambient.temp != null) Ambient.word(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
                 weatherUntil = weatherUntil,
                 weatherAlways = prefs.weatherAnim == "always",
             )
@@ -1317,10 +1335,13 @@ class LiveService : Service(), IslandView.Gestures {
 
     /** Shows the always-on ring for a moment (while the user moves its size slider). */
     private var demoIdleUntil = 0L
+    private var demoWeather = ""
 
     private fun startDemo(kind: String) {
-        if (kind == "idle") {
-            demoIdleUntil = System.currentTimeMillis() + 4_000L
+        if (kind == "idle" || kind.startsWith("w_")) {
+            // The empty notch (or one weather kind on it) for a few seconds.
+            demoWeather = kind.removePrefix("w_").takeIf { kind.startsWith("w_") }.orEmpty()
+            demoIdleUntil = System.currentTimeMillis() + if (demoWeather.isEmpty()) 4_000L else 5_000L
             weatherUntil = demoIdleUntil
             demo = null
             render()

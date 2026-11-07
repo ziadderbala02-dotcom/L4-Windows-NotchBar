@@ -183,7 +183,7 @@ object L {
         "d_lineups" to "التشكيل",
         "d_against" to "هدف علينا",
         "d_news" to "خبر",
-        "try_note" to "اضغط النوتش لتكبيرها، ومرة أخرى لفتح المباراة. اضغط مطوّلاً لقائمة سريعة. اسحب لأسفل للإحصائيات، ويميناً لإخفائها ويساراً لإعادتها.",
+        "try_note" to "اضغط النوتش لتكبيرها (فيها الهدافون والإحصائيات)، ومرة أخرى لفتح المباراة. اضغط مطوّلًا لقائمة سريعة. اسحب يمينًا لإخفائها ويسارًا لإعادتها. أي مثال يُغلق بضغطة.",
         // Update
         "new_version" to "إصدار جديد: %s",
         "update_note" to "سيُنزَّل ويُثبَّت فوق هذا الإصدار.",
@@ -360,7 +360,7 @@ object L {
         "d_grid" to "الاختصارات",
         "d_none" to "النوتش عادية",
         // 1.5.2
-        "idle_size" to "حجم النوتش الدائمة",
+        "idle_size" to "عرض النوتش الدائمة",
         "advanced" to "متقدم",
         "cam_fix" to "تصحيح مكان الكاميرا",
         "cam_fix_d" to "لو كانت النوتش لا تلف حول الكاميرا بالضبط في هاتفك. اتركه على 0 في أغلب الهواتف.",
@@ -403,6 +403,16 @@ object L {
         "pr_in" to "%s بعد %d د",
         "big_events" to "عرض الأحداث كبيرة",
         "big_events_d" to "الجون والأخبار تفتح بعرض الشاشة مباشرة بدل أن تظهر داخل النوتش.",
+        // 1.6.1
+        "idle_scale" to "حجم النوتش الدائمة",
+        "w_sun" to "مشمس",
+        "w_clouds" to "غائم",
+        "w_rain" to "مطر",
+        "w_storm" to "عاصفة",
+        "w_snow" to "ثلج",
+        "w_fog" to "شبورة",
+        "w_wind" to "رياح",
+        "w_clear" to "صافٍ",
     )
 
     private val EN = mapOf(
@@ -553,7 +563,7 @@ object L {
         "d_lineups" to "Line-ups",
         "d_against" to "Goal against",
         "d_news" to "News",
-        "try_note" to "Tap the notch to expand it, again to open the match. Long-press for a quick menu. Pull down for stats; swipe right to hide, left to bring it back.",
+        "try_note" to "Tap the notch to expand it (scorers and stats), again to open the match. Long-press for a quick menu. Swipe right to hide, left to bring it back. Any sample closes with a tap.",
         "new_version" to "New version: %s",
         "update_note" to "It downloads and installs over this version.",
         "download" to "Download and install",
@@ -728,7 +738,7 @@ object L {
         "d_grid" to "Shortcuts",
         "d_none" to "Plain notch",
         // 1.5.2
-        "idle_size" to "Always-on notch size",
+        "idle_size" to "Always-on notch width",
         "advanced" to "Advanced",
         "cam_fix" to "Camera position fix",
         "cam_fix_d" to "Only if the notch doesn't sit exactly round your camera. Leave it at 0 on most phones.",
@@ -771,5 +781,15 @@ object L {
         "pr_in" to "%s in %d min",
         "big_events" to "Show events big",
         "big_events_d" to "Goals and news open full width right away instead of playing inside the notch.",
+        // 1.6.1
+        "idle_scale" to "Always-on notch size",
+        "w_sun" to "Sunny",
+        "w_clouds" to "Cloudy",
+        "w_rain" to "Rain",
+        "w_storm" to "Storm",
+        "w_snow" to "Snow",
+        "w_fog" to "Fog",
+        "w_wind" to "Windy",
+        "w_clear" to "Clear",
     )
 }

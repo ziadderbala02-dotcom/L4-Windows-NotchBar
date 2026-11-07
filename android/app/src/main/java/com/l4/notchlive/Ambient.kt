@@ -33,6 +33,27 @@ object Ambient {
     @Volatile
     var kind = ""
 
+    /** A clear night (no animation, but a moon and a word). */
+    @Volatile
+    var night = false
+
+    /** The weather's glyph and its word, for the always-on notch. */
+    fun glyph(k: String = kind): String = when (k) {
+        "sun" -> "☀️"
+        "clouds" -> "☁️"
+        "rain" -> "🌧️"
+        "storm" -> "⛈️"
+        "snow" -> "❄️"
+        "fog" -> "🌫️"
+        "wind" -> "💨"
+        else -> if (night) "🌙" else if (temp != null) "☀️" else ""
+    }
+
+    fun word(k: String = kind): String = when (k) {
+        "" -> L.t("w_clear")
+        else -> L.t("w_$k")
+    }
+
     @Volatile
     var fetchedAt = 0L
 
@@ -71,7 +92,8 @@ object Ambient {
         val cur = r.optJSONObject("current") ?: return false
         temp = Math.round(cur.optDouble("temperature_2m")).toInt()
         val was = kind
-        kind = kindOf(cur.optInt("weather_code"), cur.optDouble("wind_speed_10m"), cur.optInt("is_day", 1) == 1)
+        night = cur.optInt("is_day", 1) == 0
+        kind = kindOf(cur.optInt("weather_code"), cur.optDouble("wind_speed_10m"), !night)
         fetchedAt = System.currentTimeMillis()
         return was != kind
     }
@@ -92,14 +114,16 @@ object Ambient {
 
     /* ---------- date ---------- */
 
+    /** Short: "السبت ٧" / "Sat 7". */
     fun dateText(now: Long): String {
         val loc = if (L.ar) Locale("ar", "EG") else Locale.ENGLISH
-        return java.text.SimpleDateFormat("EEEE d MMMM", loc).format(java.util.Date(now))
+        return java.text.SimpleDateFormat(if (L.ar) "EEEE d" else "EEE d", loc).format(java.util.Date(now))
     }
 
     fun hijriText(now: Long): String = try {
         val loc = android.icu.util.ULocale(if (L.ar) "ar@calendar=islamic-umalqura" else "en@calendar=islamic-umalqura")
-        android.icu.text.SimpleDateFormat("d MMMM", loc).format(java.util.Date(now))
+        // "١٦ جمادى": the month's first word keeps it short.
+        android.icu.text.SimpleDateFormat("d MMMM", loc).format(java.util.Date(now)).split(" ").take(2).joinToString(" ")
     } catch (e: Exception) {
         ""
     }
@@ -181,6 +205,7 @@ object Ambient {
         }
         val name = L.t("pr_${next.first}")
         val mins = ((next.second - now) / 60_000L).toInt()
-        return if (mins in 0..59) L.f("pr_in", name, mins) else "$name ${timeFormat.format(java.util.Date(next.second))}"
+        val t = java.text.SimpleDateFormat("h:mm", if (L.ar) Locale("ar", "EG") else Locale.ENGLISH).format(java.util.Date(next.second))
+        return if (mins in 0..59) L.f("pr_in", name, mins) else "$name $t"
     }
 }

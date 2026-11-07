@@ -121,6 +121,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean,
         others: Int = 0, idle: Boolean = false, stats: List<Stat>? = null, rec: Long = 0L,
         idleText: String = "", idleTemp: String = "", weather: String = "", weatherUntil: Long = 0L, weatherAlways: Boolean = false,
+        weatherGlyph: String = "", weatherWord: String = "",
     ) {
         if (match == null) {
             hide()
@@ -137,6 +138,9 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.weather = weather
         v.weatherUntil = weatherUntil
         v.weatherAlways = weatherAlways
+        v.weatherGlyph = weatherGlyph
+        v.weatherWord = weatherWord
+        v.idleScale = prefs.idleScale / 100f
         if (grew && !big) layout()
         v.stretch = prefs.widthExtra * density()
         v.recSince = rec
@@ -298,16 +302,23 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val width: Int
         val height: Int
         val x: Int
-        if (big) {
+        val inline = if (big) v.inlineExtent() else null
+        if (inline != null) {
+            // An event playing inside the notch: it grows only where its text needs room.
+            width = (inline.first + inline.second).toInt() + 1
+            height = ch
+            x = (g.cx - inline.first).toInt()
+            v.camX = g.cx - x
+        } else if (big) {
             width = v.bigWidth(g.screenW)
             height = max(ch, v.bigHeight())
             x = (g.cx - width / 2f).toInt()
             v.camX = g.cx - x
         } else if (v.circle) {
-            // Right of Xiaomi's island, just before the status icons.
+            // Left of the phone's own pill, in the gap after the clock (its right end can reach the icons).
             width = ch
             height = ch
-            x = (g.screenW * RIGHT_EDGE + prefs.widthExtra * density - ch - 4 * density).toInt()
+            x = (g.screenW * LEFT_EDGE + 2 * density).toInt()
             v.camX = g.cx - x
         } else if (v.tucked) {
             width = v.tuckWidth()

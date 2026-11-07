@@ -188,7 +188,12 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("bigEvents", false)
         set(v) = p.edit().putBoolean("bigEvents", v).apply()
 
-    /** Size of the always-on ring, percent (50..150). */
+    /** Size (height and text) of the always-on notch, percent (50..150), apart from the match notch. */
+    var idleScale: Int
+        get() = p.getInt("idleScale", 90)
+        set(v) = p.edit().putInt("idleScale", v).apply()
+
+    /** Width of the always-on notch, percent (50..150). */
     var idleSize: Int
         get() = p.getInt("idleSize", 100)
         set(v) = p.edit().putInt("idleSize", v).apply()

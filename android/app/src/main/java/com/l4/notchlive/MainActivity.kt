@@ -1176,6 +1176,7 @@ class MainActivity : Activity() {
         k.addView(slider(L.t("size"), 50, 140, prefs.scale, 100) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(slider(L.t("width"), -40, 80, prefs.widthExtra, 0) { prefs.widthExtra = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(text(L.t("width_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+        k.addView(slider(L.t("idle_scale"), 50, 150, prefs.idleScale, 90, preview = "idle") { prefs.idleScale = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize, 100, preview = "idle") { prefs.idleSize = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(button(L.t("reset_pos")) {
             prefs.offsetY = 0
@@ -1183,6 +1184,7 @@ class MainActivity : Activity() {
             prefs.scale = 100
             prefs.widthExtra = 0
             prefs.idleSize = 100
+            prefs.idleScale = 90
             LiveService.start(this, LiveService.ACTION_REFRESH)
             LiveService.start(this, LiveService.ACTION_DEMO, "preview")
             draw()
@@ -1491,6 +1493,20 @@ class MainActivity : Activity() {
             LiveService.start(this, LiveService.ACTION_DEMO, "idle")
         }, lp(MATCH, WRAP, top = dp(8)))
         c.addView(text(L.t("wa_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+
+        // Try each weather on the notch (5 s), whatever it is outside.
+        c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
+        val kinds = listOf("sun", "clouds", "rain", "storm", "snow", "fog", "wind")
+        for (rowItems in kinds.chunked(4)) {
+            val r = row()
+            rowItems.forEachIndexed { i, k ->
+                r.addView(button(Ambient.glyph(k) + " " + L.t("w_$k")) {
+                    LiveService.start(this, LiveService.ACTION_DEMO, "w_$k")
+                }, lp(0, WRAP, 1f, start = if (i > 0) dp(6) else 0))
+            }
+            for (i in rowItems.size until 4) r.addView(View(this), lp(0, WRAP, 1f, start = dp(6)))
+            c.addView(r, lp(MATCH, WRAP, top = dp(8)))
+        }
     }
 
     /** City search (Open-Meteo): the weather and prayer times follow it. */

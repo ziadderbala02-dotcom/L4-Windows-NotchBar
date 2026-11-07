@@ -118,6 +118,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     /** Animate the weather until this time (or always when [weatherAlways]). */
     var weatherUntil = 0L
     var weatherAlways = false
+    /** Weather glyph and its one word ("مطر"), shown in place of the temperature for a moment. */
+    var weatherGlyph = ""
+    var weatherWord = ""
+    /** When the current idle text started showing (for its scroll). */
+    private var idleTextSince = 0L
+    private var idleTextShown = ""
     /** Screen recording since this time (0 = not recording): a red dot and a timer. */
     var recSince = 0L
     /** Quick stats for the tap view (possession, shots, on target), when they've arrived. */
@@ -138,7 +144,11 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var scale = 1f
 
     /** Everything is drawn 10% above Android's base size (Omar: "a little bigger"), times the size slider. */
-    private val d get() = resources.displayMetrics.density * scale * 1.1f
+    private val d get() = resources.displayMetrics.density * (if (idleSized()) idleScale else scale) * 1.1f
+
+    /** The always-on notch has its own size (height and text), apart from the match notch. */
+    var idleScale = 1f
+    private fun idleSized() = idle && burst == null && !info
 
     private val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
     private val border = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
@@ -270,7 +280,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             // Room for what it shows (the date / prayer / match on the left, the temperature on the right).
             sizes()
             if (idleText.isNotEmpty()) left = max(left, min(lMax, gap() + line.measureText(idleText) + 12 * d))
-            if (idleTemp.isNotEmpty()) right = max(right, gap() + minute.measureText(idleTemp) + 12 * d)
+            if (idleTemp.isNotEmpty()) right = max(right, gap() + minute.measureText(idleTemp) + (if (weatherGlyph.isNotEmpty()) 16 * d else 0f) + 12 * d)
             return left to right
         }
         return leftWidth(leftLevel()) to rightWidth(rightLevel())
@@ -278,6 +288,24 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     /** The tucked mark: a window right of the camera, wide enough to swipe on. */
     fun tuckWidth(): Int = (40 * d).toInt()
+
+    /**
+     * An event inside the notch grows only on the side its text needs: (left, right) from the
+     * camera, or null when the view isn't playing an event inline.
+     */
+    fun inlineExtent(): Pair<Float, Float>? {
+        val b = burst ?: return null
+        if (!isInline(b)) return null
+        sizes()
+        val (lw, rw) = compactExtent()
+        if (b.kind == "news") {
+            // About the size of the always-on notch at its widest, a little more on the right.
+            val side = max(lw, min(leftMax, 150 * d))
+            return side to max(rw, min(rightMax, 150 * d) + 10 * d)
+        }
+        val need = inlineWordRight() + inlineWordWidth(b) + 12 * d
+        return max(lw, min(need, leftMax + 30 * d)) to rw
+    }
 
     fun bigWidth(screenW: Int): Int {
         val full = min(screenW - (24 * resources.displayMetrics.density).toInt(), (360 * d).toInt())
@@ -287,8 +315,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         // Match events: just wide enough for the word on the left, symmetric round the camera.
         sizes()
         val (lw, rw) = compactExtent()
-        val need = inlineWordRight() + inlineWordWidth(b) + 12 * d
-        return min(full, (2 * maxOf(lw, rw, need)).toInt())
+        val e = inlineExtent() ?: return full
+        return (e.first + e.second).toInt() + 1
     }
 
     private val INLINE = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
@@ -313,7 +341,42 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         title.textSize = 12.5f * d
         val w = inlineWords(b).maxOf { title.measureText(it) }
         title.textSize = old
-        return min(w, 120 * d)
+        return min(w, 130 * d)
+    }
+
+    /**
+     * Text that may not fit [areaL]..[areaR]: shown from its start, then (after a beat) it slides
+     * once at an easy reading speed to show the rest, and stays. Arabic slides left-to-right.
+     */
+    private fun marquee(c: Canvas, text: String, p: Paint, areaL: Float, areaR: Float, y: Float, since: Long) {
+        val aw = areaR - areaL
+        if (aw <= 4 * d) return
+        val tw = p.measureText(text)
+        val oldAlign = p.textAlign
+        val rtl = text.any { it in '\u0600'..'\u06FF' }
+        c.save()
+        c.clipRect(areaL, 0f, areaR, height.toFloat())
+        if (tw <= aw) {
+            p.textAlign = if (rtl) Paint.Align.RIGHT else Paint.Align.LEFT
+            c.drawText(text, if (rtl) areaR else areaL, y, p)
+        } else {
+            val over = tw - aw
+            val age = (System.currentTimeMillis() - since - 900).coerceAtLeast(0)
+            val speed = 38 * d / 1000f
+            val shift = min(over, age * speed)
+            p.textAlign = Paint.Align.LEFT
+            // RTL text starts with its right end showing and moves right; LTR starts left and moves left.
+            val x = if (rtl) areaL - over + shift else areaL - shift
+            c.drawText(text, x, y, p)
+            if (shift < over) postInvalidateOnAnimation()
+        }
+        c.restore()
+        p.textAlign = oldAlign
+    }
+
+    /** Readable over the weather: a soft dark shadow. */
+    private fun shadowed(p: Paint, on: Boolean) {
+        if (on) p.setShadowLayer(3 * d, 0f, 0f, 0xE6000000.toInt()) else p.clearShadowLayer()
     }
 
     private fun top() = compactHeight() / 2f + camR + 6 * d
@@ -605,27 +668,49 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             postInvalidateDelayed(33)
         }
         val cy = ch / 2
-        // Left of the camera: the date, the next prayer or the next match (they take turns).
+        val busyBg = weather.isNotEmpty() && (weatherAlways || now < weatherUntil)
+        // Left: the date / prayer / match, starting at the notch's left edge (the space stays by the camera).
         if (idleText.isNotEmpty()) {
+            if (idleText != idleTextShown) {
+                idleTextShown = idleText
+                idleTextSince = now
+            }
             line.color = 0xFFE5E7EB.toInt()
             line.alpha = 255
-            line.textAlign = Paint.Align.RIGHT
-            val avail = lw - gap() - 10 * d
-            if (avail > 20 * d) c.drawText(TextUtils.ellipsize(idleText, line, avail, TextUtils.TruncateAt.END).toString(), camX - gap(), baseline(line, cy), line)
-            line.textAlign = Paint.Align.LEFT
+            shadowed(line, busyBg)
+            marquee(c, idleText, line, rect.left + ch / 2, camX - gap() - 2 * d, baseline(line, cy), idleTextSince)
+            shadowed(line, false)
             line.color = 0xFFC8C8C8.toInt()
         }
-        // Right: the temperature, else the grey dot.
+        // Right: the weather glyph and temperature, ending at the notch's right edge.
+        // For the first seconds of a weather moment, its word ("مطر") stands in for the number.
         if (idleTemp.isNotEmpty()) {
+            val showWord = weatherWord.isNotEmpty() && now < weatherUntil - 2_000L
+            val label = if (showWord) weatherWord else idleTemp
             minute.color = Color.WHITE
             minute.alpha = 255
+            minute.textAlign = Paint.Align.RIGHT
+            shadowed(minute, busyBg)
+            val right = rect.right - ch / 2
+            c.drawText(label, right, baseline(minute, cy), minute)
+            if (weatherGlyph.isNotEmpty()) {
+                val gx = right - minute.measureText(label) - 4 * d
+                small.textSize = 11f * d
+                small.textAlign = Paint.Align.RIGHT
+                small.alpha = 255
+                c.drawText(weatherGlyph, gx, baseline(small, cy), small)
+                small.textAlign = Paint.Align.LEFT
+                small.textSize = 8.5f * d
+            }
+            shadowed(minute, false)
             minute.textAlign = Paint.Align.LEFT
-            c.drawText(idleTemp, camX + gap(), baseline(minute, cy), minute)
+            if (showWord) postInvalidateDelayed(250)
         } else {
             dot.color = 0xFF6B7280.toInt()
             dot.alpha = 255
-            c.drawCircle(camX + rw - 8 * d, cy, 2.5f * d, dot)
+            c.drawCircle(rect.right - 8 * d, cy, 2.5f * d, dot)
         }
+        if (idleText.isNotEmpty() && line.measureText(idleText) > camX - gap() - rect.left - ch / 2) postInvalidateDelayed(40)
     }
 
     private val path = Path()
@@ -733,9 +818,9 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun drawInline(c: Canvas, m: Match, b: Burst) {
         val ch = compactHeight().toFloat()
         val (lw, rw) = compactExtent()
-        val bw = bigWidth(resources.displayMetrics.widthPixels).toFloat()
-        val l = lerp(camX - lw, camX - bw / 2, t)
-        val r = lerp(camX + rw, camX + bw / 2, t)
+        val (il, ir) = inlineExtent() ?: (lw to rw)
+        val l = lerp(camX - lw, camX - il, t)
+        val r = lerp(camX + rw, camX + ir, t)
         val age = System.currentTimeMillis() - b.startedAt
         val cy = ch / 2
         val shake = if (b.kind == "red" && age < 450) (4 * d * sin(age / 22.0) * kotlin.math.exp(-age / 180.0)).toFloat() else 0f
@@ -804,13 +889,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             }
             title.alpha = 255
             title.textAlign = Paint.Align.RIGHT
-            val avail = wordRight - (l + ch / 2)
-            val text = TextUtils.ellipsize(word, title, max(10f, avail), TextUtils.TruncateAt.END).toString()
-            val tw = title.measureText(text)
-            // Written from the right, like Arabic handwriting.
+            val areaL = l + ch / 2
+            val tw = min(title.measureText(word), wordRight - areaL)
+            // Written from the right, like Arabic handwriting; a long name then slides to show the rest.
             c.save()
             c.clipRect(wordRight - tw * reveal - 2 * d, 0f, wordRight + 2 * d, ch)
-            c.drawText(text, wordRight, baseline(title, cy), title)
+            marquee(c, word, title, areaL, wordRight, baseline(title, cy), b.startedAt + if (word === words[0]) 0L else 2600L)
             c.restore()
             title.textAlign = Paint.Align.CENTER
             title.textSize = old
@@ -845,35 +929,24 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return 1f - (1f - t) * (1f - t) * (1f - t)
     }
 
-    /** The headline inside the notch: crest, "خبر", one line. */
+    /** The headline inside the notch: the crest at the edge, then the headline gliding across (behind the camera too). */
     private fun drawInlineNews(c: Canvas, b: Burst, l: Float, r: Float, ch: Float) {
         val cy = ch / 2
         val crest = ch - 12 * d
+        val cx = l + ch / 2 - 2 * d
         val icon = b.icon
         if (icon != null) {
-            rect.set(l + ch / 2 - 2 * d, cy - crest / 2, l + ch / 2 - 2 * d + crest, cy + crest / 2)
+            rect.set(cx, cy - crest / 2, cx + crest, cy + crest / 2)
             c.drawBitmap(icon, null, rect, bmp)
         } else if (b.logo != null) {
-            drawCrest(c, b.logo, l + ch / 2 - 2 * d, cy - crest / 2, crest, 1f)
+            drawCrest(c, b.logo, cx, cy - crest / 2, crest, 1f)
         }
-        val labelX = l + ch / 2 + crest + 4 * d
-        small.color = 0xFF60A5FA.toInt()
-        small.alpha = 255
-        small.textAlign = Paint.Align.LEFT
-        val label = if (L.ar) "خبر" else "News"
-        c.drawText(label, labelX, baseline(small, cy), small)
-        small.color = 0xFF9CA3AF.toInt()
         val old = line.textSize
         line.textSize = 11.5f * d
         line.color = Color.WHITE
         line.alpha = 255
-        // The headline sits right of the camera hole, so no letter hides behind it.
-        val textL = max(labelX + small.measureText(label) + 6 * d, camX + gap())
-        val textR = r - ch / 2
-        val head = TextUtils.ellipsize(b.sub, line, max(10f, textR - textL), TextUtils.TruncateAt.END).toString()
-        line.textAlign = if (L.ar) Paint.Align.RIGHT else Paint.Align.LEFT
-        c.drawText(head, if (L.ar) textR else textL, baseline(line, cy), line)
-        line.textAlign = Paint.Align.LEFT
+        // Starts once the flip is done.
+        marquee(c, b.sub, line, cx + crest + 8 * d, r - ch / 2, baseline(line, cy), b.startedAt + 350)
         line.textSize = old
         line.color = 0xFFC8C8C8.toInt()
     }
