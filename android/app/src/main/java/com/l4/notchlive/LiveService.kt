@@ -46,6 +46,8 @@ class LiveService : Service(), IslandView.Gestures {
         private const val PHONE_ID = -3
         /** Bursts that belong to no match. */
         private const val NEWS_ID = -2
+        /** Events that play inside the notch first (a tap opens them big). */
+        private val INLINE_KINDS = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
         /** The always-on notch and the recording pill. */
         private const val IDLE_ID = -5
         /** Headlines older than this are skipped (in the notch; the app's list keeps them). */
@@ -197,6 +199,13 @@ class LiveService : Service(), IslandView.Gestures {
         main.post(tick)
         checkUpdate()
         net.schedule({ pollNews() }, 20, TimeUnit.SECONDS)
+        net.schedule({ pollWeather() }, 3, TimeUnit.SECONDS)
+        // The weather plays for a few seconds each time the phone is unlocked.
+        try {
+            registerReceiver(unlock, android.content.IntentFilter(Intent.ACTION_USER_PRESENT))
+        } catch (e: Exception) {
+            // Not available.
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -215,6 +224,11 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     override fun onDestroy() {
+        try {
+            unregisterReceiver(unlock)
+        } catch (e: Exception) {
+            // Never registered.
+        }
         instance = null
         gen++
         main.removeCallbacksAndMessages(null)
@@ -278,8 +292,8 @@ class LiveService : Service(), IslandView.Gestures {
             render()
             return
         }
-        current?.takeIf { it.kind == "news" && !it.expanded }?.let { b ->
-            // First tap: the whole headline. The second one opens the article.
+        current?.takeIf { !it.expanded && it.kind in INLINE_KINDS && (it.kind == "news" || !prefs.bigEvents) }?.let { b ->
+            // First tap: the event (or the whole headline) opens big. The second one opens the match / article.
             b.expanded = true
             currentUntil = max(currentUntil, now + 12_000L)
             island.relayout()
@@ -497,9 +511,13 @@ class LiveService : Service(), IslandView.Gestures {
             render()
             return true
         }
-        if (m.id == -1 && demo != null && demoUntil - now <= 4_000L && current == null && infoMatch == null) {
+        if (m.id == -1 && demo != null) {
+            // Any sample (from the settings) closes on a tap or a swipe.
             demoUntil = 0L
             demo = null
+            if (current?.matchId == -1) current = null
+            queue.removeAll { it.matchId == -1 }
+            if (infoMatch == -1) infoMatch = null
             render()
             return true
         }
@@ -838,6 +856,60 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     /** Every 15 min: new headlines about the favourite teams (the first check only remembers them). */
+    /* ---------- the always-on notch's content ---------- */
+
+    private var weatherUntil = 0L
+
+    private val unlock = object : android.content.BroadcastReceiver() {
+        override fun onReceive(c: android.content.Context, i: Intent) {
+            weatherUntil = System.currentTimeMillis() + 5_000L
+            render()
+        }
+    }
+
+    /** Every 30 min while the always-on notch shows the weather. */
+    private fun pollWeather() {
+        try {
+            if (prefs.idleNotch && "weather" in prefs.idleShow) {
+                if (Ambient.refreshWeather(prefs.city)) {
+                    main.post {
+                        weatherUntil = System.currentTimeMillis() + 5_000L
+                        render()
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Try again next time.
+        }
+        if (instance === this) net.schedule({ pollWeather() }, 30, TimeUnit.MINUTES)
+    }
+
+    /** Left side of the always-on notch: the date, the next prayer, the next match, taking turns every 10 s. */
+    private fun idleLeft(now: Long): String {
+        val show = prefs.idleShow
+        val items = ArrayList<String>()
+        if ("date" in show) items += Ambient.dateText(now)
+        if ("hijri" in show) Ambient.hijriText(now).takeIf { it.isNotBlank() }?.let { items += it }
+        if ("prayer" in show) try {
+            items += Ambient.nextPrayerText(prefs.city, now, android.text.format.DateFormat.getTimeFormat(this))
+        } catch (e: Exception) {
+            // No city yet.
+        }
+        if ("match" in show) {
+            matches.filter { it.state == Api.PRE && it.kickoff > now }.minByOrNull { it.kickoff }?.let { m ->
+                val fav = prefs.teams.map { it.id }
+                val mine = if (m.away.id in fav && m.home.id !in fav) m.away else m.home
+                val other = if (mine === m.home) m.away else m.home
+                items += "${mine.short} × ${other.short} · ${android.text.format.DateFormat.format(if (m.kickoff - now < 86_400_000L) "h:mm a" else "EEE h:mm a", m.kickoff)}"
+            }
+        }
+        if (items.isEmpty()) return ""
+        return items[((now / 10_000L) % items.size).toInt()]
+    }
+
+    private fun idleRight(): String =
+        if ("weather" in prefs.idleShow) Ambient.temp?.let { "$it°" }.orEmpty() else ""
+
     /** New headlines waiting their turn: one shows every 5 minutes, so they don't pile up on screen. */
     private val newsWaiting = ArrayDeque<Pair<TeamOption, Api.News>>()
     private var nextNewsAt = 0L
@@ -1056,6 +1128,11 @@ class LiveService : Service(), IslandView.Gestures {
                 idle = idleNow,
                 stats = if (showInfo) quickStats[shownM.id]?.second else null,
                 rec = if (recNow) Recorder.since else 0L,
+                idleText = if (idleNow) idleLeft(now) else "",
+                idleTemp = if (idleNow) idleRight() else "",
+                weather = if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off") Ambient.kind else "",
+                weatherUntil = weatherUntil,
+                weatherAlways = prefs.weatherAnim == "always",
             )
         }
         updateOngoing(if (idleNow || recNow) null else shownM, now)
@@ -1244,6 +1321,7 @@ class LiveService : Service(), IslandView.Gestures {
     private fun startDemo(kind: String) {
         if (kind == "idle") {
             demoIdleUntil = System.currentTimeMillis() + 4_000L
+            weatherUntil = demoIdleUntil
             demo = null
             render()
             return

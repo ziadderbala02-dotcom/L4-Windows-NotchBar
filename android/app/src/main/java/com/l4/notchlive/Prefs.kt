@@ -164,6 +164,30 @@ class Prefs(ctx: Context) {
         get() = p.getInt("widthExtra", 0)
         set(v) = p.edit().putInt("widthExtra", v).apply()
 
+    /** What the always-on notch shows: any of "weather", "date", "hijri", "prayer", "match". */
+    var idleShow: Set<String>
+        get() = p.getStringSet("idleShow", setOf("weather", "date")) ?: setOf("weather", "date")
+        set(v) = p.edit().putStringSet("idleShow", v).apply()
+
+    /** City for the weather and prayer times (Cairo until the user picks one). */
+    var city: City
+        get() = City(
+            p.getString("cityName", null) ?: if (L.ar) "القاهرة" else "Cairo",
+            p.getFloat("cityLat", 30.0444f).toDouble(),
+            p.getFloat("cityLon", 31.2357f).toDouble(),
+        )
+        set(v) = p.edit().putString("cityName", v.name).putFloat("cityLat", v.lat.toFloat()).putFloat("cityLon", v.lon.toFloat()).apply()
+
+    /** Weather animation: "auto" (5 s on unlock and when it changes), "always" or "off". */
+    var weatherAnim: String
+        get() = p.getString("weatherAnim", "auto") ?: "auto"
+        set(v) = p.edit().putString("weatherAnim", v).apply()
+
+    /** Events open big right away (the old way) instead of playing inside the notch. */
+    var bigEvents: Boolean
+        get() = p.getBoolean("bigEvents", false)
+        set(v) = p.edit().putBoolean("bigEvents", v).apply()
+
     /** Size of the always-on ring, percent (50..150). */
     var idleSize: Int
         get() = p.getInt("idleSize", 100)

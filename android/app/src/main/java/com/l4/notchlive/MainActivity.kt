@@ -177,6 +177,8 @@ class MainActivity : Activity() {
             "comps" -> compsPage(content)
             "sounds" -> soundsPage(content)
             "slots" -> slotsPage(content)
+            "idle_content" -> idleContentPage(content)
+            "city" -> cityPage(content)
             "slot_pick" -> slotPickPage(content)
             "search_team" -> searchPage(content, comps = false)
             "search_comp" -> searchPage(content, comps = true)
@@ -988,9 +990,19 @@ class MainActivity : Activity() {
                 page = "slots"
                 draw()
             })
+            n.addView(divider())
+            n.addView(navRow(L.t("idle_content"), "") {
+                page = "idle_content"
+                draw()
+            })
         }
         n.addView(divider())
         n.addView(toggleRow(L.t("circle"), L.t("circle_d"), prefs.circle) { prefs.circle = it })
+        n.addView(divider())
+        n.addView(toggleRow(L.t("big_events"), L.t("big_events_d"), prefs.bigEvents) {
+            prefs.bigEvents = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+        })
         c.addView(n, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("alerts")), lp(MATCH, WRAP, top = dp(16)))
@@ -1132,7 +1144,7 @@ class MainActivity : Activity() {
 
     private fun goBack() {
         val p = page
-        page = if (p != null && (p.startsWith("search") || p == "slot_pick")) backTo else null
+        page = if (p != null && (p.startsWith("search") || p == "slot_pick" || p == "city")) backTo else null
         if (p != null && p.startsWith("search")) {
             main.removeCallbacks(searchRun)
             searchBox = null
@@ -1441,6 +1453,116 @@ class MainActivity : Activity() {
             btn.setTextColor(Ui.MUTED)
         }
         return r
+    }
+
+    /* ----- sub-pages: what the always-on notch shows, and the city for weather / prayers ----- */
+
+    private fun idleContentPage(c: LinearLayout) {
+        backRow(c, L.t("idle_content"))
+        c.addView(text(L.t("idle_content_d"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        val show = prefs.idleShow
+        listOf("weather", "date", "hijri", "prayer", "match").forEachIndexed { i, key ->
+            if (i > 0) k.addView(divider())
+            k.addView(toggleRow(L.t("ic_$key"), null, key in show) { on ->
+                prefs.idleShow = if (on) prefs.idleShow + key else prefs.idleShow - key
+                if (on && key == "weather") io.execute {
+                    try {
+                        Ambient.refreshWeather(prefs.city)
+                    } catch (e: Exception) {
+                        // Next time.
+                    }
+                }
+                LiveService.start(this, LiveService.ACTION_DEMO, "idle")
+            })
+        }
+        k.addView(divider())
+        k.addView(navRow(L.t("city"), prefs.city.name) {
+            backTo = "idle_content"
+            searchQuery = ""
+            page = "city"
+            draw()
+        })
+        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(label(L.t("weather_anim")), lp(MATCH, WRAP, top = dp(16)))
+        c.addView(segmented(listOf("auto" to "wa_auto", "always" to "wa_always", "off" to "wa_off"), prefs.weatherAnim) {
+            prefs.weatherAnim = it
+            draw()
+            LiveService.start(this, LiveService.ACTION_DEMO, "idle")
+        }, lp(MATCH, WRAP, top = dp(8)))
+        c.addView(text(L.t("wa_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+    }
+
+    /** City search (Open-Meteo): the weather and prayer times follow it. */
+    private fun cityPage(c: LinearLayout) {
+        backRow(c, L.t("city"))
+        val field = EditText(this).apply {
+            hint = L.t("city_hint")
+            setHintTextColor(Ui.MUTED)
+            setTextColor(Ui.TEXT)
+            textSize = 15f
+            background = Ui.rounded(Ui.CARD, dp(14).toFloat(), Ui.ACCENT, dp(1))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        c.addView(field, lp(MATCH, WRAP, top = dp(12)))
+        val out = column()
+        c.addView(out, lp(MATCH, WRAP, top = dp(8)))
+        var seq = 0
+        val run = Runnable {
+            val q = field.text.toString().trim()
+            val my = ++seq
+            out.removeAllViews()
+            if (q.length < 2) {
+                out.addView(text(L.t("type_more"), 12f, Ui.MUTED))
+                return@Runnable
+            }
+            out.addView(text(L.t("searching"), 12f, Ui.MUTED))
+            io.execute {
+                val found = try {
+                    Ambient.searchCities(q)
+                } catch (e: Exception) {
+                    null
+                }
+                main.post {
+                    if (my != seq) return@post
+                    out.removeAllViews()
+                    if (found == null) out.addView(text(L.t("no_net"), 12f, Ui.RED))
+                    else if (found.isEmpty()) out.addView(text(L.t("no_results"), 12f, Ui.MUTED))
+                    for ((city, where) in found ?: emptyList()) {
+                        val r = column().apply {
+                            background = Ui.rounded(Ui.CARD, dp(14).toFloat())
+                            setPadding(dp(14), dp(10), dp(14), dp(10))
+                            isClickable = true
+                            setOnClickListener {
+                                prefs.city = city
+                                io.execute {
+                                    try {
+                                        Ambient.refreshWeather(city)
+                                    } catch (e: Exception) {
+                                        // Next time.
+                                    }
+                                }
+                                toast(L.t("slot_saved"))
+                                goBack()
+                            }
+                        }
+                        r.addView(text(city.name, 14f, bold = true))
+                        if (where.isNotBlank()) r.addView(text(where, 12f, Ui.MUTED))
+                        out.addView(r, lp(MATCH, WRAP, top = dp(6)))
+                    }
+                }
+            }
+        }
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) {
+                main.removeCallbacks(run)
+                main.postDelayed(run, 450)
+            }
+        })
+        field.requestFocus()
     }
 
     /* ----- sub-pages: the always-on notch's shortcut slots ----- */

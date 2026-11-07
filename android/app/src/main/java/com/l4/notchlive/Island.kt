@@ -120,6 +120,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
     fun update(
         match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean,
         others: Int = 0, idle: Boolean = false, stats: List<Stat>? = null, rec: Long = 0L,
+        idleText: String = "", idleTemp: String = "", weather: String = "", weatherUntil: Long = 0L, weatherAlways: Boolean = false,
     ) {
         if (match == null) {
             hide()
@@ -129,6 +130,14 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.others = others
         v.idle = idle
         v.idleK = prefs.idleSize / 100f
+        v.inlineEvents = !prefs.bigEvents
+        val grew = v.idleText != idleText || v.idleTemp != idleTemp
+        v.idleText = idleText
+        v.idleTemp = idleTemp
+        v.weather = weather
+        v.weatherUntil = weatherUntil
+        v.weatherAlways = weatherAlways
+        if (grew && !big) layout()
         v.stretch = prefs.widthExtra * density()
         v.recSince = rec
         if (v.infoStats?.size != stats?.size) {
