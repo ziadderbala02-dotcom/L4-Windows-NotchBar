@@ -67,6 +67,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         fun menuPick(index: Int)
         /** Long press on a shortcut slot (to change or remove it). */
         fun slotLongPress(index: Int) {}
+        /** The "⌄ Shortcuts" row at the bottom of the opened match view. */
+        fun shortcuts() {}
     }
 
     /** Saver mode: no endless breathing animations (bursts still animate). */
@@ -103,6 +105,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var idle = false
     /** The always-on ring's size (the user's slider), 0.5..1.5. */
     var idleK = 1f
+    /** The user's notch width (px): both sides grow (or shrink) together, items spread out. */
+    var stretch = 0f
     /** Screen recording since this time (0 = not recording): a red dot and a timer. */
     var recSince = 0L
     /** Quick stats for the tap view (possession, shots, on target), when they've arrived. */
@@ -154,6 +158,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private val dot = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE }
     private val bmp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+    private val shine = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
 
     private fun sizes() {
@@ -168,9 +173,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     /* ---------- geometry ---------- */
 
-    fun compactHeight(): Int =
-        if (idle && burst == null && !info) (2 * (camR + (1.5f + 4.5f * idleK) * d)).toInt()
-        else max(2 * (camR + 5 * d), 28 * d).toInt()
+    fun compactHeight(): Int = max(2 * (camR + 5 * d), 28 * d).toInt()
 
     private fun gap() = if (landscape) 9 * d else camR + 6 * d
 
@@ -218,7 +221,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun leftWidth(k: Int): Float {
         sizes()
         val m = match ?: return gap()
-        var w = gap() + score.measureText(scoreText(m, true)) + 10 * d
+        var w = gap() + score.measureText(scoreText(m, true)) + 10 * d + max(0f, stretch)
         w += if (k < 4) 5 * d + crestAt(k) + nameWidth(true) else redsWidth(true)
         if (k < 3) {
             w += 6 * d + minute.measureText(clockLabel(m))
@@ -230,7 +233,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun rightWidth(k: Int): Float {
         sizes()
         val m = match ?: return gap()
-        var w = gap() + score.measureText(scoreText(m, false)) + 10 * d
+        var w = gap() + score.measureText(scoreText(m, false)) + 10 * d + max(0f, stretch)
         w += if (k < 2) 5 * d + crestAt(k) + nameWidth(false) else redsWidth(false)
         w += 6 * d + 6 * d
         if (others > 0) w += 7 * d
@@ -246,8 +249,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         }
         // The always-on capsule: just a ring round the camera and a grey dot.
         if (idle) {
+            // Smallest: a ring round the camera and the dot. Largest: as wide as the match notch, empty.
             val r = compactHeight() / 2f
-            return r to r + 11 * d * idleK
+            val f = (idleK - 0.5f).coerceIn(0f, 1f)
+            val lMax = min(leftMax, 150 * d)
+            val rMax = min(rightMax, 150 * d)
+            return r + max(0f, lMax - r) * f to r + 12 * d + max(0f, rMax - r - 12 * d) * f
         }
         return leftWidth(leftLevel()) to rightWidth(rightLevel())
     }
@@ -296,7 +303,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     fun bigHeight(): Int = when {
-        info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + statsHeight() + 6 * d).toInt()
+        info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + statsHeight() + 6 * d + HINT_ROW * d).toInt()
         burst?.kind == "shortcuts" -> (top() + 6 * d + 2 * SLOT_ROW * d + (if (burst?.sub.isNullOrBlank()) 0f else 40 * d) + 8 * d).toInt()
         burst?.kind == "news" || burst?.kind == "phone" ->
             (top() + 22 * d + max(1, newsLines(burst!!).size) * 16 * d + 8 * d).toInt()
@@ -307,6 +314,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     private val MENU_ROW = 40f
     private val SLOT_ROW = 64f
+    /** The opened match view ends with "⌄ Shortcuts" (tap it, or pull the view down). */
+    private val HINT_ROW = 22f
 
     private fun statsRows() = infoStats?.take(3).orEmpty()
     private fun statsHeight() = if (statsRows().isEmpty()) 0f else 12 * d + statsRows().size * 28 * d
@@ -382,6 +391,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                         if (b?.kind == "shortcuts" && t > 0.9f) {
                             val i = slotAt(e.x, e.y)
                             if (i >= 0) gestures.menuPick(i) else gestures.tap()
+                        } else if (b == null && info && t > 0.9f && e.y > bigHeight() - HINT_ROW * d) {
+                            gestures.shortcuts()
                         } else if (b?.kind == "menu" && t > 0.9f) {
                             val i = ((e.y - top() - 4 * d) / (MENU_ROW * d)).toInt()
                             if (i in b.items.indices) gestures.menuPick(i) else gestures.tap()
@@ -409,7 +420,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             drawRec(c)
             return
         }
-        if (idle && burst == null && !info && t == 0f) {
+        if (idle && burst == null && !info && t == 0f && !tucked) {
             drawIdle(c)
             return
         }
@@ -439,10 +450,21 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         rect.set(l, 0f, r, h)
         c.drawRoundRect(rect, radius, radius, bg)
         // A goal for: the notch flashes in the team colour.
-        if (b != null && b.kind == "goal" && !b.against && !b.neutral && age < 900 && t > 0.3f && !calm) {
-            dot.color = b.color
-            dot.alpha = (110 * (1f - age / 900f) * min(1f, t)).toInt()
-            c.drawRoundRect(rect, radius, radius, dot)
+        // Goal for (made for the phone's small pill): a band of light in the team colour sweeps
+        // across twice, softly, instead of the desktop's rings and flash.
+        if (b != null && b.kind == "goal" && !b.against && age < 1800 && t > 0.3f && !calm) {
+            val p = (age % 900) / 900f
+            val w = rect.width()
+            val bandX = rect.left - w * 0.4f + p * w * 1.8f
+            val col = b.color and 0x00FFFFFF
+            val strength = if (b.neutral) 0x40 else 0x70
+            shine.shader = android.graphics.LinearGradient(
+                bandX - w * 0.22f, 0f, bandX + w * 0.22f, 0f,
+                intArrayOf(col, (strength shl 24) or col, col), null, android.graphics.Shader.TileMode.CLAMP,
+            )
+            shine.alpha = (255 * min(1f, t)).toInt()
+            c.drawRoundRect(rect, radius, radius, shine)
+            postInvalidateDelayed(16)
         }
 
         val accent = b?.color ?: if (info) 0xFF3F3F46.toInt() else null
@@ -450,7 +472,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             border.color = accent
             border.strokeWidth = 1.5f * d
             // Whistle and goal pulse a little.
-            val pulse = if (b != null && ((b.kind == "goal" && !b.against && !b.neutral) || b.kind == "whistle")) 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
+            val pulse = if (b != null && b.kind == "whistle") 0.65f + 0.35f * abs(sin(System.currentTimeMillis() / 220.0)).toFloat() else 1f
             border.alpha = (min(1f, t) * 220 * pulse).toInt()
             rect.inset(border.strokeWidth / 2, border.strokeWidth / 2)
             c.drawRoundRect(rect, radius, radius, border)
@@ -465,7 +487,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             else if (b?.kind == "stats") drawStats(c, m, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b?.kind == "shortcuts") drawShortcuts(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
-            else if (info) drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
+            else if (info) {
+                drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
+                drawHint(c, camX - bw / 2, camX + bw / 2, bigHeight().toFloat(), bigAlpha)
+            }
         }
         c.restore()
     }
@@ -514,7 +539,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawRoundRect(rect, ch / 2, ch / 2, bg)
         dot.color = 0xFF6B7280.toInt()
         dot.alpha = 255
-        c.drawCircle(camX + ch / 2 + 4.5f * d * idleK, ch / 2, 2.5f * d * idleK.coerceAtLeast(0.7f), dot)
+        c.drawCircle(camX + rw - 8 * d, ch / 2, 2.5f * d, dot)
     }
 
     /** Recording the screen: a red dot breathing and the time. */
@@ -653,6 +678,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             x -= redsWidth(true)
             drawRedCards(c, reds(true), x, cy - 2.5f * d, al)
         }
+        x -= max(0f, stretch)
         if (lk < 3) {
             val label = clockLabel(m)
             minute.color = minuteColor(m)
@@ -718,7 +744,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val level = if (breathe && !calm) 0.35f + 0.65f * ((sin(now / 450.0) + 1) / 2).toFloat() else 1f
         dot.color = color
         dot.alpha = (a * level).toInt()
-        val dx = x + 6 * d + 3 * d
+        val dx = x + max(0f, stretch) + 6 * d + 3 * d
         c.drawCircle(dx, cy, 3 * d, dot)
         if (breathe && !calm) {
             dot.alpha = (a * level * 0.25f).toInt()
@@ -794,20 +820,6 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             return
         }
 
-        // Goal for: rings in the team colour spread out from the crest.
-        if (b.kind == "goal" && !b.against && !b.neutral) {
-            c.save()
-            rect.set(l, 0f, r, h)
-            c.clipRect(rect)
-            stroke.color = b.color
-            stroke.strokeWidth = 2f * d
-            for (k in 0..2) {
-                val p = ((age + k * 400) % 1200) / 1200f
-                stroke.alpha = (a * (1f - p) * 0.8f).toInt()
-                c.drawCircle(cx, mid, crest / 2 + p * 70 * d, stroke)
-            }
-            c.restore()
-        }
         // VAR: a scan line sweeps across.
         if (b.kind == "var") {
             val p = (age % 1300) / 1300f
@@ -824,8 +836,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (b.kind == "whistle") {
             drawWhistle(c, cx, mid, b.color, alpha)
         } else {
-            // The crest bounces in on a goal.
-            val bounce = if (b.kind == "goal" && !b.against && !b.neutral) 1f + 0.22f * kotlin.math.exp(-age / 450.0).toFloat() * abs(sin(age / 85.0)).toFloat() else 1f
+            // The crest pulses once on a goal (up and back in half a second).
+            val bounce = if (b.kind == "goal" && !b.against && age < 500) 1f + 0.14f * sin(age / 500.0 * Math.PI).toFloat() else 1f
             val sz = crest * bounce
             drawCrest(c, if (b.home) m.home.logo else m.away.logo, cx - sz / 2, mid - sz / 2, sz, alpha)
         }
@@ -850,12 +862,20 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val sc = bigScore(m)
         score.alpha = a
         val big = score.textSize
-        val pop = if (b.kind == "goal") 1f + 0.4f * kotlin.math.exp(-age / 350.0).toFloat() else 1f
         score.textSize = 18f * d
         val sw = score.measureText(sc)
-        score.textSize = 18f * d * pop
         score.textAlign = Paint.Align.CENTER
-        c.drawText(sc, right - sw / 2, baseline(score, mid), score)
+        if (b.kind == "goal" && age < 350) {
+            // The score flips over to the new one.
+            val f = age / 350f
+            c.save()
+            c.scale(1f, abs(kotlin.math.cos((1 - f) * Math.PI / 2)).toFloat().coerceAtLeast(0.05f), right - sw / 2, mid)
+            c.drawText(sc, right - sw / 2, baseline(score, mid), score)
+            c.restore()
+            postInvalidateDelayed(16)
+        } else {
+            c.drawText(sc, right - sw / 2, baseline(score, mid), score)
+        }
         score.textAlign = Paint.Align.LEFT
         score.textSize = big
 
@@ -1003,6 +1023,17 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             c.drawRoundRect(rect, 2 * d, 2 * d, dot)
             y += 28 * d
         }
+    }
+
+    /** The bottom row of the opened match view: "⌄ Shortcuts". */
+    private fun drawHint(c: Canvas, l: Float, r: Float, bottom: Float, alpha: Float) {
+        val a = (alpha * 255).toInt()
+        line.color = 0xFF9CA3AF.toInt()
+        line.alpha = a
+        line.textAlign = Paint.Align.CENTER
+        c.drawText("⌄  " + L.t("sc_hint"), (l + r) / 2, bottom - 8 * d, line)
+        line.textAlign = Paint.Align.LEFT
+        line.color = 0xFFC8C8C8.toInt()
     }
 
     /** The long-press menu: one row per action, tapped by position. */

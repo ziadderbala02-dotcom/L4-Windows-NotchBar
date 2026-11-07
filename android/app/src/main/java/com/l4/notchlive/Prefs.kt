@@ -154,6 +154,16 @@ class Prefs(ctx: Context) {
         }
         set(v) = p.edit().putString("pillVotes", JSONObject(v as Map<*, *>).toString()).apply()
 
+    /** Matches the user took off the notch (long press → hide); dropped once they end. */
+    var hiddenMatches: Set<Int>
+        get() = p.getStringSet("hiddenMatches", emptySet())?.mapNotNull { it.toIntOrNull() }?.toSet() ?: emptySet()
+        set(v) = p.edit().putStringSet("hiddenMatches", v.map { it.toString() }.toSet()).apply()
+
+    /** Notch width, dp (-40..80): both sides grow (or shrink) together round the camera. */
+    var widthExtra: Int
+        get() = p.getInt("widthExtra", 0)
+        set(v) = p.edit().putInt("widthExtra", v).apply()
+
     /** Size of the always-on ring, percent (50..150). */
     var idleSize: Int
         get() = p.getInt("idleSize", 100)

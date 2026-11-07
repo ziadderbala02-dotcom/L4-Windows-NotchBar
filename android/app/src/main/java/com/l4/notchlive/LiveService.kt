@@ -93,7 +93,7 @@ class LiveService : Service(), IslandView.Gestures {
         private const val CIRCLE_OPEN_MS = 8_000L
 
         /** The countdown shows from this long before kickoff. */
-        private const val SOON_MS = 15 * 60_000L
+        private const val SOON_MS = 5 * 60_000L
 
         fun start(ctx: Context, action: String? = null, extra: String? = null) {
             val i = Intent(ctx, LiveService::class.java)
@@ -249,14 +249,16 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
+        if (endPreview(m)) return
         if (recNow && current == null) {
             // Recording the screen: a tap stops it.
             Recorder.stop(this)
             return
         }
         if (idleNow && current == null) {
-            // The always-on notch: the shortcut grid.
-            openShortcuts()
+            // The always-on notch: the shortcut grid (a tucked one first comes back).
+            if (prefs.tucked) prefs.tucked = false else openShortcuts()
+            render()
             return
         }
         if (current?.kind == "menu" || current?.kind == "stats" || current?.kind == "shortcuts") {
@@ -325,7 +327,7 @@ class LiveService : Service(), IslandView.Gestures {
         val items = actions.map { a ->
             when (a) {
                 "mute" -> L.t(if (id in muted) "menu_unmute" else "menu_mute")
-                "pin" -> L.t(if (id in prefs.pinned) "menu_unpin" else "menu_pin")
+                "unpin" -> L.t("menu_unpin")
                 else -> L.t("menu_$a")
             }
         }
@@ -419,7 +421,11 @@ class LiveService : Service(), IslandView.Gestures {
         val acts = mutableListOf<String>()
         // Another followed match is live: make it the main one.
         if (liveNow().size > 1) acts += "switch"
-        acts += listOf("mute", "pin", "hide")
+        acts += "shortcuts"
+        acts += "mute"
+        // A favourite's match: hide just this one (the team stays). A pinned one: take it off.
+        val fav = prefs.teams.any { it.id == m.home.id || it.id == m.away.id }
+        acts += if (fav) "hide_match" else "unpin"
         showMenu(m.id, acts)
     }
 
@@ -433,12 +439,22 @@ class LiveService : Service(), IslandView.Gestures {
         current = null
         when (menuActions.getOrNull(index)) {
             "mute" -> if (!muted.add(id)) muted.remove(id)
-            "pin" -> {
-                val p = prefs.pinned
-                prefs.pinned = if (id in p) p - id else p + id
+            "unpin" -> {
+                prefs.pinned = prefs.pinned - id
                 refresh()
             }
-            "hide" -> hiddenUntil = System.currentTimeMillis() + 10 * 60_000L
+            "hide_match" -> {
+                // Off the notch until it ends; the Matches screen can bring it back.
+                prefs.hiddenMatches = prefs.hiddenMatches + id
+                if (prefs.primary == id) prefs.primary = 0
+                if (infoMatch == id) infoMatch = null
+                queue.removeAll { it.matchId == id }
+            }
+            "shortcuts" -> {
+                render()
+                openShortcuts()
+                return
+            }
             "switch" -> {
                 val live = liveNow()
                 val i = live.indexOfFirst { it.id == id }
@@ -448,8 +464,19 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
-    /** Pulling down near the status bar opens the phone's own shade too often: it does nothing now. */
-    override fun pull(down: Boolean) {}
+    /**
+     * On the small notch a pull would open the phone's shade, so it does nothing there. On the
+     * opened match view (below the status bar) pulling down brings up the shortcuts.
+     */
+    override fun pull(down: Boolean) {
+        if (down && infoMatch != null && current == null) shortcuts()
+    }
+
+    /** The opened match view's "⌄ Shortcuts" row (or the pull above). */
+    override fun shortcuts() {
+        infoMatch = null
+        openShortcuts()
+    }
 
     /** Menu and stats: shown at once over whatever is on, without sound. */
     private fun showOverlay(b: Burst, ms: Long) {
@@ -462,7 +489,25 @@ class LiveService : Service(), IslandView.Gestures {
         render()
     }
 
+    /** A tap or swipe on a settings sample closes it. */
+    private fun endPreview(m: Match): Boolean {
+        val now = System.currentTimeMillis()
+        if (now < demoIdleUntil && idleNow && current == null) {
+            demoIdleUntil = 0L
+            render()
+            return true
+        }
+        if (m.id == -1 && demo != null && demoUntil - now <= 4_000L && current == null && infoMatch == null) {
+            demoUntil = 0L
+            demo = null
+            render()
+            return true
+        }
+        return false
+    }
+
     override fun swipe(right: Boolean) {
+        onScreen?.let { if (endPreview(it)) return }
         if (current != null) {
             // A swipe sends away whatever is showing (news, a goal, a menu).
             current = null
@@ -477,12 +522,10 @@ class LiveService : Service(), IslandView.Gestures {
         }
         if (recNow) return
         if (idleNow) {
-            // Swiped away (often because it sits on the phone's pill): out of the way for 30 min.
-            if (right) {
-                SystemPill.learnFromSwipe(this)
-                idleHiddenUntil = System.currentTimeMillis() + 30 * 60_000L
-                render()
-            }
+            // Like the match notch: right tucks it to a small mark, left brings it back.
+            if (right) SystemPill.learnFromSwipe(this)
+            prefs.tucked = right
+            render()
             return
         }
         if (circleNow) {
@@ -618,6 +661,12 @@ class LiveService : Service(), IslandView.Gestures {
             m.state == Api.POST && now - (endedAt[id] ?: 0L) > FINAL_MS
         }
         if (done.isNotEmpty()) prefs.pinned = pins - done.toSet()
+        // Hidden matches are forgotten once they're over.
+        val hid = prefs.hiddenMatches
+        if (hid.isNotEmpty()) {
+            val over = hid.filter { id -> list.none { it.id == id && it.state != Api.POST } }
+            if (over.isNotEmpty() && list.isNotEmpty()) prefs.hiddenMatches = hid - over.toSet()
+        }
         // The chosen main match goes back to automatic once it's over.
         val pri = prefs.primary
         if (pri != 0 && list.none { it.id == pri && it.state != Api.POST }) prefs.primary = 0
@@ -637,12 +686,11 @@ class LiveService : Service(), IslandView.Gestures {
         val ids = prefs.teams.map { it.id }
         val me = ids.indexOf(m.side(home).id)
         val them = ids.indexOf(m.side(!home).id)
+        // Two favourites playing each other: any goal is a normal celebration (simpler).
         return when {
-            me < 0 && them < 0 -> "neutral"
-            me < 0 -> "against"
-            them < 0 -> "for"
-            me < them -> "for"
-            else -> "against"
+            me >= 0 -> "for"
+            them >= 0 -> "against"
+            else -> "neutral"
         }
     }
 
@@ -713,6 +761,8 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     private fun push(b: Burst) {
+        // A match the user hid from the notch: no bursts.
+        if (b.matchId in prefs.hiddenMatches) return
         // The provider can send a VAR event and the lowered score together: show it once.
         if (b.kind == "var" && (listOfNotNull(current) + queue).any { it.kind == "var" && it.matchId == b.matchId }) return
         queue.addLast(b)
@@ -917,7 +967,8 @@ class LiveService : Service(), IslandView.Gestures {
     /** Followed matches on now (and the ones just over), main one first. */
     private fun liveNow(list: List<Match> = matches + listOfNotNull(demo?.takeIf { System.currentTimeMillis() < demoUntil })): List<Match> {
         val now = System.currentTimeMillis()
-        return list.filter { it.state == Api.LIVE || (it.state == Api.POST && now - (endedAt[it.id] ?: 0L) < FINAL_MS) }
+        val hidden = prefs.hiddenMatches
+        return list.filter { it.id !in hidden && (it.state == Api.LIVE || (it.state == Api.POST && now - (endedAt[it.id] ?: 0L) < FINAL_MS)) }
             .sortedWith(compareBy({ if (it.id == prefs.primary) -1 else 0 }, { if (it.state == Api.LIVE) 0 else 1 }, { rank(it) }, { it.kickoff }, { it.id }))
     }
 
@@ -929,7 +980,7 @@ class LiveService : Service(), IslandView.Gestures {
         current?.let { b -> list.firstOrNull { it.id == b.matchId }?.let { return it } }
         if (now < infoUntil) infoMatch?.let { id -> list.firstOrNull { it.id == id }?.let { return it } }
         val live = liveNow(list)
-        if (live.isEmpty()) return list.filter { soon(it, now) }.sortedWith(compareBy({ rank(it) }, { it.kickoff })).firstOrNull()
+        if (live.isEmpty()) return list.filter { soon(it, now) && it.id !in prefs.hiddenMatches }.sortedWith(compareBy({ rank(it) }, { it.kickoff })).firstOrNull()
         return live.first()
     }
 
@@ -999,7 +1050,7 @@ class LiveService : Service(), IslandView.Gestures {
                 shownM, if (blank) "" else clockText(shownM, now), if (blank) "" else addedText(shownM, now),
                 current?.takeIf { it.matchId == shownM.id },
                 showInfo,
-                prefs.tucked && !circleNow && !blank,
+                prefs.tucked && !circleNow && !recNow,
                 circleNow && !recNow,
                 others = others,
                 idle = idleNow,
@@ -1192,10 +1243,18 @@ class LiveService : Service(), IslandView.Gestures {
 
     private fun startDemo(kind: String) {
         if (kind == "idle") {
-            demoIdleUntil = System.currentTimeMillis() + 8_000L
+            demoIdleUntil = System.currentTimeMillis() + 4_000L
             demo = null
             render()
             return
+        }
+        if (kind == "preview") {
+            // A setting changed: a live match shows it already; otherwise a 4-second sample.
+            if (liveNow(matches).isNotEmpty()) {
+                demo = null
+                render()
+                return
+            }
         }
         val teams = prefs.teams
         val a = teams.getOrNull(0) ?: Prefs.DEFAULT_TEAMS[0]
@@ -1214,7 +1273,7 @@ class LiveService : Service(), IslandView.Gestures {
             minute = 92, added = 4, clockSec = 91 * 60 + 10, fetchedAt = now, period = 2,
         )
         demo = m
-        demoUntil = now + 25_000
+        demoUntil = now + if (kind == "preview") 4_000L else 25_000L
         queue.removeAll { it.matchId == -1 }
         when (kind) {
             "goal" -> push(Burst("goal", L.t("goal"), "تريزيجيه • 88'", true, home.color, -1))

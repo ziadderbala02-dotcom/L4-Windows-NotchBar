@@ -84,12 +84,11 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         }
         if (screenW > screenH) {
             // Landscape: the camera is on a side; the pill goes to the top centre instead.
-            return Geo(screenW / 2f + prefs.offsetX * density, 6 * density, 0f, screenW, false)
+            return Geo(screenW / 2f, 6 * density, 0f, screenW, false)
         }
         // The punch hole: a small cut-out at the top, closest to the middle.
         val hole = cut.filter { it.top <= sb && it.width() < screenW / 3 }.minByOrNull { abs(it.centerX() - screenW / 2) }
-        // The user's left/right nudge, for phones whose camera Android reports a little off.
-        val dx = prefs.offsetX * density
+        val dx = 0f
         return if (hole != null) {
             Geo(hole.exactCenterX() + dx, hole.exactCenterY(), min(hole.width(), hole.height()) / 2f, screenW, screenH >= screenW)
         } else {
@@ -130,6 +129,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.others = others
         v.idle = idle
         v.idleK = prefs.idleSize / 100f
+        v.stretch = prefs.widthExtra * density()
         v.recSince = rec
         if (v.infoStats?.size != stats?.size) {
             v.infoStats = stats
@@ -176,7 +176,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      * stays (to hear when the bar comes back) but draws nothing and lets touches through.
      */
     /** Full screen with the "bigger in full screen" option: nothing to cover, so no squeezing. */
-    private fun roomy() = prefs.roomyFullscreen && prefs.overFullscreen && (!statusBarVisible || !portrait())
+    // Only sideways (a video or a game): telling a hidden status bar apart in portrait isn't reliable on HyperOS.
+    private fun roomy() = prefs.roomyFullscreen && prefs.overFullscreen && !portrait()
 
     private fun applyVisibility() {
         val v = view ?: return
@@ -228,8 +229,10 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         if (g.portrait) {
             // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each
             // side), widened or narrowed per side by the user for other phones.
-            v.leftMax = g.cx - g.screenW * LEFT_EDGE
-            v.rightMax = g.screenW * RIGHT_EDGE - g.cx
+            // The user's width slider moves both edges together.
+            val extra = prefs.widthExtra * density()
+            v.leftMax = g.cx - g.screenW * LEFT_EDGE + extra
+            v.rightMax = g.screenW * RIGHT_EDGE - g.cx + extra
         }
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
@@ -295,7 +298,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             // Right of Xiaomi's island, just before the status icons.
             width = ch
             height = ch
-            x = (g.screenW * RIGHT_EDGE + prefs.offsetX * density - ch - 4 * density).toInt()
+            x = (g.screenW * RIGHT_EDGE + prefs.widthExtra * density - ch - 4 * density).toInt()
             v.camX = g.cx - x
         } else if (v.tucked) {
             width = v.tuckWidth()

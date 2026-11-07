@@ -98,7 +98,7 @@ object Api {
     private fun url(p: String) = "$BASE/$p${if (p.contains('?')) "&" else "?"}${params()}"
 
     fun crest(id: Int, version: Int = 1) =
-        "https://imagecache.365scores.com/image/upload/f_png,w_68,h_68,c_limit,q_auto:eco,dpr_2,d_Competitors:default1.png/v$version/Competitors/$id"
+        "https://imagecache.365scores.com/image/upload/f_png,w_128,h_128,c_limit,q_auto:good,dpr_2,d_Competitors:default1.png/v$version/Competitors/$id"
 
     private fun get(u: String): JSONObject {
         val c = URL(u).openConnection() as HttpURLConnection

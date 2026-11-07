@@ -207,6 +207,11 @@ class MainActivity : Activity() {
                 isClickable = true
                 contentDescription = L.t(key)
                 setOnClickListener {
+                    if (i == 1 && tab != 1) {
+                        // Opening Matches: back to "My teams".
+                        scope = "mine"
+                        showAllOnce = false
+                    }
                     tab = i
                     page = null
                     draw()
@@ -550,8 +555,8 @@ class MainActivity : Activity() {
         }, lp(MATCH, WRAP, top = dp(12)))
         if (filter == "live" || filter == "today") {
             // Which matches: your teams (and pinned), your competitions, or all of them.
-            c.addView(segmented(listOf("mine" to "scope_mine", "comps" to "scope_comps", "all" to "scope_all"), prefs.matchScope) {
-                prefs.matchScope = it
+            c.addView(segmented(listOf("mine" to "scope_mine", "comps" to "scope_comps", "all" to "scope_all"), scope) {
+                scope = it
                 draw()
             }, lp(MATCH, WRAP, top = dp(10)))
         }
@@ -659,6 +664,10 @@ class MainActivity : Activity() {
         d.show()
     }
 
+    /** Live / Today: "mine" each time the screen opens (the choice isn't remembered). */
+    private var scope = "mine"
+    private var showAllOnce = false
+
     private var loadingList = false
     private var loadedAt = 0L
 
@@ -715,10 +724,10 @@ class MainActivity : Activity() {
         val favs = prefs.teams.map { it.id }.toSet()
         val q = query
         val comps = prefs.comps.map { it.id }.toSet()
-        val scope = if ((filter == "live" || filter == "today") && q.isEmpty()) prefs.matchScope else "all"
+        val sc = if ((filter == "live" || filter == "today") && q.isEmpty() && !showAllOnce) scope else "all"
         val list = all
             .filter {
-                when (scope) {
+                when (sc) {
                     "mine" -> it.home.id in favs || it.away.id in favs || it.id in pins
                     "comps" -> it.compId in comps || it.id in pins
                     else -> true
@@ -739,11 +748,12 @@ class MainActivity : Activity() {
         }
         val sorted = list.sortedWith(compareBy({ it.id !in pins }, { it.comp }, { it.kickoff }))
         if (sorted.isEmpty()) {
-            box.addView(text(L.t(if (scope == "mine") "no_matches_mine" else "no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+            box.addView(text(L.t(if (sc == "mine") "no_matches_mine" else "no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
         }
-        if (scope != "all" && sorted.size < all.size) {
+        if (sc != "all" && sorted.size < all.size) {
             box.addView(link(L.f("hidden_n", all.size - sorted.size)) {
-                prefs.matchScope = "all"
+                // Just this once: the next visit is back to "My teams".
+                showAllOnce = true
                 draw()
             }, lp(WRAP, WRAP, top = dp(4)))
         }
@@ -797,26 +807,35 @@ class MainActivity : Activity() {
             else -> Ui.MUTED
         }
         side.addView(text(clock, 13f, clockColor, bold = true).apply { gravity = Gravity.CENTER })
-        if (mine) {
-            side.addView(text(L.t("your_team"), 10f, Ui.AMBER, bold = true).apply {
-                background = Ui.rounded(Ui.AMBER_SOFT, dp(6).toFloat())
-                setPadding(dp(6), dp(3), dp(6), dp(3))
-            }, lp(WRAP, WRAP, top = dp(8)))
-        } else if (m.state != Api.POST) {
-            val pinBtn = FrameLayout(this).apply {
-                background = if (pinned) Ui.rounded(Ui.ACCENT_SOFT, dp(10).toFloat()) else Ui.rounded(0, dp(10).toFloat(), Ui.LINE, dp(1))
-                contentDescription = L.t(if (pinned) "unpin" else "pin")
+        if (m.state != Api.POST) {
+            // One clear switch: is this match on the notch? Your team's: on unless you hid it.
+            // Anyone else's: off unless you add it.
+            val hidden = m.id in prefs.hiddenMatches
+            val on = if (mine) !hidden else pinned
+            val btn = text(L.t(if (on) "on_notch" else if (mine) "hidden_notch" else "show_notch"), 10.5f, if (on) Ui.ACCENT else Ui.MUTED, bold = true).apply {
+                gravity = Gravity.CENTER
+                background = if (on) Ui.rounded(Ui.ACCENT_SOFT, dp(10).toFloat()) else Ui.rounded(0, dp(10).toFloat(), Ui.LINE, dp(1))
+                setPadding(dp(4), dp(6), dp(4), dp(6))
                 isClickable = true
                 setOnClickListener {
-                    prefs.pinned = if (m.id in prefs.pinned) prefs.pinned - m.id else prefs.pinned + m.id
+                    if (mine) {
+                        prefs.hiddenMatches = if (hidden) prefs.hiddenMatches - m.id else prefs.hiddenMatches + m.id
+                    } else {
+                        prefs.pinned = if (pinned) prefs.pinned - m.id else prefs.pinned + m.id
+                    }
                     LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
                     drawList()
                 }
             }
-            pinBtn.addView(Icon(this, "pin", 18).apply { color = if (pinned) Ui.ACCENT else Ui.MUTED }, FrameLayout.LayoutParams(WRAP, WRAP, Gravity.CENTER))
-            side.addView(pinBtn, lp(dp(44), dp(36), top = dp(8)))
+            side.addView(btn, lp(MATCH, WRAP, top = dp(8)))
+        } else if (mine) {
+            side.addView(text(L.t("your_team"), 10f, Ui.AMBER, bold = true).apply {
+                gravity = Gravity.CENTER
+                background = Ui.rounded(Ui.AMBER_SOFT, dp(6).toFloat())
+                setPadding(dp(6), dp(3), dp(6), dp(3))
+            }, lp(WRAP, WRAP, top = dp(8)))
         }
-        r.addView(side, lp(dp(72), WRAP, start = dp(10)))
+        r.addView(side, lp(dp(84), WRAP, start = dp(10)))
         return r
     }
 
@@ -1141,29 +1160,22 @@ class MainActivity : Activity() {
         backRow(c, L.t("position"))
         val k = card()
         k.addView(text(L.t("pos_note"), 13f, Ui.MUTED))
-        k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(12)))
-        k.addView(slider(L.t("size"), 50, 140, prefs.scale) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize) {
-            prefs.idleSize = it
-            LiveService.start(this, LiveService.ACTION_DEMO, "idle")
-        }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY, 0) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(12)))
+        k.addView(slider(L.t("size"), 50, 140, prefs.scale, 100) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(slider(L.t("width"), -40, 80, prefs.widthExtra, 0) { prefs.widthExtra = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(text(L.t("width_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+        k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize, 100, preview = "idle") { prefs.idleSize = it }, lp(MATCH, WRAP, top = dp(8)))
         k.addView(button(L.t("reset_pos")) {
             prefs.offsetY = 0
             prefs.offsetX = 0
             prefs.scale = 100
+            prefs.widthExtra = 0
             prefs.idleSize = 100
             LiveService.start(this, LiveService.ACTION_REFRESH)
-            LiveService.start(this, LiveService.ACTION_DEMO, "none")
+            LiveService.start(this, LiveService.ACTION_DEMO, "preview")
             draw()
         }, lp(MATCH, WRAP, top = dp(10)))
         c.addView(k, lp(MATCH, WRAP, top = dp(12)))
-
-        // Advanced: only for phones where Android reports the camera a little off.
-        c.addView(label(L.t("advanced")), lp(MATCH, WRAP, top = dp(16)))
-        val adv = card()
-        adv.addView(slider(L.t("cam_fix"), -40, 40, prefs.offsetX) { prefs.offsetX = it })
-        adv.addView(text(L.t("cam_fix_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
-        c.addView(adv, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
         val demos = listOf("goal" to "d_goal", "red" to "d_red", "whistle" to "d_whistle", "lineups" to "d_lineups", "against" to "d_against", "news" to "d_news", "info" to "d_info", "grid" to "d_grid", "none" to "d_none")
@@ -1177,11 +1189,37 @@ class MainActivity : Activity() {
         c.addView(text(L.t("try_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
     }
 
-    private fun slider(title: String, lo: Int, hi: Int, value: Int, restart: Boolean = true, save: (Int) -> Unit): View {
+    /**
+     * A labelled slider with its own ↺ (back to [def]). On release it saves, re-applies the notch and
+     * shows [preview] ("preview": the match notch for 4 s when nothing is live; "idle": the empty one).
+     */
+    private fun slider(title: String, lo: Int, hi: Int, value: Int, def: Int? = null, preview: String? = "preview", save: (Int) -> Unit): View {
         val box = column()
+        val head = row()
         val t = text("$title: $value", 13f, Ui.MUTED)
-        box.addView(t)
-        box.addView(SeekBar(this).apply {
+        head.addView(t, lp(0, WRAP, 1f))
+        lateinit var bar: SeekBar
+        fun apply(v: Int) {
+            save(v)
+            if (preview != null) {
+                LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
+                LiveService.start(this@MainActivity, LiveService.ACTION_DEMO, preview)
+            }
+        }
+        if (def != null) {
+            head.addView(text("↺", 18f, Ui.MUTED).apply {
+                gravity = Gravity.CENTER
+                contentDescription = L.t("reset_one")
+                isClickable = true
+                setOnClickListener {
+                    bar.progress = def - lo
+                    t.text = "$title: $def"
+                    apply(def)
+                }
+            }, lp(dp(40), dp(32)))
+        }
+        box.addView(head)
+        bar = SeekBar(this).apply {
             max = hi - lo
             progress = value - lo
             progressTintList = ColorStateList.valueOf(Ui.ACCENT)
@@ -1193,15 +1231,10 @@ class MainActivity : Activity() {
 
                 override fun onStartTrackingTouch(s: SeekBar) {}
 
-                override fun onStopTrackingTouch(s: SeekBar) {
-                    save(s.progress + lo)
-                    if (restart) {
-                        LiveService.start(this@MainActivity, LiveService.ACTION_REFRESH)
-                        LiveService.start(this@MainActivity, LiveService.ACTION_DEMO, "none")
-                    }
-                }
+                override fun onStopTrackingTouch(s: SeekBar) = apply(s.progress + lo)
             })
-        }, lp(MATCH, dp(44), top = dp(4)))
+        }
+        box.addView(bar, lp(MATCH, dp(44), top = dp(4)))
         return box
     }
 
@@ -1615,7 +1648,7 @@ class MainActivity : Activity() {
             }, lp(MATCH, WRAP, top = dp(8)))
         }
         val k = card()
-        k.addView(slider(L.t("volume"), 0, 100, prefs.volume, restart = false) { prefs.volume = it }, lp(MATCH, WRAP))
+        k.addView(slider(L.t("volume"), 0, 100, prefs.volume, 80, preview = null) { prefs.volume = it }, lp(MATCH, WRAP))
         k.addView(button(L.t("test_sound")) {
             val s = Sounds(this)
             // SoundPool loads in the background: play once it's ready.

@@ -17,7 +17,9 @@ object Logos {
     private val main = Handler(Looper.getMainLooper())
 
     /** The crest if it's loaded; otherwise starts loading and calls [onReady] on the main thread. */
-    fun get(url: String, onReady: () -> Unit): Bitmap? {
+    fun get(raw: String, onReady: () -> Unit): Bitmap? {
+        // Crests saved before 1.5.3 asked for 68 px: fetch them sharper (they grow in the goal animation).
+        val url = raw.replace("w_68,h_68,c_limit,q_auto:eco", "w_128,h_128,c_limit,q_auto:good")
         cache[url]?.let { return it }
         if (loading.add(url)) {
             pool.execute {

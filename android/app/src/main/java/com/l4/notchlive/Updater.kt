@@ -7,7 +7,8 @@ import java.net.URL
 
 /** New versions come from this repo's GitHub releases tagged android-vX.Y.Z. */
 object Updater {
-    private const val RELEASES = "https://api.github.com/repos/ziadderbala02-dotcom/L4-Windows-NotchBar/releases?per_page=30"
+    // Updates come from a public repo that holds only the APKs (the code lives in a private one).
+    private const val RELEASES = "https://api.github.com/repos/ziadderbala02-dotcom/nl-updates/releases?per_page=30"
 
     class Release(val version: String, val apkUrl: String)
 
