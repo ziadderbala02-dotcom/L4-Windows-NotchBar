@@ -120,7 +120,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
      */
     fun update(
         match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean,
-        others: Int = 0, idle: Boolean = false,
+        others: Int = 0, idle: Boolean = false, stats: List<Stat>? = null, rec: Long = 0L,
     ) {
         if (match == null) {
             hide()
@@ -129,6 +129,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val v = view ?: attach() ?: return
         v.others = others
         v.idle = idle
+        v.recSince = rec
+        if (v.infoStats?.size != stats?.size) {
+            v.infoStats = stats
+            if (big) layout()
+        } else {
+            v.infoStats = stats
+        }
         v.roomy = roomy()
         v.match = match
         v.clock = clock

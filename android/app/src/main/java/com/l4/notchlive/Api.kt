@@ -71,6 +71,8 @@ data class Match(
     val period: Int = 0,
     /** The line-ups are out (usually about an hour before kickoff). */
     val hasLineups: Boolean = false,
+    /** League round ("الجولة 9"), 0 when the feed has none. */
+    val round: Int = 0,
 ) {
     fun side(home: Boolean) = if (home) this.home else away
     fun reds(home: Boolean) = events.count { it.kind == "red" && it.home == home }
@@ -239,6 +241,7 @@ object Api {
             clockSec = precise?.takeIf { it.optBoolean("autoProgress") && it.has("minutes") && phase == "play" }
                 ?.let { it.optInt("minutes") * 60 + it.optInt("seconds") },
             hasLineups = g.optBoolean("hasLineups"),
+            round = g.optInt("roundNum"),
             period = g.str("shortStatusText").trim().toIntOrNull() ?: when {
                 g.str("statusText").contains("الأول") -> 1
                 g.str("statusText").contains("الثاني") -> 2
@@ -360,6 +363,13 @@ object Api {
         return r.optJSONArray("games").objects().map { withSlug(parse(it), slugs) }
     }
 
+    /** A competition's last round and the next ones (results and fixtures). */
+    fun compGames(compId: Int): List<Match> {
+        val r = get(url("games/current/?competitions=$compId"))
+        val slugs = compSlugs(r)
+        return r.optJSONArray("games").objects().map { withSlug(parse(it), slugs) }
+    }
+
     /** One game with its events (scorers, cards). */
     fun game(id: Int): Match {
         val r = get(url("game/?gameId=$id"))
@@ -411,11 +421,14 @@ object Api {
     /** Possession, xG, shots, on target, corners, fouls, offsides, cards, in that order. */
     private val STAT_IDS = listOf(10, 76, 3, 4, 8, 12, 9, 1, 2)
 
-    fun stats(gameId: Int, homeId: Int): List<Stat> {
+    /** Possession, shots, shots on target: the three in the notch's tap view. */
+    val QUICK_STATS = listOf(10, 3, 4)
+
+    fun stats(gameId: Int, homeId: Int, ids: List<Int> = STAT_IDS): List<Stat> {
         val all = get(url("game/stats/?games=$gameId")).optJSONArray("statistics").objects()
         val out = ArrayList<Stat>()
         val num = { v: String -> v.replace("%", "").toFloatOrNull() ?: 0f }
-        for (id in STAT_IDS) {
+        for (id in ids) {
             val rows = all.filter { it.optInt("id") == id }
             if (rows.size < 2) continue
             val h = rows.firstOrNull { it.optInt("competitorId") == homeId } ?: rows[0]

@@ -46,7 +46,10 @@ class LiveService : Service(), IslandView.Gestures {
         private const val PHONE_ID = -3
         /** Bursts that belong to no match. */
         private const val NEWS_ID = -2
-        private const val NEWS_MS = 15 * 60_000L
+        /** The always-on notch and the recording pill. */
+        private const val IDLE_ID = -5
+        /** Headlines older than this are skipped (in the notch; the app's list keeps them). */
+        private const val NEWS_FRESH = 3 * 3600_000L
         private const val CH_ALERT = "alerts"
         private const val NOTIF_ID = 1
         private const val UPDATE_ID = 2
@@ -86,7 +89,7 @@ class LiveService : Service(), IslandView.Gestures {
         private const val FINAL_MS = 30_000L
         private const val ROTATE_MS = 10_000L
         private const val BURST_MS = 6_500L
-        private const val INFO_MS = 5_000L
+        private const val INFO_MS = 8_000L
         private const val CIRCLE_OPEN_MS = 8_000L
 
         /** The countdown shows from this long before kickoff. */
@@ -245,12 +248,17 @@ class LiveService : Service(), IslandView.Gestures {
     override fun tap() {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
-        if (idleNow && current == null) {
-            // The always-on capsule: quick actions.
-            idleMenu()
+        if (recNow && current == null) {
+            // Recording the screen: a tap stops it.
+            Recorder.stop(this)
             return
         }
-        if (current?.kind == "menu" || current?.kind == "stats") {
+        if (idleNow && current == null) {
+            // The always-on notch: the shortcut grid.
+            openShortcuts()
+            return
+        }
+        if (current?.kind == "menu" || current?.kind == "stats" || current?.kind == "shortcuts") {
             current = null
             render()
             return
@@ -313,33 +321,88 @@ class LiveService : Service(), IslandView.Gestures {
 
     private fun showMenu(id: Int, actions: List<String>) {
         menuActions = actions
-        menuIdle = false
         val items = actions.map { a ->
             when (a) {
                 "mute" -> L.t(if (id in muted) "menu_unmute" else "menu_mute")
                 "pin" -> L.t(if (id in prefs.pinned) "menu_unpin" else "menu_pin")
-                "sound" -> L.t(if (prefs.sound) "menu_sound_off" else "menu_sound_on")
-                "saver" -> L.t(if (prefs.speed == "saver") "menu_saver_off" else "menu_saver_on")
                 else -> L.t("menu_$a")
             }
         }
         showOverlay(Burst("menu", "", "", true, 0xFF3F3F46.toInt(), id, items = items), 6_000L)
     }
 
-    /** The always-on capsule's quick actions. */
-    private fun idleMenu() {
-        val m = onScreen ?: return
-        val acts = mutableListOf("sound", "saver", "hide_idle")
-        if (lastResult() != null) acts += "last"
-        acts += "app"
-        showMenu(m.id, acts)
-        menuIdle = true
+    /* ---------- the always-on notch: shortcuts ---------- */
+
+    private var recNow = false
+
+    /** A stand-in "match" for the always-on notch and the recording pill (nothing to draw). */
+    private fun blankMatch(): Match {
+        val side = Side(0, "", "", "", 0xFF6B7280.toInt(), 0)
+        return Match(IDLE_ID, "", Api.PRE, "", "", 0L, side, side, emptyList())
     }
 
-    /** The open menu belongs to the always-on capsule. */
-    private var menuIdle = false
+    /** The 8 slots (empty ones show "+") and the next match underneath. */
+    private fun openShortcuts() {
+        val slots = Shortcuts.load(this)
+        val labels = slots.map { s -> s?.let { Shortcuts.label(this, it) }.orEmpty() }
+        val icons = slots.map { s -> s?.let { Shortcuts.icon(this, it) { refreshShortcuts() } } }
+        val glyphs = slots.map { s -> if (s?.type == "action") Shortcuts.glyph(s.value) else "" }
+        val now = System.currentTimeMillis()
+        val next = matches.filter { it.state == Api.PRE && it.kickoff > now }.sortedWith(compareBy({ it.kickoff }, { rank(it) })).firstOrNull()
+        val line = next?.let { L.f("sc_next", teams(it), android.text.format.DateFormat.format("EEE h:mm a", it.kickoff)) }.orEmpty()
+        showOverlay(Burst("shortcuts", "", line, true, 0xFF3F3F46.toInt(), IDLE_ID, icons = icons, glyphs = glyphs, items = labels), 10_000L)
+    }
 
-    private fun lastResult(): Match? = matches.filter { it.state == Api.POST }.maxByOrNull { it.kickoff }
+    /** An icon finished loading: draw the grid again with it. */
+    private fun refreshShortcuts() {
+        if (current?.kind == "shortcuts") {
+            val until = currentUntil
+            openShortcuts()
+            currentUntil = until
+        }
+    }
+
+    /** Opens the app on the picker for this slot. */
+    private fun pickSlot(index: Int) {
+        try {
+            startActivity(Intent(this, MainActivity::class.java).putExtra("slot", index).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP))
+        } catch (e: Exception) {
+            // Blocked from the background.
+        }
+    }
+
+    override fun slotLongPress(index: Int) {
+        current = null
+        render()
+        pickSlot(index)
+    }
+
+    private fun runSlot(index: Int) {
+        if (index == 100) {
+            matches.filter { it.state == Api.PRE && it.kickoff > System.currentTimeMillis() }.minByOrNull { it.kickoff }?.let { open365(it) }
+            current = null
+            render()
+            return
+        }
+        val slot = Shortcuts.load(this).getOrNull(index)
+        current = null
+        render()
+        if (slot == null) {
+            pickSlot(index)
+            return
+        }
+        if (slot.type == "action" && slot.value == "hide") {
+            hiddenUntil = System.currentTimeMillis() + 3600_000L
+            render()
+            return
+        }
+        // The grid closes first, so a screenshot doesn't catch it.
+        main.postDelayed({
+            val msg = Shortcuts.run(this, slot)
+            if (msg != null) android.widget.Toast.makeText(this, msg, android.widget.Toast.LENGTH_SHORT).show()
+            render()
+        }, if (slot.value == "screenshot") 450L else 0L)
+    }
 
     /** Mute (no sound or vibration) per match, for this session. */
     private val muted = HashSet<Int>()
@@ -347,8 +410,8 @@ class LiveService : Service(), IslandView.Gestures {
 
     override fun longPress() {
         val m = onScreen ?: return
-        if (idleNow) {
-            idleMenu()
+        if (idleNow || recNow) {
+            openShortcuts()
             return
         }
         if (m.id < 0) return
@@ -360,6 +423,10 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     override fun menuPick(index: Int) {
+        if (current?.kind == "shortcuts") {
+            runSlot(index)
+            return
+        }
         val b = current?.takeIf { it.kind == "menu" } ?: return
         val id = b.matchId
         current = null
@@ -376,49 +443,17 @@ class LiveService : Service(), IslandView.Gestures {
                 val i = live.indexOfFirst { it.id == id }
                 live.getOrNull((i + 1) % live.size)?.let { prefs.primary = it.id }
             }
-            "sound" -> prefs.sound = !prefs.sound
-            "saver" -> prefs.speed = if (prefs.speed == "saver") "fast" else "saver"
-            "hide_idle" -> idleHiddenUntil = System.currentTimeMillis() + 3 * 3600_000L
-            "last" -> lastResult()?.let { open365(it) }
-            "app" -> try {
-                startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            } catch (e: Exception) {
-                // Blocked from the background.
-            }
         }
         render()
     }
 
-    override fun pull(down: Boolean) {
-        val m = onScreen ?: return
-        if (!down) {
-            if (current?.kind == "stats") {
-                current = null
-                render()
-            }
-            return
-        }
-        if (m.id < 0) return
-        val b = Burst("stats", "", "", true, 0xFF3F3F46.toInt(), m.id)
-        showOverlay(b, 10_000L)
-        net.execute {
-            val st = try {
-                Api.stats(m.id, m.home.id)
-            } catch (e: Exception) {
-                emptyList()
-            }
-            main.post {
-                b.stats = st
-                island.relayout()
-                render()
-            }
-        }
-    }
+    /** Pulling down near the status bar opens the phone's own shade too often: it does nothing now. */
+    override fun pull(down: Boolean) {}
 
     /** Menu and stats: shown at once over whatever is on, without sound. */
     private fun showOverlay(b: Burst, ms: Long) {
         val now = System.currentTimeMillis()
-        current?.let { if (it.kind != "menu" && it.kind != "stats") queue.addFirst(it) }
+        current?.let { if (it.kind != "menu" && it.kind != "stats" && it.kind != "shortcuts") queue.addFirst(it) }
         b.startedAt = now
         current = b
         currentUntil = now + ms
@@ -427,11 +462,19 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     override fun swipe(right: Boolean) {
-        if (current?.kind == "menu" || current?.kind == "stats") {
+        if (current != null) {
+            // A swipe sends away whatever is showing (news, a goal, a menu).
             current = null
+            nextBurstAt = System.currentTimeMillis() + 600
             render()
             return
         }
+        if (infoMatch != null) {
+            infoMatch = null
+            render()
+            return
+        }
+        if (idleNow || recNow) return
         if (circleNow) {
             infoMatch = null
             render()
@@ -734,35 +777,60 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     /** Every 15 min: new headlines about the favourite teams (the first check only remembers them). */
+    /** New headlines waiting their turn: one shows every 5 minutes, so they don't pile up on screen. */
+    private val newsWaiting = ArrayDeque<Pair<TeamOption, Api.News>>()
+    private var nextNewsAt = 0L
+
+    private fun newsEvery(): Long = when (effectiveSpeed(this)) {
+        "saver" -> 30 * 60_000L
+        "balanced" -> 15 * 60_000L
+        else -> 10 * 60_000L
+    }
+
+    /** Checks the favourite teams' news (every 10/15/30 min by speed); new ones join the line. */
     private fun pollNews() {
         try {
-            if (prefs.enabled && prefs.news && effectiveSpeed(this) != "saver") {
+            if (prefs.enabled && prefs.news) {
                 val seen = prefs.seenNews.toMutableSet()
                 val first = seen.isEmpty()
                 val fresh = ArrayList<Pair<TeamOption, Api.News>>()
+                val titles = HashSet<String>()
+                val now = System.currentTimeMillis()
                 for (t in prefs.teams) {
                     val items = try {
-                        Api.news(t.id, newsLang()).take(6)
+                        Api.news(t.id, newsLang()).take(10)
                     } catch (e: Exception) {
                         continue
                     }
                     for (n in items) {
-                        if (seen.add(n.id) && !first && System.currentTimeMillis() - n.at < 6 * 3600_000L) fresh += t to n
+                        // The same story about two teams shows once.
+                        val key = n.title.lowercase().filter { it.isLetterOrDigit() }
+                        if (!seen.add(n.id) || !titles.add(key)) continue
+                        if (!first && now - n.at < NEWS_FRESH) fresh += t to n
                     }
                 }
-                // Keep the list from growing forever.
-                prefs.seenNews = if (seen.size > 300) seen.toList().takeLast(200).toSet() else seen
-                val pick = fresh.sortedByDescending { it.second.at }.take(2)
-                if (pick.isNotEmpty()) main.post {
-                    for ((t, n) in pick) {
-                        queue.addLast(Burst("news", L.f("news_about", t.name), n.title, true, 0xFF60A5FA.toInt(), NEWS_ID, logo = t.logo, url = n.url))
-                    }
+                prefs.seenNews = if (seen.size > 500) seen.toList().takeLast(350).toSet() else seen
+                if (fresh.isNotEmpty()) main.post {
+                    for (f in fresh.sortedBy { it.second.at }) newsWaiting.addLast(f)
+                    prefs.addNews(fresh.map { (t, n) -> NewsItem(t.name, t.logo, n.title, n.url, n.at) })
                 }
             }
         } catch (e: Exception) {
             // Try again next time.
         }
-        if (instance === this) net.schedule({ pollNews() }, NEWS_MS, TimeUnit.MILLISECONDS)
+        if (instance === this) net.schedule({ pollNews() }, newsEvery(), TimeUnit.MILLISECONDS)
+    }
+
+    /** Called each second: lets the next waiting headline out when the notch is free. */
+    private fun pumpNews(now: Long) {
+        if (current != null || queue.isNotEmpty() || now < nextNewsAt) return
+        while (newsWaiting.isNotEmpty()) {
+            val (t, n) = newsWaiting.removeFirst()
+            if (now - n.at > NEWS_FRESH) continue
+            queue.addLast(Burst("news", L.f("news_about", t.name), n.title, true, 0xFF60A5FA.toInt(), NEWS_ID, logo = t.logo, url = n.url))
+            nextNewsAt = now + 5 * 60_000L
+            return
+        }
     }
 
     /* ---------- data per day ---------- */
@@ -854,31 +922,8 @@ class LiveService : Service(), IslandView.Gestures {
         return live.first()
     }
 
-    /** The always-on capsule (option): the next match, else the last result. */
     private var idleNow = false
     private var idleHiddenUntil = 0L
-
-    private fun idleMatch(now: Long): Match? {
-        if (!prefs.idleNotch || now < idleHiddenUntil) return null
-        val next = matches.filter { it.state == Api.PRE && it.kickoff > now }.sortedWith(compareBy({ it.kickoff }, { rank(it) })).firstOrNull()
-        return next ?: lastResult()
-    }
-
-    /** "بعد يومين", "غداً 9:00 م", "اليوم 9:00 م" for the capsule; the result's "انتهت". */
-    private fun idleClock(m: Match, now: Long): String {
-        if (m.state != Api.PRE) return localClock(m.clock)
-        val zone = java.util.TimeZone.getDefault()
-        val day = 86_400_000L
-        val today = (now + zone.getOffset(now)) / day
-        val that = (m.kickoff + zone.getOffset(m.kickoff)) / day
-        val time = android.text.format.DateFormat.getTimeFormat(this).format(java.util.Date(m.kickoff))
-        return when (val n = (that - today).toInt()) {
-            0 -> if (m.kickoff - now <= SOON_MS) clockText(m, now) else L.f("idle_today", time)
-            1 -> L.f("idle_tomorrow", time)
-            2 -> L.t("idle_2days")
-            else -> L.f("idle_days", n)
-        }
-    }
 
     private fun inCall(): Boolean = audio.mode == AudioManager.MODE_IN_CALL ||
         audio.mode == AudioManager.MODE_IN_COMMUNICATION ||
@@ -892,6 +937,7 @@ class LiveService : Service(), IslandView.Gestures {
         }
         if (infoMatch != null && now >= infoUntil) infoMatch = null
         val list = matches + listOfNotNull(demo?.takeIf { now < demoUntil })
+        pumpNews(now)
         if (current == null && queue.isNotEmpty() && now >= nextBurstAt) {
             val b = queue.removeFirst()
             // Only if its match is still around (a burst for a match that ended long ago is dropped).
@@ -907,10 +953,16 @@ class LiveService : Service(), IslandView.Gestures {
         val news = current?.takeIf { it.kind == "news" || it.kind == "phone" }
         var m = if (news != null) newsMatch(news) else featured(list, now)
         idleNow = false
-        val idleMenuOpen = current?.kind == "menu" && menuIdle
-        if ((m == null && current == null) || idleMenuOpen) {
-            idleMatch(now)?.let {
-                m = it
+        recNow = false
+        if (current?.kind == "shortcuts") {
+            m = blankMatch()
+            idleNow = true
+        } else if (m == null && current == null) {
+            if (Recorder.since > 0) {
+                m = blankMatch()
+                recNow = true
+            } else if (prefs.idleNotch && now >= idleHiddenUntil) {
+                m = blankMatch()
                 idleNow = true
             }
         }
@@ -922,24 +974,52 @@ class LiveService : Service(), IslandView.Gestures {
         if (wasCircle && !circleNow) infoMatch = null
         val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
             // The capsule steps aside for Xiaomi's island.
-            (idleNow && busy && current == null)
+            (idleNow && busy && current == null && !recNow)
         island.calm = effectiveSpeed(this) == "saver"
         val shownM = m
         if (shownM == null || hidden) {
             island.update(null, "", "", null, false, false, false)
         } else {
             val others = if (shownM.id < 0 || idleNow) 0 else (liveNow(list).count { it.state == Api.LIVE } - 1).coerceAtLeast(0)
+            val blank = idleNow || recNow
+            val showInfo = infoMatch == shownM.id && !blank
+            if (showInfo) wantStats(shownM, now)
             island.update(
-                shownM, if (idleNow) idleClock(shownM, now) else clockText(shownM, now), if (idleNow) "" else addedText(shownM, now),
+                shownM, if (blank) "" else clockText(shownM, now), if (blank) "" else addedText(shownM, now),
                 current?.takeIf { it.matchId == shownM.id },
-                infoMatch == shownM.id && !idleNow,
-                prefs.tucked && !circleNow && !idleNow,
-                circleNow && !idleNow,
+                showInfo,
+                prefs.tucked && !circleNow && !blank,
+                circleNow && !blank,
                 others = others,
                 idle = idleNow,
+                stats = if (showInfo) quickStats[shownM.id]?.second else null,
+                rec = if (recNow) Recorder.since else 0L,
             )
         }
-        updateOngoing(if (idleNow) null else shownM, now)
+        updateOngoing(if (idleNow || recNow) null else shownM, now)
+    }
+
+    /** Possession, shots and on target for the tap view: fetched when it opens, at most once a minute. */
+    private val quickStats = HashMap<Int, Pair<Long, List<Stat>>>()
+    private val statsLoading = HashSet<Int>()
+
+    private fun wantStats(m: Match, now: Long) {
+        if (m.id < 0 || m.state == Api.PRE || m.id in statsLoading) return
+        val have = quickStats[m.id]
+        if (have != null && now - have.first < 60_000L) return
+        statsLoading += m.id
+        net.execute {
+            val st = try {
+                Api.stats(m.id, m.home.id, Api.QUICK_STATS)
+            } catch (e: Exception) {
+                null
+            }
+            main.post {
+                statsLoading -= m.id
+                if (st != null) quickStats[m.id] = System.currentTimeMillis() to st
+                render()
+            }
+        }
     }
 
     private fun announce(b: Burst, m: Match) {
@@ -1124,6 +1204,20 @@ class LiveService : Service(), IslandView.Gestures {
             "news" -> queue.addLast(
                 Burst("news", L.f("news_about", a.name), if (L.ar) "تجربة: عنوان خبر طويل بعض الشيء لنرى شكله على سطرين داخل النوتش" else "Test: a longish headline to see how it looks on two lines in the notch", true, 0xFF60A5FA.toInt(), NEWS_ID, logo = a.logo, url = "https://www.365scores.com/ar/news"),
             )
+            "info" -> {
+                // The tap view with quick stats (also used by the emulator screenshots).
+                quickStats[-1] = now to listOf(
+                    Stat(if (L.ar) "الاستحواذ" else "Possession", "58%", "42%", 0.58f),
+                    Stat(if (L.ar) "التسديدات" else "Shots", "12", "7", 0.63f),
+                    Stat(if (L.ar) "على المرمى" else "On target", "5", "2", 0.71f),
+                )
+                main.postDelayed({
+                    infoMatch = -1
+                    infoUntil = System.currentTimeMillis() + 15_000L
+                    render()
+                }, 1500)
+            }
+            "grid" -> main.postDelayed({ openShortcuts() }, 1500)
             "lineups" -> {
                 // Before kickoff: the countdown, then the line-ups notice.
                 demo = m.copy(state = Api.PRE, clock = "", phase = "", kickoff = now + 12 * 60_000, events = emptyList(), minute = null, added = null, clockSec = null)

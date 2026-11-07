@@ -4,6 +4,9 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
+/** One headline for the home screen's news list. */
+data class NewsItem(val team: String, val logo: String, val title: String, val url: String, val at: Long)
+
 /** Settings and favourite teams, in SharedPreferences. */
 class Prefs(ctx: Context) {
     private val p = ctx.getSharedPreferences("notch", Context.MODE_PRIVATE)
@@ -89,10 +92,15 @@ class Prefs(ctx: Context) {
         get() = p.getInt("volume", 80)
         set(v) = p.edit().putInt("volume", v).apply()
 
-    /** Matches lists: only the followed competitions (else everything). */
-    var allComps: Boolean
-        get() = p.getBoolean("allComps", false)
-        set(v) = p.edit().putBoolean("allComps", v).apply()
+    /** Live and Today lists: "mine" (favourite teams + pinned), "comps" (followed competitions) or "all". */
+    var matchScope: String
+        get() = p.getString("matchScope", "mine") ?: "mine"
+        set(v) = p.edit().putString("matchScope", v).apply()
+
+    /** The competition open in the Matches → Competitions chip. */
+    var compPick: Int
+        get() = p.getInt("compPick", 0)
+        set(v) = p.edit().putInt("compPick", v).apply()
 
     var comps: List<TeamOption>
         get() = readList("comps") ?: DEFAULT_COMPS
@@ -106,6 +114,30 @@ class Prefs(ctx: Context) {
     var inspectorApps: Set<String>
         get() = p.getStringSet("inspectorApps", emptySet()) ?: emptySet()
         set(v) = p.edit().putStringSet("inspectorApps", v).apply()
+
+    /** The always-on notch's 8 shortcut slots, as JSON (see Shortcuts). Empty at first. */
+    var shortcutsRaw: String
+        get() = p.getString("shortcuts", "[]") ?: "[]"
+        set(v) = p.edit().putString("shortcuts", v).apply()
+
+    /** Latest headlines about the favourite teams, newest first (the home screen's list). */
+    val newsLog: List<NewsItem>
+        get() = try {
+            val a = JSONArray(p.getString("newsLog", "[]"))
+            (0 until a.length()).map {
+                val o = a.getJSONObject(it)
+                NewsItem(o.getString("team"), o.getString("logo"), o.getString("title"), o.getString("url"), o.getLong("at"))
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+    fun addNews(items: List<NewsItem>) {
+        val all = (items + newsLog).distinctBy { it.url }.sortedByDescending { it.at }.take(30)
+        val a = JSONArray()
+        for (n in all) a.put(JSONObject().put("team", n.team).put("logo", n.logo).put("title", n.title).put("url", n.url).put("at", n.at))
+        p.edit().putString("newsLog", a.toString()).apply()
+    }
 
     private fun readList(key: String): List<TeamOption>? {
         val raw = p.getString(key, null) ?: return null

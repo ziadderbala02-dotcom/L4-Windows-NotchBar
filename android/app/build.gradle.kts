@@ -11,8 +11,8 @@ android {
         applicationId = "com.l4.notchlive"
         minSdk = 28
         targetSdk = 35
-        versionCode = 9
-        versionName = "1.5.0"
+        versionCode = 10
+        versionName = "1.5.1"
     }
 
     // A fixed key in the repo, so every new APK installs over the old one (personal sideloaded app).
@@ -39,4 +39,9 @@ android {
     kotlinOptions {
         jvmTarget = "17"
     }
+}
+
+dependencies {
+    // The QR shortcut: Google's ready-made scanner (no camera permission, runs in Play services).
+    implementation("com.google.android.gms:play-services-code-scanner:16.1.0")
 }

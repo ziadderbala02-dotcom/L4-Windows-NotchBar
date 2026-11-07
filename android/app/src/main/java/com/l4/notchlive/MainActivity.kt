@@ -110,6 +110,12 @@ class MainActivity : Activity() {
             }
         }
         onboarding = !prefs.onboarded || savedInstanceState?.getBoolean("onboarding") == true
+        // From the notch: an empty or long-pressed shortcut slot opens its picker.
+        intent.getIntExtra("slot", -1).takeIf { it >= 0 && savedInstanceState == null }?.let {
+            pickIndex = it
+            backTo = null
+            page = "slot_pick"
+        }
         checkUpdate()
     }
 
@@ -169,6 +175,8 @@ class MainActivity : Activity() {
             "teams" -> teamsPage(content)
             "comps" -> compsPage(content)
             "sounds" -> soundsPage(content)
+            "slots" -> slotsPage(content)
+            "slot_pick" -> slotPickPage(content)
             "search_team" -> searchPage(content, comps = false)
             "search_comp" -> searchPage(content, comps = true)
             else -> when (tab) {
@@ -273,7 +281,10 @@ class MainActivity : Activity() {
             val left = (next.kickoff - nowMs) / 1000
             val d = left / 86400
             val hm = String.format(Locale.US, "%02d:%02d", (left % 86400) / 3600, (left % 3600) / 60)
-            mid.addView(text(if (d > 0) "$d${if (L.ar) "ي" else "d"} $hm" else hm, 22f, bold = true).apply { gravity = Gravity.CENTER })
+            val hours = ((left % 86400) / 3600).toInt()
+            val mins = ((left % 3600) / 60).toInt()
+            mid.addView(text(L.t("remaining"), 11f, Ui.MUTED).apply { gravity = Gravity.CENTER })
+            mid.addView(text(remaining(d.toInt(), hours, mins), 16f, bold = true).apply { gravity = Gravity.CENTER }, lp(WRAP, WRAP, top = dp(2)))
             mid.addView(text(android.text.format.DateFormat.format("EEE h:mm a", next.kickoff).toString(), 12f, Ui.AMBER).apply { gravity = Gravity.CENTER })
             r.addView(mid, lp(WRAP, WRAP))
             r.addView(teamBadge(next.away), lp(0, WRAP, 1f))
@@ -346,10 +357,59 @@ class MainActivity : Activity() {
         }
         if (prefs.teams.isEmpty()) box.addView(text(L.t("no_teams"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
         else box.addView(text(L.t(if (editTeams) "remove_done" else "remove_hint"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+
+        // Latest news: everything the notch showed or skipped.
+        val news = prefs.newsLog.take(8)
+        if (prefs.news && news.isNotEmpty()) {
+            box.addView(text(L.t("latest_news"), 16f, bold = true), lp(MATCH, WRAP, top = dp(18)))
+            val k = card(0).apply { setPadding(dp(14), dp(4), dp(14), dp(4)) }
+            news.forEachIndexed { i, n ->
+                if (i > 0) k.addView(divider())
+                val r = row().apply {
+                    minimumHeight = dp(56)
+                    setPadding(0, dp(8), 0, dp(8))
+                    isClickable = true
+                    setOnClickListener {
+                        try {
+                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(n.url)))
+                        } catch (e: Exception) {
+                            // No browser.
+                        }
+                    }
+                }
+                r.addView(crest(n.logo, 24))
+                val t = column()
+                t.addView(text(n.title, 13f).apply { maxLines = 2 })
+                t.addView(text("${n.team} · ${android.text.format.DateUtils.getRelativeTimeSpanString(n.at)}", 11f, Ui.MUTED), lp(WRAP, WRAP, top = dp(2)))
+                r.addView(t, lp(0, WRAP, 1f, start = dp(10)))
+                k.addView(r)
+            }
+            box.addView(k, lp(MATCH, WRAP, top = dp(8)))
+        }
     }
 
     /** Home: × shown on the team cards (after a long press). */
     private var editTeams = false
+
+    /** "9 ساعات و36 دقيقة", "يومان و3 ساعات" (Arabic counts follow the number). */
+    private fun remaining(days: Int, hours: Int, mins: Int): String {
+        fun unit(n: Int, one: String, two: String, few: String, many: String): String = when {
+            !L.ar -> "$n $many".let { if (n == 1) "1 $one" else it }
+            n == 1 -> one
+            n == 2 -> two
+            n in 3..10 -> "$n $few"
+            else -> "$n $many"
+        }
+        val d = if (L.ar) unit(days, "يوم", "يومان", "أيام", "يومًا") else unit(days, "day", "", "", "days")
+        val h = if (L.ar) unit(hours, "ساعة", "ساعتان", "ساعات", "ساعة") else unit(hours, "hour", "", "", "hours")
+        val m = if (L.ar) unit(mins, "دقيقة", "دقيقتان", "دقائق", "دقيقة") else unit(mins, "minute", "", "", "minutes")
+        val and = if (L.ar) " و" else " "
+        return when {
+            days > 0 -> if (hours > 0) d + and + h else d
+            hours > 0 -> if (mins > 0) h + and + m else h
+            else -> m
+        }
+    }
 
     private fun logoMark(): View {
         val v = FrameLayout(this).apply {
@@ -460,7 +520,7 @@ class MainActivity : Activity() {
         c.addView(search, lp(MATCH, WRAP, top = dp(14)))
 
         val chips = row()
-        listOf("live" to "f_live", "today" to "f_today", "mine" to "f_mine", "pinned" to "f_pinned").forEachIndexed { i, (k, key) ->
+        listOf("live" to "f_live", "today" to "f_today", "mine" to "f_mine", "pinned" to "f_pinned", "comps" to "f_comps").forEachIndexed { i, (k, key) ->
             val on = filter == k
             val label = if (k == "pinned" && prefs.pinned.isNotEmpty()) "${L.t(key)} · ${prefs.pinned.size}" else L.t(key)
             chips.addView(text(label, 13f, if (on) Ui.ON_ACCENT else Ui.TEXT, bold = on).apply {
@@ -480,20 +540,115 @@ class MainActivity : Activity() {
             isHorizontalScrollBarEnabled = false
             addView(chips)
         }, lp(MATCH, WRAP, top = dp(12)))
-        c.addView(text(L.t("pin_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
         if (filter == "live" || filter == "today") {
-            // Followed competitions only (and the favourites' matches), or everything.
-            val f = row()
-            f.addView(text(L.t(if (prefs.allComps) "showing_all" else "only_followed"), 12f, Ui.MUTED), lp(0, WRAP, 1f))
-            f.addView(link(L.t(if (prefs.allComps) "show_followed" else "show_all")) {
-                prefs.allComps = !prefs.allComps
+            // Which matches: your teams (and pinned), your competitions, or all of them.
+            c.addView(segmented(listOf("mine" to "scope_mine", "comps" to "scope_comps", "all" to "scope_all"), prefs.matchScope) {
+                prefs.matchScope = it
                 draw()
-            })
-            c.addView(f, lp(MATCH, WRAP, top = dp(2)))
+            }, lp(MATCH, WRAP, top = dp(10)))
         }
+        if (filter == "comps") compPicker(c)
+        c.addView(text(L.t("pin_note"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
         listBox = column()
         c.addView(listBox, lp(MATCH, WRAP, top = dp(4)))
         if (loaded == null) load() else drawList()
+    }
+
+    /** The competition being shown in the Competitions chip (the first followed one by default). */
+    private fun pickedComp(): TeamOption? {
+        val comps = prefs.comps
+        return comps.firstOrNull { it.id == prefs.compPick } ?: comps.firstOrNull()
+    }
+
+    /** One button with the competition's name; it opens a sheet to choose, search or manage. */
+    private fun compPicker(c: LinearLayout) {
+        val comp = pickedComp()
+        val b = row().apply {
+            background = Ui.rounded(Ui.CARD, dp(14).toFloat(), Ui.LINE, dp(1))
+            setPadding(dp(12), 0, dp(12), 0)
+            minimumHeight = dp(52)
+            isClickable = true
+            setOnClickListener { compSheet() }
+        }
+        if (comp != null) {
+            b.addView(crest(comp.logo, 26))
+            b.addView(text(comp.name, 15f, bold = true).apply { maxLines = 1 }, lp(0, WRAP, 1f, start = dp(10)))
+        } else {
+            b.addView(text(L.t("pick_comp"), 15f, Ui.MUTED), lp(0, WRAP, 1f))
+        }
+        b.addView(text("▾", 16f, Ui.MUTED))
+        c.addView(b, lp(MATCH, WRAP, top = dp(10)))
+    }
+
+    /** The sheet: search your competitions, pick one, or add / reorder / remove (manage). */
+    private fun compSheet() {
+        val d = android.app.Dialog(this)
+        val box = column(16).apply {
+            background = Ui.rounded(Ui.BG, dp(22).toFloat())
+            layoutDirection = if (L.ar) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
+        }
+        box.addView(text(L.t("comps"), 18f, bold = true))
+        val field = EditText(this).apply {
+            hint = L.t("search_comp_hint")
+            setHintTextColor(Ui.MUTED)
+            setTextColor(Ui.TEXT)
+            textSize = 14f
+            background = Ui.rounded(Ui.CARD, dp(12).toFloat())
+            setPadding(dp(12), dp(10), dp(12), dp(10))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS
+        }
+        box.addView(field, lp(MATCH, WRAP, top = dp(10)))
+        val list = column()
+        val scroll = ScrollView(this).apply { addView(list) }
+        box.addView(scroll, lp(MATCH, dp(300), top = dp(8)))
+        fun fill() {
+            list.removeAllViews()
+            val q = field.text.toString().trim()
+            val comps = prefs.comps.filter { q.isEmpty() || it.name.contains(q, true) }
+            for (t in comps) {
+                val r = row().apply {
+                    minimumHeight = dp(50)
+                    isClickable = true
+                    setOnClickListener {
+                        prefs.compPick = t.id
+                        d.dismiss()
+                        loaded = null
+                        draw()
+                    }
+                }
+                r.addView(crest(t.logo, 26))
+                r.addView(text(t.name, 14f, if (t.id == pickedComp()?.id) Ui.ACCENT else Ui.TEXT, bold = true), lp(0, WRAP, 1f, start = dp(10)))
+                list.addView(r)
+            }
+            if (comps.isEmpty()) list.addView(text(L.t("no_comps"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        }
+        field.addTextChangedListener(object : android.text.TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: android.text.Editable?) = fill()
+        })
+        fill()
+        val actions = row()
+        actions.addView(button(L.t("manage_comps")) {
+            d.dismiss()
+            page = "comps"
+            draw()
+        }, lp(0, WRAP, 1f))
+        actions.addView(button("+  " + L.t("add_comp"), primary = true) {
+            d.dismiss()
+            backTo = null
+            searchQuery = ""
+            page = "search_comp"
+            draw()
+        }, lp(0, WRAP, 1f, start = dp(8)))
+        box.addView(actions, lp(MATCH, WRAP, top = dp(10)))
+        d.setContentView(box)
+        d.window?.let { w ->
+            w.setBackgroundDrawable(android.graphics.drawable.ColorDrawable(0))
+            w.setGravity(Gravity.BOTTOM)
+            w.setLayout(MATCH, WRAP)
+        }
+        d.show()
     }
 
     private var loadingList = false
@@ -508,6 +663,7 @@ class MainActivity : Activity() {
         }
         loadingList = true
         val f = filter
+        val comp = pickedComp()?.id
         io.execute {
             val r = try {
                 when (f) {
@@ -521,6 +677,7 @@ class MainActivity : Activity() {
                             null
                         }
                     }
+                    "comps" -> if (comp == null) emptyList() else Api.compGames(comp)
                     else -> Api.liveNow()
                 }
             } catch (e: Exception) {
@@ -550,30 +707,50 @@ class MainActivity : Activity() {
         val favs = prefs.teams.map { it.id }.toSet()
         val q = query
         val comps = prefs.comps.map { it.id }.toSet()
-        val onlyFollowed = (filter == "live" || filter == "today") && !prefs.allComps && q.isEmpty()
+        val scope = if ((filter == "live" || filter == "today") && q.isEmpty()) prefs.matchScope else "all"
         val list = all
-            .filter { !onlyFollowed || it.compId in comps || it.home.id in favs || it.away.id in favs || it.id in pins }
+            .filter {
+                when (scope) {
+                    "mine" -> it.home.id in favs || it.away.id in favs || it.id in pins
+                    "comps" -> it.compId in comps || it.id in pins
+                    else -> true
+                }
+            }
             .filter { q.isEmpty() || it.home.name.contains(q, true) || it.away.name.contains(q, true) || it.comp.contains(q, true) }
-            .sortedWith(compareBy({ it.id !in pins }, { it.comp }, { it.kickoff }))
-        if (list.isEmpty()) box.addView(text(L.t("no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
-        if (onlyFollowed && list.size < all.size) {
-            box.addView(link(L.f("hidden_n", all.size - list.size)) {
-                prefs.allComps = true
+        if (filter == "comps") {
+            // A league's last round and the next ones, round by round.
+            val rounds = list.groupBy { it.round }.toSortedMap()
+            if (list.isEmpty()) box.addView(text(L.t(if (prefs.comps.isEmpty()) "no_comps" else "no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+            for ((round, games) in rounds) {
+                if (round > 0) box.addView(text(L.f("round_n", round), 12f, Ui.ACCENT, bold = true), lp(MATCH, WRAP, top = dp(14)))
+                for (m in games.sortedBy { it.kickoff }) {
+                    box.addView(matchRow(m, m.id in pins, m.home.id in favs || m.away.id in favs, showDate = true), lp(MATCH, WRAP, top = dp(8)))
+                }
+            }
+            return
+        }
+        val sorted = list.sortedWith(compareBy({ it.id !in pins }, { it.comp }, { it.kickoff }))
+        if (sorted.isEmpty()) {
+            box.addView(text(L.t(if (scope == "mine") "no_matches_mine" else "no_matches"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+        }
+        if (scope != "all" && sorted.size < all.size) {
+            box.addView(link(L.f("hidden_n", all.size - sorted.size)) {
+                prefs.matchScope = "all"
                 draw()
             }, lp(WRAP, WRAP, top = dp(4)))
         }
         var lastComp = ""
-        for (m in list.take(60)) {
+        for (m in sorted.take(60)) {
             if (m.comp != lastComp) {
                 lastComp = m.comp
                 box.addView(text(m.comp, 12f, Ui.ACCENT, bold = true), lp(MATCH, WRAP, top = dp(14)))
             }
             box.addView(matchRow(m, m.id in pins, m.home.id in favs || m.away.id in favs), lp(MATCH, WRAP, top = dp(8)))
         }
-        if (list.size > 60) box.addView(text(L.f("more_n", list.size - 60), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        if (sorted.size > 60) box.addView(text(L.f("more_n", sorted.size - 60), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
     }
 
-    private fun matchRow(m: Match, pinned: Boolean, mine: Boolean): View {
+    private fun matchRow(m: Match, pinned: Boolean, mine: Boolean, showDate: Boolean = false): View {
         val r = row().apply {
             background = if (pinned) Ui.rounded(Ui.CARD, dp(16).toFloat(), Ui.ACCENT, dp(2)) else Ui.rounded(Ui.CARD, dp(16).toFloat())
             setPadding(dp(14), dp(12), dp(14), dp(12))
@@ -602,7 +779,7 @@ class MainActivity : Activity() {
         r.addView(teams, lp(0, WRAP, 1f))
         val side = column().apply { gravity = Gravity.CENTER_HORIZONTAL }
         val clock = when (m.state) {
-            Api.PRE -> android.text.format.DateFormat.format("h:mm a", m.kickoff).toString()
+            Api.PRE -> android.text.format.DateFormat.format(if (showDate) "EEE d/M\nh:mm a" else "h:mm a", m.kickoff).toString()
             Api.POST -> L.t("ft")
             else -> if (m.clock == Api.HALF_TIME) L.t("half_time") else m.clock
         }
@@ -763,11 +940,6 @@ class MainActivity : Activity() {
             draw()
         })
         n.addView(divider())
-        n.addView(navRow(L.t("comps"), "${prefs.comps.size}") {
-            page = "comps"
-            draw()
-        })
-        n.addView(divider())
         n.addView(toggleRow(L.t("over_full"), null, prefs.overFullscreen) {
             prefs.overFullscreen = it
             LiveService.start(this, LiveService.ACTION_REFRESH)
@@ -781,7 +953,15 @@ class MainActivity : Activity() {
         n.addView(toggleRow(L.t("idle"), L.t("idle_d"), prefs.idleNotch) {
             prefs.idleNotch = it
             LiveService.start(this, LiveService.ACTION_REFRESH)
+            draw()
         })
+        if (prefs.idleNotch) {
+            n.addView(divider())
+            n.addView(navRow(L.t("slots"), L.f("slots_n", Shortcuts.load(this).count { it != null })) {
+                page = "slots"
+                draw()
+            })
+        }
         n.addView(divider())
         n.addView(toggleRow(L.t("circle"), L.t("circle_d"), prefs.circle) { prefs.circle = it })
         c.addView(n, lp(MATCH, WRAP, top = dp(8)))
@@ -812,33 +992,6 @@ class MainActivity : Activity() {
         a.addView(divider())
         a.addView(toggleRow(L.t("cards"), L.t("cards_d"), prefs.cards) { prefs.cards = it })
         c.addView(a, lp(MATCH, WRAP, top = dp(8)))
-
-        val ph = row()
-        ph.addView(label(L.t("phone")))
-        ph.addView(text(L.t("beta"), 10f, Ui.BLUE, bold = true).apply {
-            background = Ui.rounded(Ui.BLUE_SOFT, dp(6).toFloat())
-            setPadding(dp(6), dp(2), dp(6), dp(2))
-        }, lp(WRAP, WRAP, start = dp(8)))
-        c.addView(ph, lp(MATCH, WRAP, top = dp(16)))
-        val p = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(12)) }
-        p.addView(toggleRow(L.t("phone_on"), null, prefs.phone) {
-            prefs.phone = it
-            if (it && !listenerGranted()) {
-                toast(L.t("phone_perm"))
-                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-            }
-            draw()
-        })
-        if (prefs.phone) {
-            p.addView(divider())
-            p.addView(navRow(L.t("phone_apps"), L.f("phone_apps_n", prefs.phoneApps.size)) { pickApps(prefs.phoneApps) { prefs.phoneApps = it } })
-            p.addView(divider())
-            p.addView(toggleRow(L.t("phone_hide"), null, prefs.phoneHide) { prefs.phoneHide = it })
-            p.addView(divider())
-            p.addView(toggleRow(L.t("phone_full"), null, prefs.phoneFullOnly) { prefs.phoneFullOnly = it })
-        }
-        p.addView(text(L.t("phone_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(4)))
-        c.addView(p, lp(MATCH, WRAP, top = dp(8)))
 
         // Beta: the notification inspector (gets 1.6 ready: rides, maps, timers in the notch).
         val ih = row()
@@ -952,7 +1105,7 @@ class MainActivity : Activity() {
 
     private fun goBack() {
         val p = page
-        page = if (p != null && p.startsWith("search")) backTo else null
+        page = if (p != null && (p.startsWith("search") || p == "slot_pick")) backTo else null
         if (p != null && p.startsWith("search")) {
             main.removeCallbacks(searchRun)
             searchBox = null
@@ -999,7 +1152,7 @@ class MainActivity : Activity() {
         c.addView(k, lp(MATCH, WRAP, top = dp(12)))
 
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
-        val demos = listOf("goal" to "d_goal", "red" to "d_red", "whistle" to "d_whistle", "lineups" to "d_lineups", "against" to "d_against", "news" to "d_news")
+        val demos = listOf("goal" to "d_goal", "red" to "d_red", "whistle" to "d_whistle", "lineups" to "d_lineups", "against" to "d_against", "news" to "d_news", "info" to "d_info", "grid" to "d_grid", "none" to "d_none")
         for (rowItems in demos.chunked(3)) {
             val r = row()
             rowItems.forEachIndexed { i, (kind, key) ->
@@ -1245,6 +1398,159 @@ class MainActivity : Activity() {
         return r
     }
 
+    /* ----- sub-pages: the always-on notch's shortcut slots ----- */
+
+    /** Which slot the picker fills. */
+    private var pickIndex = 0
+    private var pickType = "action"
+
+    private fun slotsPage(c: LinearLayout) {
+        backRow(c, L.t("slots"))
+        c.addView(text(L.t("slots_note"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+        val slots = Shortcuts.load(this)
+        for (chunk in (0 until Shortcuts.SLOTS).chunked(4)) {
+            val r = row()
+            chunk.forEachIndexed { k, i ->
+                val s = slots[i]
+                val cell = column().apply {
+                    gravity = Gravity.CENTER_HORIZONTAL
+                    background = Ui.rounded(Ui.CARD, dp(16).toFloat())
+                    setPadding(dp(4), dp(10), dp(4), dp(10))
+                    isClickable = true
+                    setOnClickListener {
+                        pickIndex = i
+                        backTo = "slots"
+                        page = "slot_pick"
+                        draw()
+                    }
+                }
+                cell.addView(slotIcon(s), lp(dp(32), dp(32)))
+                cell.addView(text(s?.let { Shortcuts.label(this, it) } ?: "+", 11f, if (s == null) Ui.MUTED else Ui.TEXT).apply {
+                    gravity = Gravity.CENTER
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
+                }, lp(MATCH, WRAP, top = dp(6)))
+                r.addView(cell, lp(0, WRAP, 1f, start = if (k > 0) dp(8) else 0))
+            }
+            c.addView(r, lp(MATCH, WRAP, top = dp(10)))
+        }
+    }
+
+    /** A slot's picture: the app icon, the site icon, or the action's symbol. */
+    private fun slotIcon(s: Slot?): View {
+        if (s == null) return text("+", 22f, Ui.MUTED).apply { gravity = Gravity.CENTER }
+        if (s.type == "action") return text(Shortcuts.glyph(s.value), 20f).apply { gravity = Gravity.CENTER }
+        val iv = android.widget.ImageView(this).apply { scaleType = android.widget.ImageView.ScaleType.FIT_CENTER }
+        val bm = Shortcuts.icon(this, s) { Shortcuts.icon(this, s) {}?.let { iv.setImageBitmap(it) } }
+        if (bm != null) iv.setImageBitmap(bm)
+        return iv
+    }
+
+    /** Fills one slot: a built-in shortcut, an app, or a link. Also removes it. */
+    private fun slotPickPage(c: LinearLayout) {
+        backRow(c, L.f("slot_n", pickIndex + 1))
+        val current = Shortcuts.load(this).getOrNull(pickIndex)
+        val done = { s: Slot? ->
+            Shortcuts.set(this, pickIndex, s)
+            toast(L.t(if (s == null) "slot_removed" else "slot_saved"))
+            goBack()
+        }
+        if (current != null) {
+            val r = row().apply {
+                background = Ui.rounded(Ui.CARD, dp(14).toFloat())
+                setPadding(dp(12), dp(8), dp(8), dp(8))
+            }
+            r.addView(slotIcon(current), lp(dp(28), dp(28)))
+            r.addView(text(Shortcuts.label(this, current), 14f, bold = true), lp(0, WRAP, 1f, start = dp(10)))
+            r.addView(link(L.t("remove")) { done(null) }.apply { setTextColor(Ui.RED) })
+            c.addView(r, lp(MATCH, WRAP, top = dp(10)))
+        }
+        c.addView(segmented(listOf("action" to "slot_action", "app" to "slot_app", "link" to "slot_link"), pickType) {
+            pickType = it
+            draw()
+        }, lp(MATCH, WRAP, top = dp(14)))
+        val list = column()
+        c.addView(list, lp(MATCH, WRAP, top = dp(8)))
+        fun choice(icon: View, title: String, sub: String?, onClick: () -> Unit) {
+            val r = row().apply {
+                minimumHeight = dp(54)
+                isClickable = true
+                setOnClickListener { onClick() }
+            }
+            r.addView(icon, lp(dp(30), dp(30)))
+            val t = column()
+            t.addView(text(title, 14f, bold = true))
+            if (sub != null) t.addView(text(sub, 11f, Ui.MUTED))
+            r.addView(t, lp(0, WRAP, 1f, start = dp(12)))
+            list.addView(r)
+        }
+        when (pickType) {
+            "action" -> for (a in Shortcuts.ACTIONS) {
+                val sub = when {
+                    Shortcuts.needsAccessibility(a) && TapService.instance == null -> L.t("sc_need_access")
+                    else -> L.t("scd_$a").takeIf { it != "scd_$a" }
+                }
+                choice(text(Shortcuts.glyph(a), 20f).apply { gravity = Gravity.CENTER }, L.t("sc_$a"), sub) { done(Slot("action", a, "")) }
+            }
+            "app" -> {
+                val field = EditText(this).apply {
+                    hint = L.t("search_app")
+                    setHintTextColor(Ui.MUTED)
+                    setTextColor(Ui.TEXT)
+                    background = Ui.rounded(Ui.CARD, dp(12).toFloat())
+                    setPadding(dp(12), dp(10), dp(12), dp(10))
+                    inputType = InputType.TYPE_CLASS_TEXT
+                }
+                c.addView(field, c.indexOfChild(list), lp(MATCH, WRAP, top = dp(8)))
+                val pm = packageManager
+                val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
+                    .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
+                    .filter { it.first != packageName }
+                    .distinctBy { it.first }
+                    .sortedBy { it.second.lowercase() }
+                fun fill() {
+                    list.removeAllViews()
+                    val q = field.text.toString().trim()
+                    for ((pkg, name) in apps.filter { q.isEmpty() || it.second.contains(q, true) }.take(80)) {
+                        val iv = android.widget.ImageView(this).apply { Shortcuts.appIcon(this@MainActivity, pkg)?.let { setImageBitmap(it) } }
+                        choice(iv, name, null) { done(Slot("app", pkg, name)) }
+                    }
+                }
+                field.addTextChangedListener(object : android.text.TextWatcher {
+                    override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+                    override fun afterTextChanged(s: android.text.Editable?) = fill()
+                })
+                fill()
+            }
+            else -> {
+                fun input(hintKey: String, type: Int) = EditText(this).apply {
+                    hint = L.t(hintKey)
+                    setHintTextColor(Ui.MUTED)
+                    setTextColor(Ui.TEXT)
+                    background = Ui.rounded(Ui.CARD, dp(12).toFloat())
+                    setPadding(dp(12), dp(12), dp(12), dp(12))
+                    inputType = type
+                }
+                val url = input("link_hint", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI)
+                val name = input("link_name", InputType.TYPE_CLASS_TEXT)
+                list.addView(url, lp(MATCH, WRAP))
+                list.addView(name, lp(MATCH, WRAP, top = dp(8)))
+                list.addView(button(L.t("save"), primary = true) {
+                    val u = url.text.toString().trim()
+                    if (u.length < 4 || !u.contains('.')) {
+                        toast(L.t("link_bad"))
+                        return@button
+                    }
+                    val full = Shortcuts.fixLink(u)
+                    val label = name.text.toString().trim().ifBlank { Uri.parse(full).host?.removePrefix("www.") ?: u }
+                    done(Slot("link", full, label))
+                }, lp(MATCH, WRAP, top = dp(12)))
+                list.addView(text(L.t("link_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+            }
+        }
+    }
+
     /* ----- sub-page: sounds ----- */
 
     private fun soundsPage(c: LinearLayout) {
@@ -1478,6 +1784,14 @@ class MainActivity : Activity() {
                     draw()
                 })
                 c.addView(ck, lp(MATCH, WRAP, top = dp(8)))
+                c.addView(link(L.t("skip_football")) {
+                    // Not into football: no teams, no competitions; the notch is just shortcuts.
+                    prefs.teams = emptyList()
+                    prefs.comps = emptyList()
+                    prefs.idleNotch = true
+                    step++
+                    drawOnboarding()
+                }.apply { setTextColor(Ui.MUTED) }, lp(WRAP, WRAP, top = dp(8)))
             }
             1 -> action = { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
             2 -> {

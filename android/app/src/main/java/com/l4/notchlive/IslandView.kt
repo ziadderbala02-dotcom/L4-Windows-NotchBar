@@ -34,6 +34,9 @@ class Burst(
     val icon: android.graphics.Bitmap? = null,
     /** menu: the rows. */
     val items: List<String> = emptyList(),
+    /** shortcuts: one icon per slot (null = a glyph from [glyphs], or an empty slot). */
+    val icons: List<android.graphics.Bitmap?> = emptyList(),
+    val glyphs: List<String> = emptyList(),
     /** A goal in a pinned match with no favourite: a quiet celebration in the team colour. */
     val neutral: Boolean = false,
 ) {
@@ -62,6 +65,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         fun pull(down: Boolean)
         fun longPress()
         fun menuPick(index: Int)
+        /** Long press on a shortcut slot (to change or remove it). */
+        fun slotLongPress(index: Int) {}
     }
 
     /** Saver mode: no endless breathing animations (bursts still animate). */
@@ -96,6 +101,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var others = 0
     /** No live match: the always-on capsule (next match or last result), drawn dimmer. */
     var idle = false
+    /** Screen recording since this time (0 = not recording): a red dot and a timer. */
+    var recSince = 0L
+    /** Quick stats for the tap view (possession, shots, on target), when they've arrived. */
+    var infoStats: List<Stat>? = null
 
     /** 0 = compact, 1 = big (animated). */
     var t = 0f
@@ -227,6 +236,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     /** Pill extent from the camera centre: (left, right). */
     fun compactExtent(): Pair<Float, Float> {
         if (tucked) return 0f to 0f
+        if (recSince > 0) {
+            sizes()
+            return gap() + 10 * d + minute.measureText("00:00") + 12 * d to gap() + 8 * d
+        }
+        // The always-on capsule: just a ring round the camera and a grey dot.
+        if (idle) return gap() + 2 * d to gap() + 14 * d
         return leftWidth(leftLevel()) to rightWidth(rightLevel())
     }
 
@@ -274,7 +289,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     fun bigHeight(): Int = when {
-        info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + 6 * d).toInt()
+        info && burst == null -> (top() + 40 * d + infoLines() * 15 * d + statsHeight() + 6 * d).toInt()
+        burst?.kind == "shortcuts" -> (top() + 6 * d + 2 * SLOT_ROW * d + (if (burst?.sub.isNullOrBlank()) 0f else 40 * d) + 8 * d).toInt()
         burst?.kind == "news" || burst?.kind == "phone" ->
             (top() + 22 * d + max(1, newsLines(burst!!).size) * 16 * d + 8 * d).toInt()
         burst?.kind == "menu" -> (top() + (burst?.items?.size ?: 3) * MENU_ROW * d + 8 * d).toInt()
@@ -283,6 +299,24 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     private val MENU_ROW = 40f
+    private val SLOT_ROW = 64f
+
+    private fun statsRows() = infoStats?.take(3).orEmpty()
+    private fun statsHeight() = if (statsRows().isEmpty()) 0f else 12 * d + statsRows().size * 28 * d
+
+    /** Which shortcut slot (0..7) is at view point (x, y), -1 for none; 100 = the next-match line. */
+    private fun slotAt(x: Float, y: Float): Int {
+        val bw = bigWidth(resources.displayMetrics.widthPixels).toFloat()
+        val l = camX - bw / 2 + 14 * d
+        val cw = (bw - 28 * d) / 4
+        val y0 = top() + 6 * d
+        val row = ((y - y0) / (SLOT_ROW * d)).toInt()
+        if (y >= y0 + 2 * SLOT_ROW * d) return if (burst?.sub.isNullOrBlank()) -1 else 100
+        if (y < y0 || row !in 0..1) return -1
+        val col = ((x - l) / cw).toInt()
+        if (col !in 0..3) return -1
+        return row * 4 + col
+    }
 
     /* ---------- touch: tap / swipe ---------- */
 
@@ -292,11 +326,19 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     @SuppressLint("ClickableViewAccessibility")
     private var pressed = false
     private var longDone = false
+    private var downLX = 0f
+    private var downLY = 0f
+
     private val longPress = Runnable {
         if (pressed) {
             longDone = true
             performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-            gestures.longPress()
+            if (burst?.kind == "shortcuts" && t > 0.9f) {
+                val i = slotAt(downLX, downLY)
+                if (i in 0..7) gestures.slotLongPress(i)
+            } else {
+                gestures.longPress()
+            }
         }
     }
 
@@ -304,6 +346,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val dpx = resources.displayMetrics.density
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                downLX = e.x
+                downLY = e.y
                 downX = e.rawX
                 downY = e.rawY
                 pressed = true
@@ -328,7 +372,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                     abs(dy) > far && abs(dy) > abs(dx) -> gestures.pull(dy > 0)
                     abs(dx) < 12 * dpx && abs(dy) < 12 * dpx -> {
                         val b = burst
-                        if (b?.kind == "menu" && t > 0.9f) {
+                        if (b?.kind == "shortcuts" && t > 0.9f) {
+                            val i = slotAt(e.x, e.y)
+                            if (i >= 0) gestures.menuPick(i) else gestures.tap()
+                        } else if (b?.kind == "menu" && t > 0.9f) {
                             val i = ((e.y - top() - 4 * d) / (MENU_ROW * d)).toInt()
                             if (i in b.items.indices) gestures.menuPick(i) else gestures.tap()
                         } else {
@@ -351,6 +398,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
 
     override fun onDraw(c: Canvas) {
         sizes()
+        if (recSince > 0 && burst == null && !info) {
+            drawRec(c)
+            return
+        }
+        if (idle && burst == null && !info && t == 0f) {
+            drawIdle(c)
+            return
+        }
         if (tucked && burst == null && !info) {
             drawTuck(c)
             return
@@ -401,6 +456,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (bigAlpha > 0f) {
             if (b?.kind == "menu") drawMenu(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b?.kind == "stats") drawStats(c, m, b, camX - bw / 2, camX + bw / 2, bigAlpha)
+            else if (b?.kind == "shortcuts") drawShortcuts(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
             else if (info) drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
         }
@@ -436,6 +492,86 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (breathe && !calm) postInvalidateDelayed(50)
     }
 
+    /** Always-on, nothing on: a black ring round the camera and a small grey dot. */
+    private fun drawIdle(c: Canvas) {
+        val ch = compactHeight().toFloat()
+        val (lw, rw) = compactExtent()
+        rect.set(camX - lw, 0f, camX + rw, ch)
+        c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+        dot.color = 0xFF6B7280.toInt()
+        dot.alpha = 255
+        c.drawCircle(camX + gap() + 6 * d, ch / 2, 2.5f * d, dot)
+    }
+
+    /** Recording the screen: a red dot breathing and the time. */
+    private fun drawRec(c: Canvas) {
+        val ch = compactHeight().toFloat()
+        val (lw, rw) = compactExtent()
+        rect.set(camX - lw, 0f, camX + rw, ch)
+        c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+        val secs = ((System.currentTimeMillis() - recSince) / 1000).toInt()
+        val label = String.format(java.util.Locale.US, "%02d:%02d", secs / 60, secs % 60)
+        minute.color = Color.WHITE
+        minute.alpha = 255
+        val x = camX - gap() - minute.measureText(label)
+        c.drawText(label, x, baseline(minute, ch / 2), minute)
+        dot.color = 0xFFEF4444.toInt()
+        dot.alpha = (255 * (0.5f + 0.5f * abs(sin(System.currentTimeMillis() / 400.0)).toFloat())).toInt()
+        c.drawCircle(x - 8 * d, ch / 2, 3.5f * d, dot)
+        postInvalidateDelayed(100)
+    }
+
+    /** The shortcut grid: 8 slots (empty ones show "+"), then the next match. */
+    private fun drawShortcuts(c: Canvas, b: Burst, l: Float, r: Float, alpha: Float) {
+        val a = (alpha * 255).toInt()
+        val left = l + 14 * d
+        val cw = (r - l - 28 * d) / 4
+        val y0 = top() + 6 * d
+        val icon = 40 * d
+        val oldTitle = title.textSize
+        for (i in 0 until 8) {
+            val cx = left + cw * (i % 4) + cw / 2
+            val cy = y0 + (i / 4) * SLOT_ROW * d + icon / 2
+            val label = b.items.getOrNull(i).orEmpty()
+            dot.color = if (label.isEmpty()) 0xFF15171E.toInt() else 0xFF1C1F28.toInt()
+            dot.alpha = a
+            rect.set(cx - icon / 2, cy - icon / 2, cx + icon / 2, cy + icon / 2)
+            c.drawRoundRect(rect, 13 * d, 13 * d, dot)
+            val bm = b.icons.getOrNull(i)
+            if (bm != null) {
+                bmp.alpha = a
+                rect.inset(8 * d, 8 * d)
+                c.drawBitmap(bm, null, rect, bmp)
+            } else {
+                val g = if (label.isEmpty()) "+" else b.glyphs.getOrNull(i).orEmpty()
+                title.textSize = (if (label.isEmpty()) 20f else 18f) * d
+                title.color = if (label.isEmpty()) 0xFF71717A.toInt() else Color.WHITE
+                title.alpha = a
+                c.drawText(g, cx, baseline(title, cy), title)
+            }
+            if (label.isNotEmpty()) {
+                sub.textSize = 9.5f * d
+                sub.alpha = a
+                c.drawText(TextUtils.ellipsize(label, sub, cw - 4 * d, TextUtils.TruncateAt.END).toString(), cx, cy + icon / 2 + 4 * d - sub.ascent(), sub)
+                sub.textSize = 12f * d
+            }
+        }
+        title.textSize = oldTitle
+        if (b.sub.isNotBlank()) {
+            val y = y0 + 2 * SLOT_ROW * d + 4 * d
+            dot.color = 0xFF15171E.toInt()
+            dot.alpha = a
+            rect.set(left, y, r - 14 * d, y + 30 * d)
+            c.drawRoundRect(rect, 12 * d, 12 * d, dot)
+            line.color = Color.WHITE
+            line.alpha = a
+            line.textAlign = Paint.Align.CENTER
+            c.drawText(TextUtils.ellipsize(b.sub, line, r - l - 48 * d, TextUtils.TruncateAt.END).toString(), (l + r) / 2, baseline(line, y + 15 * d), line)
+            line.textAlign = Paint.Align.LEFT
+            line.color = 0xFFC8C8C8.toInt()
+        }
+    }
+
     private fun drawTuck(c: Canvas) {
         val ch = compactHeight().toFloat()
         val m = match
@@ -468,6 +604,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun baseline(p: Paint, cy: Float) = cy - (p.descent() + p.ascent()) / 2
 
     private fun drawCompact(c: Canvas, m: Match, ch: Float, alpha: Float) {
+        if (idle || recSince > 0) {
+            // The always-on ring (or the recording pill) while it shrinks back: just the grey dot.
+            dot.color = 0xFF6B7280.toInt()
+            dot.alpha = (alpha * 255).toInt()
+            c.drawCircle(camX + gap() + 6 * d, ch / 2, 2.5f * d, dot)
+            return
+        }
         val a = (alpha * (if (idle) 0.85f else 1f) * 255).toInt()
         val al = a / 255f
         val lk = leftLevel()
@@ -814,6 +957,38 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             }
         }
         line.textAlign = Paint.Align.LEFT
+
+        // Quick stats: the numbers each side, the name in the middle, a bar in the teams' colours.
+        val rows = statsRows()
+        if (rows.isEmpty()) return
+        var y = top + 40 * d + infoLines() * 15 * d + 4 * d
+        stroke.color = 0xFF26282F.toInt()
+        stroke.strokeWidth = 1 * d
+        stroke.alpha = a
+        c.drawLine(left, y, right, y, stroke)
+        y += 8 * d
+        for (row in rows) {
+            name.alpha = a
+            name.textAlign = Paint.Align.LEFT
+            c.drawText(row.home, left, y + 11 * d, name)
+            name.textAlign = Paint.Align.RIGHT
+            c.drawText(row.away, right, y + 11 * d, name)
+            name.textAlign = Paint.Align.LEFT
+            line.alpha = a
+            line.textAlign = Paint.Align.CENTER
+            c.drawText(TextUtils.ellipsize(row.name, line, (right - left) * 0.6f, TextUtils.TruncateAt.END).toString(), (left + right) / 2, y + 11 * d, line)
+            line.textAlign = Paint.Align.LEFT
+            val split = left + (right - left) * row.homeShare.coerceIn(0.03f, 0.97f)
+            dot.color = m.home.color
+            dot.alpha = a
+            rect.set(left, y + 15 * d, split - 1.5f * d, y + 19 * d)
+            c.drawRoundRect(rect, 2 * d, 2 * d, dot)
+            dot.color = m.away.color
+            dot.alpha = a
+            rect.set(split + 1.5f * d, y + 15 * d, right, y + 19 * d)
+            c.drawRoundRect(rect, 2 * d, 2 * d, dot)
+            y += 28 * d
+        }
     }
 
     /** The long-press menu: one row per action, tapped by position. */
