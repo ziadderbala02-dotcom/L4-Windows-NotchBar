@@ -1009,7 +1009,22 @@ class MainActivity : Activity() {
             })
         }
         n.addView(divider())
-        n.addView(toggleRow(L.t("circle"), L.t("circle_d"), prefs.circle) { prefs.circle = it })
+        // Why it's a circle right now (so a stuck circle explains itself), and the apps it learned from swipes.
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val why = SystemPill.reason(this, am, am.mode == android.media.AudioManager.MODE_IN_CALL || am.mode == android.media.AudioManager.MODE_IN_COMMUNICATION)
+        val learned = prefs.learnedPill
+        val circleNote = L.t("circle_d") + "\n" + (if (why.isEmpty()) L.t("why_none") else L.f("why_now", why)) +
+            (if (learned.isNotEmpty()) "\n" + L.f("why_list", learned.joinToString("، ") { SystemPill.label(this, it) }) else "")
+        n.addView(toggleRow(L.t("circle"), circleNote, prefs.circle) { prefs.circle = it })
+        if (learned.isNotEmpty()) {
+            n.addView(navRow(L.t("forget_learned"), "") {
+                prefs.learnedPill = emptySet()
+                prefs.pillVotes = emptyMap()
+                toast(L.t("forgot_learned"))
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                draw()
+            })
+        }
         n.addView(divider())
         n.addView(toggleRow(L.t("big_events"), L.t("big_events_d"), prefs.bigEvents) {
             prefs.bigEvents = it

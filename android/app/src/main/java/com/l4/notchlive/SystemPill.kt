@@ -106,10 +106,37 @@ object SystemPill {
             mediaAt = now
             mediaCache = mediaPlaying(ctx)
         }
-        if (mediaCache || ongoing.isNotEmpty()) return true
+        return reason(ctx, audio, inCall).isNotEmpty()
+    }
+
+    /**
+     * Why the notch is a circle right now ("" when it isn't), shown in Settings so a stuck circle
+     * explains itself. A media session or a learned app only counts while sound is really playing:
+     * a browser that says "playing" for a muted video (Twitter's feed) kept the circle after 1.7.
+     */
+    fun reason(ctx: Context, audio: AudioManager, inCall: Boolean): String {
+        if (!pillOn(ctx)) return ""
+        val now = System.currentTimeMillis()
+        if (inCall) return L.t("why_call")
+        if (now < chargingUntil) return L.t("why_charge")
+        val sound = audio.isMusicActive
+        if (!listenerOn(ctx)) return if (sound) L.t("why_sound") else ""
+        if (now - mediaAt > 2_000L) {
+            mediaAt = now
+            mediaCache = mediaPlaying(ctx)
+        }
+        if (mediaCache && sound) return L.t("why_music")
+        ongoing.firstOrNull()?.let { return L.f("why_app", label(ctx, it)) }
         // Apps the user taught us: they swiped the notch away twice while it was there.
         val learned = Prefs(ctx).learnedPill
-        return learned.isNotEmpty() && allOngoing.keys.any { it in learned }
+        if (sound) allOngoing.keys.firstOrNull { it in learned }?.let { return L.f("why_learned", label(ctx, it)) }
+        return ""
+    }
+
+    fun label(ctx: Context, pkg: String): String = try {
+        ctx.packageManager.getApplicationLabel(ctx.packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (e: Exception) {
+        pkg
     }
 
     /** The user swiped the notch away: whatever ongoing app wasn't known gets a point; two make it known. */
