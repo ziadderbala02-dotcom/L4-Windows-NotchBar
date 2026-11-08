@@ -43,6 +43,8 @@ class NotifListener : NotificationListenerService() {
             }
             SystemPill.allOngoing = ongoing
             SystemPill.ongoing = pill
+            Activities.scan(this, all)
+            LiveService.instance?.activitiesChanged()
         } catch (e: Exception) {
             // Listener not ready.
         }

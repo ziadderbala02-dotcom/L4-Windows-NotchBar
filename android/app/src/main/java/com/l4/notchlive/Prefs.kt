@@ -188,6 +188,31 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("bigEvents", false)
         set(v) = p.edit().putBoolean("bigEvents", v).apply()
 
+    /** Live activities from other apps (rides, deliveries, timers, music…). On by default. */
+    var liveActs: Boolean
+        get() = p.getBoolean("liveActs", true)
+        set(v) = p.edit().putBoolean("liveActs", v).apply()
+
+    /** The apps whose trips / orders show in the notch (ride and delivery apps by default). */
+    var liveApps: Set<String>
+        get() = p.getStringSet("liveApps", Activities.SUGGESTED.toSet()) ?: Activities.SUGGESTED.toSet()
+        set(v) = p.edit().putStringSet("liveApps", v).apply()
+
+    /** Calls, timers and charging in the notch, on phones without a pill of their own. */
+    var liveSystem: Boolean
+        get() = p.getBoolean("liveSystem", true)
+        set(v) = p.edit().putBoolean("liveSystem", v).apply()
+
+    /** The song playing, on phones without a pill of their own. */
+    var liveMedia: Boolean
+        get() = p.getBoolean("liveMedia", true)
+        set(v) = p.edit().putBoolean("liveMedia", v).apply()
+
+    /** Does this phone have its own pill round the camera: "auto" (by brand), "yes" or "no". */
+    var pillMode: String
+        get() = p.getString("pillMode", "auto") ?: "auto"
+        set(v) = p.edit().putString("pillMode", v).apply()
+
     /** Size (height and text) of the always-on notch, percent (50..150), apart from the match notch. */
     var idleScale: Int
         get() = p.getInt("idleScale", 90)

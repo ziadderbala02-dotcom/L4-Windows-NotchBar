@@ -253,6 +253,17 @@ class MainActivity : Activity() {
         box.removeAllViews()
         val (now, known) = LiveService.instance?.snapshot() ?: (null to emptyList())
 
+        // Taps on the notch need the accessibility service; phones sometimes turn it off
+        // (switching to Xiaomi's Second Space, a battery cleaner…).
+        if (TapService.instance == null) {
+            val w = card(14).apply { background = Ui.rounded(Ui.AMBER_SOFT, dp(18).toFloat(), Ui.AMBER, dp(1)) }
+            w.addView(text(L.t("access_off"), 14f, Ui.AMBER, bold = true))
+            w.addView(text(L.t("access_off_d"), 12f, Ui.TEXT), lp(MATCH, WRAP, top = dp(4)))
+            w.addView(button(L.t("access_fix"), primary = true) { openAccessibility() }, lp(MATCH, WRAP, top = dp(10)))
+            box.addView(w, lp(MATCH, WRAP))
+            box.addView(View(this), lp(MATCH, dp(12)))
+        }
+
         // In the notch now.
         val live = card()
         val top = row()
@@ -1004,6 +1015,38 @@ class MainActivity : Activity() {
             LiveService.start(this, LiveService.ACTION_REFRESH)
         })
         c.addView(n, lp(MATCH, WRAP, top = dp(8)))
+
+        // Live activities: rides, deliveries and (without the phone's own pill) calls, timers, music.
+        c.addView(label(L.t("live_acts")), lp(MATCH, WRAP, top = dp(16)))
+        val la = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(12)) }
+        la.addView(toggleRow(L.t("live_acts_on"), L.t("live_acts_d"), prefs.liveActs) {
+            prefs.liveActs = it
+            if (it && !listenerGranted()) {
+                toast(L.t("phone_perm"))
+                startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+            }
+            draw()
+        })
+        if (prefs.liveActs) {
+            la.addView(divider())
+            la.addView(navRow(L.t("live_apps"), L.f("phone_apps_n", prefs.liveApps.size)) {
+                pickApps(prefs.liveApps, Activities.SUGGESTED) { prefs.liveApps = it }
+            })
+            val pill = SystemPill.pillOn(this)
+            la.addView(divider())
+            la.addView(toggleRow(L.t("live_system"), if (pill) L.t("live_has_pill") else L.t("live_system_d"), prefs.liveSystem) { prefs.liveSystem = it })
+            la.addView(divider())
+            la.addView(toggleRow(L.t("live_media"), if (pill) L.t("live_has_pill") else null, prefs.liveMedia) { prefs.liveMedia = it })
+            la.addView(divider())
+            la.addView(text(L.t("pill_mode"), 13f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+            la.addView(segmented(listOf("auto" to "pill_auto", "yes" to "pill_yes", "no" to "pill_no"), prefs.pillMode) {
+                prefs.pillMode = it
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                draw()
+            }, lp(MATCH, WRAP, top = dp(6)))
+            la.addView(text(L.t("pill_mode_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
+        }
+        c.addView(la, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("alerts")), lp(MATCH, WRAP, top = dp(16)))
         val a = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
@@ -1818,13 +1861,13 @@ class MainActivity : Activity() {
         startActivity(Intent.createChooser(send, L.t("inspector_share")))
     }
 
-    private fun pickApps(current: Set<String>, save: (Set<String>) -> Unit) {
+    private fun pickApps(current: Set<String>, first: List<String> = emptyList(), save: (Set<String>) -> Unit) {
         val pm = packageManager
         val apps = pm.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)
             .map { it.activityInfo.packageName to it.loadLabel(pm).toString() }
             .filter { it.first != packageName }
             .distinctBy { it.first }
-            .sortedBy { it.second.lowercase() }
+            .sortedWith(compareBy({ if (it.first in first) 0 else 1 }, { it.second.lowercase() }))
         val chosen = current.toMutableSet()
         val checked = BooleanArray(apps.size) { apps[it].first in chosen }
         AlertDialog.Builder(this)

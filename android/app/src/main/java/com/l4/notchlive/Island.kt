@@ -121,7 +121,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         match: Match?, clock: String, added: String, burst: Burst?, info: Boolean, tucked: Boolean, circle: Boolean,
         others: Int = 0, idle: Boolean = false, stats: List<Stat>? = null, rec: Long = 0L,
         idleText: String = "", idleTemp: String = "", weather: String = "", weatherUntil: Long = 0L, weatherAlways: Boolean = false,
-        weatherGlyph: String = "", weatherWord: String = "",
+        weatherGlyph: String = "", weatherWord: String = "", act: Live? = null, actIcon: android.graphics.Bitmap? = null,
+        ringAct: Live? = null,
     ) {
         if (match == null) {
             hide()
@@ -130,6 +131,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val v = view ?: attach() ?: return
         v.others = others
         v.idle = idle
+        val actGrew = v.act?.right != act?.right || v.act?.big != act?.big || (v.act == null) != (act == null)
+        v.act = act
+        val ringGrew = (v.ringAct == null) != (ringAct == null) || (v.match?.id ?: -1) != match.id
+        v.ringAct = ringAct
+        if (ringGrew && !big) post { layout() }
+        v.actIcon = actIcon
+        if (actGrew && !big) layout()
         v.idleK = prefs.idleSize / 100f
         v.inlineEvents = !prefs.bigEvents
         val grew = v.idleText != idleText || v.idleTemp != idleTemp
@@ -293,6 +301,11 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
     }
 
     /** Size and place the window for the current mode; tells the view where the camera is. */
+    /** The last tap landed on the ride's circle (the left one). */
+    fun tapOnRide(): Boolean = view?.let { it.ringAct != null && it.touchX < it.compactHeight() } ?: false
+
+    private fun post(f: () -> Unit) = view?.post(f)
+
     private fun layout() {
         val v = view ?: return
         val p = lp ?: return
@@ -316,7 +329,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             v.camX = g.cx - x
         } else if (v.circle) {
             // Left of the phone's own pill, in the gap after the clock (its right end can reach the icons).
-            width = ch
+            // A ride gets its own circle there, with the match's next to it.
+            width = v.circleWidth()
             height = ch
             x = (g.screenW * LEFT_EDGE + 2 * density).toInt()
             v.camX = g.cx - x

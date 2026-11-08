@@ -50,12 +50,24 @@ object SystemPill {
             ctx.applicationContext.registerReceiver(object : BroadcastReceiver() {
                 override fun onReceive(c: Context, i: Intent) {
                     chargingUntil = System.currentTimeMillis() + 5_000L
+                    onCharge?.invoke()
                 }
             }, IntentFilter(Intent.ACTION_POWER_CONNECTED))
         } catch (e: Exception) {
             // Not available.
         }
     }
+
+    /** The user's answer wins over the brand guess. */
+    fun pillOn(ctx: Context): Boolean = when (Prefs(ctx).pillMode) {
+        "yes" -> true
+        "no" -> false
+        else -> hasPill
+    }
+
+    /** Called when a charger is plugged in (phones without a pill show it in our notch). */
+    @Volatile
+    var onCharge: (() -> Unit)? = null
 
     fun listenerOn(ctx: Context): Boolean =
         Settings.Secure.getString(ctx.contentResolver, "enabled_notification_listeners")?.contains(ctx.packageName) == true
@@ -86,7 +98,7 @@ object SystemPill {
 
     /** True when the phone's pill is probably showing. */
     fun busy(ctx: Context, audio: AudioManager, inCall: Boolean): Boolean {
-        if (!hasPill) return false
+        if (!pillOn(ctx)) return false
         val now = System.currentTimeMillis()
         if (inCall || now < chargingUntil) return true
         if (!listenerOn(ctx)) return audio.isMusicActive

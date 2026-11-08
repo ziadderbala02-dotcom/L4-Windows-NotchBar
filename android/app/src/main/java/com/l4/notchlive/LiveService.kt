@@ -167,6 +167,7 @@ class LiveService : Service(), IslandView.Gestures {
         L.load(this)
         audio = getSystemService(AUDIO_SERVICE) as AudioManager
         SystemPill.watchCharging(this)
+        SystemPill.onCharge = { charged() }
         nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CH_LIVE, L.t("ch_live"), NotificationManager.IMPORTANCE_MIN).apply {
@@ -264,6 +265,17 @@ class LiveService : Service(), IslandView.Gestures {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
         if (endPreview(m)) return
+        if (actNow && current == null) {
+            act?.let { tapActivity(it) }
+            return
+        }
+        ringAct?.let { a ->
+            // Beside the pill: the left circle is the ride (a tap opens it big, a second opens the app).
+            if (current == null && (m.id < 0 || island.tapOnRide())) {
+                tapActivity(a)
+                return
+            }
+        }
         if (recNow && current == null) {
             // Recording the screen: a tap stops it.
             Recorder.stop(this)
@@ -342,6 +354,7 @@ class LiveService : Service(), IslandView.Gestures {
             when (a) {
                 "mute" -> L.t(if (id in muted) "menu_unmute" else "menu_mute")
                 "unpin" -> L.t("menu_unpin")
+                "m_play" -> L.t(if (Activities.media?.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) "m_pause" else "m_play")
                 else -> L.t("menu_$a")
             }
         }
@@ -468,6 +481,18 @@ class LiveService : Service(), IslandView.Gestures {
                 render()
                 openShortcuts()
                 return
+            }
+            "m_prev" -> Activities.media?.transportControls?.skipToPrevious()
+            "m_next" -> Activities.media?.transportControls?.skipToNext()
+            "m_play" -> Activities.media?.let { c ->
+                if (c.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) c.transportControls.pause() else c.transportControls.play()
+            }
+            "m_open" -> act?.intent?.let {
+                try {
+                    it.send()
+                } catch (e: Exception) {
+                    // Gone.
+                }
             }
             "switch" -> {
                 val live = liveNow()
@@ -856,6 +881,69 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     /** Every 15 min: new headlines about the favourite teams (the first check only remembers them). */
+    /* ---------- live activities (other apps: rides, deliveries, calls, timers, music) ---------- */
+
+    private var actNow = false
+    /** A ride shown in its own circle beside the phone's pill. */
+    private var ringAct: Live? = null
+    private var act: Live? = null
+    /** A changed activity takes the notch from a match for a few seconds. */
+    private var actFocusUntil = 0L
+    private var actSeen = ""
+    private var mediaAt = 0L
+    private var mediaLive: Live? = null
+
+    /** The notification listener saw a change. */
+    fun activitiesChanged() = main.post { render() }
+
+    /** The activity to show: rides first, then calls, timers, other apps, music. */
+    private fun pickActivity(now: Long): Live? {
+        if (now - mediaAt > 2_000L) {
+            mediaAt = now
+            mediaLive = Activities.mediaLive(this)
+        }
+        val all = listOfNotNull(chargeLive) + Activities.list + listOfNotNull(mediaLive)
+        val order = listOf("charge", "ride", "call", "timer", "app", "media")
+        val a = all.minByOrNull { order.indexOf(it.kind) } ?: return null
+        val sig = a.key + "|" + a.title + "|" + a.text
+        if (sig != actSeen) {
+            // Something new (the driver arrived, the time changed…): it shows even over a match.
+            if (a.kind != "media" || actSeen.substringBefore("|") != a.key) actFocusUntil = now + 8_000L
+            actSeen = sig
+            weatherUntil = 0L
+        }
+        return a
+    }
+
+    private val appIcons = HashMap<String, android.graphics.Bitmap?>()
+
+    private fun appIcon(pkg: String): android.graphics.Bitmap? = appIcons.getOrPut(pkg) { Shortcuts.appIcon(this, pkg) }
+
+    /** Tap on an activity: music gets its controls; anything else opens big, a second tap opens the app. */
+    private fun tapActivity(a: Live) {
+        if (a.kind == "charge") return
+        if (a.kind == "media") {
+            showMenu(IDLE_ID, listOf("m_prev", "m_play", "m_next", "m_open"))
+            return
+        }
+        val b = Burst("phone", a.title, a.text, true, 0xFF34D399.toInt(), PHONE_ID, icon = appIcon(a.pkg))
+        a.intent?.let { phoneIntents[b] = it }
+        showOverlay(b, 8_000L)
+    }
+
+    /** Charger plugged in, on phones without a pill: "⚡ 87%" in the notch for a few seconds. */
+    private var chargeLive: Live? = null
+
+    private fun charged() = main.post {
+        if (!prefs.liveActs || !prefs.liveSystem || SystemPill.pillOn(this)) return@post
+        val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
+        val pct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val now = System.currentTimeMillis()
+        chargeLive = Live("charge", packageName, "charge", "", "", "⚡ $pct%", L.t("charging"), pct / 100f, 0L, false, null, now)
+        main.postDelayed({ chargeLive = null; render() }, 5_000L)
+        render()
+    }
+
     /* ---------- the always-on notch's content ---------- */
 
     private var weatherUntil = 0L
@@ -1074,6 +1162,33 @@ class LiveService : Service(), IslandView.Gestures {
     /** Something was showing on the last frame (when it goes, the weather plays again). */
     private var hadBurst = false
 
+    /** The accessibility service was running: when it stops (Second Space, a cleaner…), say so once. */
+    private var hadTaps: Boolean? = null
+
+    private fun watchTaps() {
+        val on = TapService.instance != null
+        if (hadTaps == true && !on && prefs.onboarded) {
+            try {
+                val i = PendingIntent.getActivity(
+                    this, 41, Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                    PendingIntent.FLAG_IMMUTABLE,
+                )
+                val n = Notification.Builder(this, CH_ALERT)
+                    .setSmallIcon(R.drawable.ic_ball)
+                    .setContentTitle(L.t("access_off"))
+                    .setContentText(L.t("access_off_d"))
+                    .setStyle(Notification.BigTextStyle().bigText(L.t("access_off_d")))
+                    .setContentIntent(i)
+                    .setAutoCancel(true)
+                    .build()
+                (getSystemService(NOTIFICATION_SERVICE) as NotificationManager).notify(41, n)
+            } catch (e: Exception) {
+                // No notification permission.
+            }
+        }
+        hadTaps = on
+    }
+
     private fun render() {
         val now = System.currentTimeMillis()
         if (current != null && now >= currentUntil) {
@@ -1081,6 +1196,7 @@ class LiveService : Service(), IslandView.Gestures {
             nextBurstAt = now + 600
         }
         if (hadBurst && current == null && queue.isEmpty()) weatherUntil = max(weatherUntil, now + 5_000L)
+        watchTaps()
         hadBurst = current != null
         if (infoMatch != null && now >= infoUntil) infoMatch = null
         val list = matches + listOfNotNull(demo?.takeIf { now < demoUntil })
@@ -1088,7 +1204,7 @@ class LiveService : Service(), IslandView.Gestures {
         if (current == null && queue.isNotEmpty() && now >= nextBurstAt) {
             val b = queue.removeFirst()
             // Only if its match is still around (a burst for a match that ended long ago is dropped).
-            val owner = if (b.kind == "news" || b.kind == "phone") newsMatch(b) else list.firstOrNull { it.id == b.matchId }
+            val owner = if (b.kind == "news" || b.kind == "phone" || b.kind == "charge") newsMatch(b) else list.firstOrNull { it.id == b.matchId }
             if (owner != null) {
                 current = b
                 b.startedAt = now
@@ -1098,13 +1214,20 @@ class LiveService : Service(), IslandView.Gestures {
                 announce(b, owner)
             }
         }
-        val news = current?.takeIf { it.kind == "news" || it.kind == "phone" }
+        val news = current?.takeIf { it.kind == "news" || it.kind == "phone" || it.kind == "charge" }
         var m = if (news != null) newsMatch(news) else featured(list, now)
         idleNow = false
         recNow = false
+        actNow = false
+        act = pickActivity(now)
+        val menuForAct = current?.kind == "menu" && current?.matchId == IDLE_ID && menuActions.firstOrNull() == "m_prev"
         if (current?.kind == "shortcuts") {
             m = blankMatch()
             idleNow = true
+        } else if (act != null && ((m == null && current == null) || (current == null && now < actFocusUntil && infoMatch == null) || menuForAct)) {
+            // A live activity: on a quiet notch, or for a few seconds over a match when it changes.
+            m = blankMatch()
+            actNow = true
         } else if (m == null && current == null) {
             if (Recorder.since > 0) {
                 m = blankMatch()
@@ -1120,17 +1243,24 @@ class LiveService : Service(), IslandView.Gestures {
         val wasCircle = circleNow
         circleNow = busy && prefs.circle && island.portrait()
         if (wasCircle && !circleNow) infoMatch = null
+        // The phone's pill is up (music, Maps…) and a ride is on: its own circle, the match's beside it.
+        ringAct = act?.takeIf { circleNow && (it.kind == "ride" || it.kind == "app") && !recNow && current?.kind != "shortcuts" }
+        if (ringAct != null && actNow) {
+            actNow = false
+            m = if (news != null) newsMatch(news) else featured(list, now) ?: blankMatch()
+            onScreen = m
+        }
         val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
             // The capsule steps aside for Xiaomi's island.
             // The always-on notch steps aside completely for the phone's own pill.
-            (idleNow && busy && current == null && !recNow)
+            ((idleNow || actNow) && busy && current == null && !recNow)
         island.calm = effectiveSpeed(this) == "saver"
         val shownM = m
         if (shownM == null || hidden) {
             island.update(null, "", "", null, false, false, false)
         } else {
             val others = if (shownM.id < 0 || idleNow) 0 else (liveNow(list).count { it.state == Api.LIVE } - 1).coerceAtLeast(0)
-            val blank = idleNow || recNow
+            val blank = idleNow || recNow || actNow
             val showInfo = infoMatch == shownM.id && !blank
             if (showInfo) wantStats(shownM, now)
             island.update(
@@ -1143,6 +1273,9 @@ class LiveService : Service(), IslandView.Gestures {
                 idle = idleNow,
                 stats = if (showInfo) quickStats[shownM.id]?.second else null,
                 rec = if (recNow) Recorder.since else 0L,
+                act = if (actNow) act else null,
+                ringAct = ringAct,
+                actIcon = if (actNow) act?.let { a -> if (a.kind == "charge") null else if (a.kind == "media") Activities.mediaArt() ?: appIcon(a.pkg) else appIcon(a.pkg) } else null,
                 idleText = if (idleNow) idleLeft(now) else "",
                 idleTemp = if (idleNow) idleRight() else "",
                 weather = if (idleNow && now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather
@@ -1153,7 +1286,7 @@ class LiveService : Service(), IslandView.Gestures {
                 weatherAlways = prefs.weatherAnim == "always",
             )
         }
-        updateOngoing(if (idleNow || recNow) null else shownM, now)
+        updateOngoing(if (idleNow || recNow || actNow) null else shownM, now)
     }
 
     /** Possession, shots and on target for the tap view: fetched when it opens, at most once a minute. */
@@ -1396,6 +1529,13 @@ class LiveService : Service(), IslandView.Gestures {
                 }, 1500)
             }
             "grid" -> main.postDelayed({ openShortcuts() }, 1500)
+            "ride" -> {
+                // A sample Uber card (also used by the emulator videos).
+                Activities.list = listOf(
+                    Live("demo", "com.ubercab", "ride", "Pick up in 2 min", "ك ب ط 8925 • White BYD F3", "2 ${L.t("min_short")}", "ك ب ط 8925", -1f, 0L, false, null, now),
+                )
+                main.postDelayed({ Activities.list = emptyList(); render() }, 8_000L)
+            }
             "lineups" -> {
                 // Before kickoff: the countdown, then the line-ups notice.
                 demo = m.copy(state = Api.PRE, clock = "", phase = "", kickoff = now + 12 * 60_000, events = emptyList(), minute = null, added = null, clockSec = null)

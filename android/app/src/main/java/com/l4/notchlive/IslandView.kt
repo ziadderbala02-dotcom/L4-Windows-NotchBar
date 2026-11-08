@@ -126,6 +126,16 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private var idleTextShown = ""
     /** Screen recording since this time (0 = not recording): a red dot and a timer. */
     var recSince = 0L
+    /** A live activity from another app (a ride, a call, a timer, music), or null. */
+    var act: Live? = null
+    var actIcon: android.graphics.Bitmap? = null
+    /** Beside the phone's pill: a ride in its own circle (left), the match in the next one (right). */
+    var ringAct: Live? = null
+    /** Where the last touch went down, in the view (which circle was tapped). */
+    var touchX = 0f
+    private var actSince = 0L
+    private var actShown = ""
+
     /** Quick stats for the tap view (possession, shots, on target), when they've arrived. */
     var infoStats: List<Stat>? = null
 
@@ -181,6 +191,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private val bmp = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val shine = Paint(Paint.ANTI_ALIAS_FLAG)
     private val rect = RectF()
+    private val rect2 = RectF()
+    private val dim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FFFFFF }
 
     private fun sizes() {
         score.textSize = 13.5f * d
@@ -267,6 +279,16 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (recSince > 0) {
             sizes()
             return gap() + 10 * d + minute.measureText("00:00") + 12 * d to gap() + 8 * d
+        }
+        act?.let { a ->
+            // A live activity: the app's icon and the big value on the left, a label on the right.
+            sizes()
+            val lMax = min(leftMax + 20 * d, 170 * d)
+            val rMax = min(rightMax + 20 * d, 150 * d)
+            val ch = compactHeight().toFloat()
+            val left = gap() + minute.measureText(actBig(a)) + ch * 0.9f + 8 * d
+            val right = gap() + line.measureText(a.right) + 12 * d
+            return min(lMax, left) to min(rMax, max(right, ch / 2 + 12 * d))
         }
         // The always-on capsule: just a ring round the camera and a grey dot.
         if (idle) {
@@ -359,27 +381,43 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun marquee(c: Canvas, text: String, p: Paint, areaL: Float, areaR: Float, y: Float, since: Long) {
         val aw = areaR - areaL
         if (aw <= 4 * d) return
-        val tw = p.measureText(text)
         val oldAlign = p.textAlign
+        val oldSize = p.textSize
         val rtl = text.any { it in '\u0600'..'\u06FF' }
+        // First the text shrinks a little (to 80%) so it fits whole without moving.
+        var tw = p.measureText(text)
+        if (tw > aw && tw * 0.8f <= aw) {
+            p.textSize = oldSize * aw / tw
+            tw = p.measureText(text)
+        } else if (tw > aw) {
+            p.textSize = oldSize * 0.8f
+            tw = p.measureText(text)
+        }
         c.save()
         c.clipRect(areaL, 0f, areaR, height.toFloat())
-        if (tw <= aw) {
+        if (tw <= aw + 0.5f) {
             p.textAlign = if (rtl) Paint.Align.RIGHT else Paint.Align.LEFT
             c.drawText(text, if (rtl) areaR else areaL, y, p)
         } else {
+            // Still too long: it slides to show the end, waits, slides back, and rests on its start.
             val over = tw - aw
-            val age = (System.currentTimeMillis() - since - 900).coerceAtLeast(0)
             val speed = 38 * d / 1000f
-            val shift = min(over, age * speed)
+            val run = (over / speed).toLong()
+            val age = (System.currentTimeMillis() - since - 900).coerceAtLeast(0)
+            val shift = when {
+                age < run -> age * speed
+                age < run + 1200 -> over
+                age < 2 * run + 1200 -> over - (age - run - 1200) * speed
+                else -> 0f
+            }.coerceIn(0f, over)
             p.textAlign = Paint.Align.LEFT
-            // RTL text starts with its right end showing and moves right; LTR starts left and moves left.
             val x = if (rtl) areaL - over + shift else areaL - shift
             c.drawText(text, x, y, p)
-            if (shift < over) postInvalidateOnAnimation()
+            if (age < 2 * run + 1200) postInvalidateOnAnimation()
         }
         c.restore()
         p.textAlign = oldAlign
+        p.textSize = oldSize
     }
 
     /** Readable over the weather: a soft dark shadow. */
@@ -486,6 +524,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val dpx = resources.displayMetrics.density
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                touchX = e.x
                 downLX = e.x
                 downLY = e.y
                 downX = e.rawX
@@ -542,6 +581,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         sizes()
         if (recSince > 0 && burst == null && !info) {
             drawRec(c)
+            return
+        }
+        if (act != null && burst == null && !info && t == 0f && !tucked) {
+            drawAct(c)
             return
         }
         if (idle && burst == null && !info && t == 0f && !tucked) {
@@ -624,10 +667,53 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     /** The small circle beside Xiaomi's island: the score, ringed by the live colour. */
+    /** Room for one circle, or two (a ride and the match) side by side. */
+    fun circleWidth(): Int {
+        val ch = compactHeight()
+        return if (ringAct != null && (match?.id ?: -1) >= 0) ch * 2 + (4 * d).toInt() else ch
+    }
+
+    /** The ride's circle: minutes left (counting down), or a pulsing dot when there's no time. */
+    private fun drawRideCircle(c: Canvas, a: Live, r: Float) {
+        c.drawCircle(r, r, r, bg)
+        val now = System.currentTimeMillis()
+        val green = 0xFF34D399.toInt()
+        stroke.color = green
+        stroke.alpha = 255
+        stroke.strokeWidth = 1.6f * d
+        c.drawCircle(r, r, r - 1.6f * d, stroke)
+        if (a.target > 0L) {
+            val mins = ((a.target - now + 59_999L) / 60_000L).coerceAtLeast(0L)
+            val txt = if (mins > 99) "99+" else mins.toString()
+            val old = score.textSize
+            score.textSize = (if (txt.length > 2) 8.5f else 11f) * d
+            score.color = green
+            score.alpha = 255
+            score.textAlign = Paint.Align.CENTER
+            c.drawText(txt, r, baseline(score, r), score)
+            score.textAlign = Paint.Align.LEFT
+            score.textSize = old
+            score.color = Color.WHITE
+            postInvalidateDelayed(5_000L)
+        } else {
+            // Waiting for a driver, or the driver is here: a breathing dot.
+            val level = 0.45f + 0.55f * ((sin(now / 450.0) + 1) / 2).toFloat()
+            dot.color = green
+            dot.alpha = (255 * level).toInt()
+            c.drawCircle(r, r, 3.2f * d, dot)
+            if (!calm) postInvalidateDelayed(50)
+        }
+    }
+
     private fun drawCircle(c: Canvas) {
         val m = match ?: return
         val size = compactHeight().toFloat()
         val r = size / 2
+        ringAct?.let { a ->
+            drawRideCircle(c, a, r)
+            if (m.id < 0) return
+            c.translate(size + 4 * d, 0f)
+        }
         c.drawCircle(r, r, r, bg)
         if (idle) {
             // The always-on notch beside the phone's pill: a black circle with the grey dot.
@@ -672,9 +758,16 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             path.addRoundRect(rect, ch / 2, ch / 2, Path.Direction.CW)
             c.clipPath(path)
             val f = fx?.takeIf { it.kind == weather } ?: WeatherFx(weather).also { fx = it }
+            // Fades in, and out over its last second instead of stopping mid-move.
+            if (fxSince == 0L) fxSince = now
+            val fade = if (weatherAlways) min(1f, (now - fxSince) / 400f) else minOf(1f, (now - fxSince) / 400f, (weatherUntil - now) / 1000f)
+            c.saveLayerAlpha(rect, (255 * fade.coerceIn(0f, 1f)).toInt())
             f.draw(c, rect.left, rect.right, ch, now)
             c.restore()
+            c.restore()
             postInvalidateOnAnimation()
+        } else {
+            fxSince = 0L
         }
         val cy = ch / 2
         val busyBg = weather.isNotEmpty() && (weatherAlways || now < weatherUntil)
@@ -717,10 +810,68 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (idleText.isNotEmpty() && line.measureText(idleText) > camX - gap() - rect.left - ch / 2) postInvalidateDelayed(40)
     }
 
+    /** The big value: a running timer counts live; anything else as the app wrote it. */
+    private fun actBig(a: Live): String {
+        if (a.chronoBase <= 0L) return a.big
+        val secs = (abs(System.currentTimeMillis() - a.chronoBase) / 1000L)
+        return if (secs >= 3600) "%d:%02d:%02d".format(secs / 3600, secs / 60 % 60, secs % 60) else "%d:%02d".format(secs / 60, secs % 60)
+    }
+
+    /** A live activity: icon, then the big value (green), the label right of the camera, a thin progress line. */
+    private fun drawAct(c: Canvas) {
+        val a = act ?: return
+        val ch = compactHeight().toFloat()
+        val (lw, rw) = compactExtent()
+        rect.set(camX - lw, 0f, camX + rw, ch)
+        c.drawRoundRect(rect, ch / 2, ch / 2, bg)
+        val now = System.currentTimeMillis()
+        val sig = a.key + a.right
+        if (sig != actShown) {
+            actShown = sig
+            actSince = now
+        }
+        val cy = ch / 2
+        val isz = ch * 0.62f
+        val ix = rect.left + ch * 0.28f
+        actIcon?.let { bm ->
+            c.save()
+            path.reset()
+            path.addCircle(ix + isz / 2, cy, isz / 2, Path.Direction.CW)
+            c.clipPath(path)
+            rect2.set(ix, cy - isz / 2, ix + isz, cy + isz / 2)
+            c.drawBitmap(bm, null, rect2, null)
+            c.restore()
+        } ?: run {
+            dot.color = 0xFF34D399.toInt()
+            dot.alpha = 255
+            c.drawCircle(ix + isz / 2, cy, 3 * d, dot)
+        }
+        minute.color = if (a.kind == "media") Color.WHITE else 0xFF34D399.toInt()
+        minute.alpha = 255
+        val bigL = ix + isz + 5 * d
+        marquee(c, actBig(a), minute, bigL, camX - gap() - 2 * d, baseline(minute, cy), actSince)
+        minute.color = Color.WHITE
+        line.color = 0xFFE5E7EB.toInt()
+        line.alpha = 255
+        marquee(c, a.right, line, camX + gap(), rect.right - ch / 2, baseline(line, cy), actSince)
+        line.color = 0xFFC8C8C8.toInt()
+        if (a.progress in 0f..1f) {
+            dot.color = 0xFF34D399.toInt()
+            dot.alpha = 220
+            val pl = rect.left + ch / 2
+            val pr = rect.right - ch / 2
+            c.drawRect(pl, ch - 2.5f * d, pr, ch - 1f * d, dim)
+            c.drawRect(pl, ch - 2.5f * d, pl + (pr - pl) * a.progress, ch - 1f * d, dot)
+        }
+        val moving = minute.measureText(actBig(a)) > camX - gap() - bigL || line.measureText(a.right) > rect.right - ch / 2 - camX - gap()
+        if (moving) postInvalidateDelayed(40) else if (a.chronoBase > 0L) postInvalidateDelayed(500)
+    }
+
     private val path = Path()
 
     /** The running weather animation (kept between frames). */
     private var fx: WeatherFx? = null
+    private var fxSince = 0L
 
     /**
      * An event played inside the notch, at the notch's height (a tap opens it big).
