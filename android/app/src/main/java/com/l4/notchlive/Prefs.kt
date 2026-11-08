@@ -203,6 +203,11 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("liveSystem", true)
         set(v) = p.edit().putBoolean("liveSystem", v).apply()
 
+    /** The "answer calls" permission was asked for once already (asked again only from the switch). */
+    var askedCallPerm: Boolean
+        get() = p.getBoolean("askedCallPerm", false)
+        set(v) = p.edit().putBoolean("askedCallPerm", v).apply()
+
     /** The song playing, on phones without a pill of their own. */
     var liveMedia: Boolean
         get() = p.getBoolean("liveMedia", true)

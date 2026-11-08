@@ -292,15 +292,17 @@ class LiveService : Service(), IslandView.Gestures {
             render()
             return
         }
+        current?.takeIf { it.kind == "card" }?.let {
+            // Second tap: the app, on this very thing (the song, the timer, the trip).
+            val a = cardLive()
+            current = null
+            if (a != null) sendPi(a.intent, a.pkg)
+            render()
+            return
+        }
         current?.takeIf { it.kind == "phone" }?.let { b ->
             current = null
-            phoneIntents.remove(b)?.let {
-                try {
-                    it.send()
-                } catch (e: Exception) {
-                    // The notification is gone.
-                }
-            }
+            sendPi(phoneIntents.remove(b))
             render()
             return
         }
@@ -487,13 +489,7 @@ class LiveService : Service(), IslandView.Gestures {
             "m_play" -> Activities.media?.let { c ->
                 if (c.playbackState?.state == android.media.session.PlaybackState.STATE_PLAYING) c.transportControls.pause() else c.transportControls.play()
             }
-            "m_open" -> act?.intent?.let {
-                try {
-                    it.send()
-                } catch (e: Exception) {
-                    // Gone.
-                }
-            }
+            "m_open" -> act?.let { sendPi(it.intent, it.pkg) }
             "switch" -> {
                 val live = liveNow()
                 val i = live.indexOfFirst { it.id == id }
@@ -903,6 +899,7 @@ class LiveService : Service(), IslandView.Gestures {
             mediaLive = Activities.mediaLive(this)
         }
         val all = listOfNotNull(chargeLive) + Activities.list + listOfNotNull(mediaLive)
+        allLive = all
         val order = listOf("charge", "ride", "call", "timer", "app", "media")
         val a = all.minByOrNull { order.indexOf(it.kind) } ?: return null
         val sig = a.key + "|" + a.title + "|" + a.text
@@ -915,20 +912,91 @@ class LiveService : Service(), IslandView.Gestures {
         return a
     }
 
+    private var allLive: List<Live> = emptyList()
+
+    /** The opened card's activity, kept current (a timer counting, the song's place). */
+    private fun cardLive(): Live? = current?.takeIf { it.kind == "card" }?.let { b -> allLive.firstOrNull { it.key == b.url } }
+
+    /**
+     * Opens another app's page from the notch. Android 14+ blocks that from the background unless
+     * the sender allows it, which is why "Open app" did nothing in 1.7.0.
+     */
+    private fun sendPi(pi: android.app.PendingIntent?, pkg: String? = null): Boolean {
+        if (pi != null) {
+            try {
+                if (Build.VERSION.SDK_INT >= 34) {
+                    val o = android.app.ActivityOptions.makeBasic()
+                        .setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                    pi.send(this, 0, null, null, null, null, o.toBundle())
+                } else {
+                    pi.send()
+                }
+                return true
+            } catch (e: Exception) {
+                // Gone: fall back to the app itself.
+            }
+        }
+        val launch = pkg?.let { packageManager.getLaunchIntentForPackage(it) } ?: return false
+        return try {
+            startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** First tap on an activity: the card (details and the app's buttons). The next tap opens the app there. */
+    private fun showCard(a: Live) {
+        showOverlay(Burst("card", a.title, a.text, true, 0xFF3F3F46.toInt(), NEWS_ID, url = a.key), 8_000L)
+    }
+
+    /** A button on the open card. */
+    override fun cardPick(index: Int) {
+        val a = cardLive() ?: return
+        val act = a.actions.getOrNull(index) ?: return
+        val c = Activities.media
+        val tm = getSystemService(TELECOM_SERVICE) as android.telecom.TelecomManager
+        val canCall = Build.VERSION.SDK_INT >= 26 && checkSelfPermission(android.Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        try {
+            when (act.role) {
+                "prev" -> c?.transportControls?.skipToPrevious()
+                "next" -> c?.transportControls?.skipToNext()
+                "play" -> if (a.playing) c?.transportControls?.pause() else c?.transportControls?.play()
+                "custom" -> c?.transportControls?.sendCustomAction(act.customId, null)
+                "mute" -> if (act.intent != null) sendPi(act.intent) else audio.isMicrophoneMute = !audio.isMicrophoneMute
+                else -> when {
+                    act.intent != null -> sendPi(act.intent)
+                    // No button from the dialer: the phone's own call controls (needs the "answer calls" permission).
+                    act.role == "answer" && canCall -> @Suppress("DEPRECATION") tm.acceptRingingCall()
+                    (act.role == "decline" || act.role == "hangup") && canCall && Build.VERSION.SDK_INT >= 28 -> @Suppress("DEPRECATION") tm.endCall()
+                }
+            }
+        } catch (e: Exception) {
+            // The app took its button away.
+        }
+        if (act.role == "decline" || act.role == "hangup") current = null else currentUntil = System.currentTimeMillis() + 8_000L
+        mediaAt = 0L
+        main.postDelayed({ mediaAt = 0L; render() }, 350)
+        render()
+    }
+
+    /** The song's bar was dragged to [f] (0..1). */
+    override fun seek(f: Float) {
+        val a = cardLive() ?: return
+        if (a.durMs > 0) Activities.media?.transportControls?.seekTo((a.durMs * f).toLong())
+        currentUntil = System.currentTimeMillis() + 8_000L
+        mediaAt = 0L
+        main.postDelayed({ mediaAt = 0L; render() }, 350)
+    }
+
     private val appIcons = HashMap<String, android.graphics.Bitmap?>()
 
     private fun appIcon(pkg: String): android.graphics.Bitmap? = appIcons.getOrPut(pkg) { Shortcuts.appIcon(this, pkg) }
 
-    /** Tap on an activity: music gets its controls; anything else opens big, a second tap opens the app. */
+    /** Tap on an activity: it opens big (a charge note has nothing more to show). */
     private fun tapActivity(a: Live) {
         if (a.kind == "charge") return
-        if (a.kind == "media") {
-            showMenu(IDLE_ID, listOf("m_prev", "m_play", "m_next", "m_open"))
-            return
-        }
-        val b = Burst("phone", a.title, a.text, true, 0xFF34D399.toInt(), PHONE_ID, icon = appIcon(a.pkg))
-        a.intent?.let { phoneIntents[b] = it }
-        showOverlay(b, 8_000L)
+        showCard(a)
     }
 
     /** Charger plugged in, on phones without a pill: "⚡ 87%" in the notch for a few seconds. */
@@ -1214,7 +1282,13 @@ class LiveService : Service(), IslandView.Gestures {
                 announce(b, owner)
             }
         }
-        val news = current?.takeIf { it.kind == "news" || it.kind == "phone" || it.kind == "charge" }
+        if (current?.kind == "card") {
+            pickActivity(now)
+            val cl = cardLive()
+            if (cl == null) current = null // The call ended, the song stopped…
+            else if (cl.kind == "call" && cl.callType == 1) currentUntil = max(currentUntil, now + 3_000L) // Open while it rings.
+        }
+        val news = current?.takeIf { it.kind == "news" || it.kind == "phone" || it.kind == "charge" || it.kind == "card" }
         var m = if (news != null) newsMatch(news) else featured(list, now)
         idleNow = false
         recNow = false
@@ -1275,6 +1349,8 @@ class LiveService : Service(), IslandView.Gestures {
                 rec = if (recNow) Recorder.since else 0L,
                 act = if (actNow) act else null,
                 ringAct = ringAct,
+                card = cardLive(),
+                cardIcon = cardLive()?.let { a -> if (a.kind == "charge") null else appIcon(a.pkg) },
                 actIcon = if (actNow) act?.let { a -> if (a.kind == "charge") null else if (a.kind == "media") Activities.mediaArt() ?: appIcon(a.pkg) else appIcon(a.pkg) } else null,
                 idleText = if (idleNow) idleLeft(now) else "",
                 idleTemp = if (idleNow) idleRight() else "",

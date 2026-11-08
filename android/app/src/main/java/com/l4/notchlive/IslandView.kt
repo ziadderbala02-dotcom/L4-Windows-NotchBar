@@ -70,6 +70,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         fun slotLongPress(index: Int) {}
         /** The "⌄ Shortcuts" row at the bottom of the opened match view. */
         fun shortcuts() {}
+        /** A button on an opened live activity (by its index in the activity's actions). */
+        fun cardPick(index: Int) {}
+        /** The song's bar was dragged to [f] (0..1). */
+        fun seek(f: Float) {}
     }
 
     /** Saver mode: no endless breathing animations (bursts still animate). */
@@ -131,6 +135,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var actIcon: android.graphics.Bitmap? = null
     /** Beside the phone's pill: a ride in its own circle (left), the match in the next one (right). */
     var ringAct: Live? = null
+    /** The opened live activity (a song, a call, a timer, a ride) and its app's icon. */
+    var card: Live? = null
+    var cardIcon: android.graphics.Bitmap? = null
+    /** Where each of the card's buttons was drawn (action index, area), and the song's bar. */
+    private val cardBtns = ArrayList<Pair<Int, RectF>>()
+    private val barRect = RectF()
+    private var seeking = false
+    private var seekF = 0f
     /** Where the last touch went down, in the view (which circle was tapped). */
     var touchX = 0f
     private var actSince = 0L
@@ -281,11 +293,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             return gap() + 10 * d + minute.measureText("00:00") + 12 * d to gap() + 8 * d
         }
         act?.let { a ->
-            // A live activity: the app's icon and the big value on the left, a label on the right.
             sizes()
+            val ch = compactHeight().toFloat()
+            // Music: just the album art left of the camera and the sound wave right of it.
+            if (a.kind == "media") return gap() + ch * 0.9f + 4 * d to gap() + 24 * d
+            // A live activity: the app's icon and the big value on the left, a label on the right.
             val lMax = min(leftMax + 20 * d, 170 * d)
             val rMax = min(rightMax + 20 * d, 150 * d)
-            val ch = compactHeight().toFloat()
             val left = gap() + minute.measureText(actBig(a)) + ch * 0.9f + 8 * d
             val right = gap() + line.measureText(a.right) + 12 * d
             return min(lMax, left) to min(rMax, max(right, ch / 2 + 12 * d))
@@ -470,6 +484,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         burst?.kind == "news" || burst?.kind == "phone" ->
             (top() + 22 * d + max(1, newsLines(burst!!).size) * 16 * d + 8 * d).toInt()
         burst?.kind == "menu" -> (top() + (burst?.items?.size ?: 3) * MENU_ROW * d + 8 * d).toInt()
+        burst?.kind == "card" -> (top() + cardBody() * d).toInt()
         burst?.kind == "stats" -> (top() + max(1, min(4, burst?.stats?.size ?: 1)) * 30 * d + 12 * d).toInt()
         else -> (top() + 52 * d).toInt()
     }
@@ -524,6 +539,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val dpx = resources.displayMetrics.density
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                seeking = burst?.kind == "card" && t > 0.9f && !barRect.isEmpty &&
+                    e.y in barRect.top - 12 * dpx..barRect.bottom + 12 * dpx && e.x in barRect.left - 6 * dpx..barRect.right + 6 * dpx
+                if (seeking) {
+                    seekF = ((e.x - barRect.left) / barRect.width()).coerceIn(0f, 1f)
+                    invalidate()
+                    return true
+                }
                 touchX = e.x
                 downLX = e.x
                 downLY = e.y
@@ -534,12 +556,22 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 postDelayed(longPress, 500)
             }
             MotionEvent.ACTION_MOVE -> {
+                if (seeking) {
+                    seekF = ((e.x - barRect.left) / barRect.width()).coerceIn(0f, 1f)
+                    invalidate()
+                    return true
+                }
                 if (abs(e.rawX - downX) > 12 * dpx || abs(e.rawY - downY) > 12 * dpx) {
                     pressed = false
                     removeCallbacks(longPress)
                 }
             }
             MotionEvent.ACTION_UP -> {
+                if (seeking) {
+                    seeking = false
+                    gestures.seek(seekF)
+                    return true
+                }
                 pressed = false
                 removeCallbacks(longPress)
                 if (longDone) return true
@@ -551,7 +583,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                     abs(dy) > far && abs(dy) > abs(dx) -> gestures.pull(dy > 0)
                     abs(dx) < 12 * dpx && abs(dy) < 12 * dpx -> {
                         val b = burst
-                        if (b?.kind == "shortcuts" && t > 0.9f) {
+                        if (b?.kind == "card" && t > 0.9f) {
+                            val hit = cardBtns.firstOrNull { (_, r) -> e.x in r.left..r.right && e.y in r.top..r.bottom }
+                            if (hit != null) gestures.cardPick(hit.first) else gestures.tap()
+                        } else if (b?.kind == "shortcuts" && t > 0.9f) {
                             val i = slotAt(e.x, e.y)
                             if (i >= 0) gestures.menuPick(i) else gestures.tap()
                         } else if (b == null && info && t > 0.9f && e.y > bigHeight() - HINT_ROW * d) {
@@ -657,6 +692,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             if (b?.kind == "menu") drawMenu(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b?.kind == "stats") drawStats(c, m, b, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b?.kind == "shortcuts") drawShortcuts(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
+            else if (b?.kind == "card") drawCard(c, camX - bw / 2, camX + bw / 2, bigAlpha)
             else if (b != null) drawBurst(c, m, b, camX - bw / 2, camX + bw / 2, h, bigAlpha)
             else if (info) {
                 drawInfo(c, m, camX - bw / 2, camX + bw / 2, bigAlpha)
@@ -810,6 +846,286 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (idleText.isNotEmpty() && line.measureText(idleText) > camX - gap() - rect.left - ch / 2) postInvalidateDelayed(40)
     }
 
+    /** Sound bars that move while the song plays (still when paused), in the album's colour. */
+    private fun drawWave(c: Canvas, x0: Float, cy: Float, h: Float, color: Int, playing: Boolean) {
+        val now = System.currentTimeMillis()
+        dot.color = color
+        dot.alpha = 255
+        val bw = 2.4f * d
+        val phases = floatArrayOf(0f, 1.3f, 0.4f, 2.1f, 0.9f)
+        for (i in 0 until 5) {
+            val k = if (playing && !calm) 0.25f + 0.75f * ((sin(now / 140.0 + phases[i] * 2) + 1) / 2).toFloat() else 0.22f
+            val bh = max(bw, h * k)
+            val x = x0 + i * (bw + 2 * d)
+            rect2.set(x, cy - bh / 2, x + bw, cy + bh / 2)
+            c.drawRoundRect(rect2, bw / 2, bw / 2, dot)
+        }
+        if (playing && !calm) postInvalidateDelayed(33)
+    }
+
+    private var accentBm: android.graphics.Bitmap? = null
+    private var accentCol = 0xFFF08A4B.toInt()
+
+    /** The album art's liveliest colour (like Xiaomi's island tints its wave). */
+    private fun accentOf(bm: android.graphics.Bitmap?): Int {
+        if (bm == null) return 0xFF34D399.toInt()
+        if (bm === accentBm) return accentCol
+        accentBm = bm
+        var best = 0xFFF08A4B.toInt()
+        var bestScore = 0f
+        try {
+            val sm = android.graphics.Bitmap.createScaledBitmap(bm, 24, 24, true)
+            val hsv = FloatArray(3)
+            for (y in 0 until 24) for (x in 0 until 24) {
+                val px = sm.getPixel(x, y)
+                Color.colorToHSV(px, hsv)
+                if (hsv[2] < 0.35f) continue
+                val score = hsv[1] * hsv[2]
+                if (score > bestScore) {
+                    bestScore = score
+                    best = px
+                }
+            }
+            if (bestScore < 0.15f) best = 0xFFE5E7EB.toInt()
+        } catch (e: Exception) {
+            // Keep the default.
+        }
+        accentCol = best or 0xFF000000.toInt()
+        return accentCol
+    }
+
+    /** The opened card's height under the camera row (in dp). */
+    private fun cardBody(): Float {
+        val a = card ?: return 60f
+        val btns = if (a.actions.isNotEmpty()) 58f else 0f
+        return when (a.kind) {
+            "media" -> 54f + 12f + 44f + 6f + 20f + 14f
+            "timer" -> 22f + 50f + btns + 12f
+            else -> 54f + btns + 14f
+        }
+    }
+
+    private fun fmtMs(ms: Long): String {
+        val s = (ms / 1000).coerceAtLeast(0)
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+    }
+
+    private val cardTitle = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+    }
+    private val cardSub = TextPaint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFA1A7B1.toInt() }
+    private val tint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+        colorFilter = android.graphics.PorterDuffColorFilter(Color.WHITE, android.graphics.PorterDuff.Mode.SRC_IN)
+    }
+
+    /** A picture in a rounded square (or a circle), or the first letter on a colour when there's none. */
+    private fun drawPic(c: Canvas, bm: android.graphics.Bitmap?, x: Float, y: Float, s: Float, round: Boolean, letter: String) {
+        rect2.set(x, y, x + s, y + s)
+        val rr = if (round) s / 2 else s * 0.26f
+        if (bm != null) {
+            c.save()
+            path.reset()
+            path.addRoundRect(rect2, rr, rr, Path.Direction.CW)
+            c.clipPath(path)
+            c.drawBitmap(bm, null, rect2, bmp)
+            c.restore()
+        } else {
+            dot.color = 0xFF6366F1.toInt()
+            dot.alpha = 255
+            c.drawRoundRect(rect2, rr, rr, dot)
+            cardTitle.textSize = s * 0.4f
+            cardTitle.textAlign = Paint.Align.CENTER
+            c.drawText(letter.take(1).uppercase(), x + s / 2, baseline(cardTitle, y + s / 2), cardTitle)
+            cardTitle.textAlign = Paint.Align.LEFT
+        }
+    }
+
+    /** Title and a second line beside a picture. */
+    private fun drawHead(c: Canvas, x: Float, r: Float, y: Float, h: Float, t1: String, t2: String, t2Color: Int) {
+        val w = r - x
+        cardTitle.textSize = 17f * d
+        cardSub.textSize = 13f * d
+        cardSub.color = t2Color
+        val gapY = 4 * d
+        val total = cardTitle.textSize + (if (t2.isNotEmpty()) gapY + cardSub.textSize else 0f)
+        var ty = y + (h - total) / 2
+        c.drawText(TextUtils.ellipsize(t1, cardTitle, w, TextUtils.TruncateAt.END).toString(), x, ty - cardTitle.ascent() * 0.92f, cardTitle)
+        ty += cardTitle.textSize + gapY
+        if (t2.isNotEmpty()) c.drawText(TextUtils.ellipsize(t2, cardSub, w, TextUtils.TruncateAt.END).toString(), x, ty - cardSub.ascent() * 0.92f, cardSub)
+    }
+
+    /** The app's buttons as a row of pills: red to end or decline, green to answer, white when mute is on. */
+    private fun drawPills(c: Canvas, a: Live, l: Float, r: Float, y: Float) {
+        val n = a.actions.size
+        if (n == 0) return
+        val gapX = 10 * d
+        val h = 42 * d
+        val w = (r - l - gapX * (n - 1)) / n
+        val micMuted = try {
+            (context.getSystemService(Context.AUDIO_SERVICE) as android.media.AudioManager).isMicrophoneMute
+        } catch (e: Exception) {
+            false
+        }
+        a.actions.forEachIndexed { i, act ->
+            val x = l + i * (w + gapX)
+            val box = RectF(x, y, x + w, y + h)
+            val on = act.role == "mute" && act.intent == null && micMuted
+            val (fill, ink) = when {
+                act.role == "decline" || act.role == "hangup" -> 0xFFF43F5E.toInt() to Color.WHITE
+                act.role == "answer" -> 0xFF34D399.toInt() to 0xFF052E1C.toInt()
+                on -> Color.WHITE to Color.BLACK
+                else -> 0x22FFFFFF to Color.WHITE
+            }
+            dot.color = fill
+            dot.alpha = Color.alpha(fill)
+            c.drawRoundRect(box, h / 2, h / 2, dot)
+            cardTitle.textSize = 14f * d
+            cardTitle.color = ink
+            val label = act.title.ifBlank {
+                when (act.role) {
+                    "hangup" -> L.t("call_hang")
+                    "decline" -> L.t("call_decline")
+                    "answer" -> L.t("call_answer")
+                    "mute" -> L.t("call_mute")
+                    else -> ""
+                }
+            }
+            val iconW = if (act.icon != null) 18 * d + 6 * d else 0f
+            val text = TextUtils.ellipsize(label, cardTitle, w - 20 * d - iconW, TextUtils.TruncateAt.END).toString()
+            val tw = cardTitle.measureText(text) + iconW
+            var tx = box.centerX() - tw / 2
+            act.icon?.let { ic ->
+                tint.colorFilter = android.graphics.PorterDuffColorFilter(ink, android.graphics.PorterDuff.Mode.SRC_IN)
+                rect2.set(tx, box.centerY() - 9 * d, tx + 18 * d, box.centerY() + 9 * d)
+                c.drawBitmap(ic, null, rect2, tint)
+                tx += iconW
+            }
+            c.drawText(text, tx, baseline(cardTitle, box.centerY()), cardTitle)
+            cardTitle.color = Color.WHITE
+            cardBtns += i to box
+        }
+    }
+
+    /** Media glyphs, drawn so they stay sharp at any size. */
+    private fun glyph(c: Canvas, kind: String, cx: Float, cy: Float, s: Float) {
+        dot.color = Color.WHITE
+        dot.alpha = 255
+        path.reset()
+        val h = s / 2
+        when (kind) {
+            "play" -> {
+                path.moveTo(cx - h * 0.6f, cy - h); path.lineTo(cx + h * 0.85f, cy); path.lineTo(cx - h * 0.6f, cy + h); path.close()
+                c.drawPath(path, dot)
+            }
+            "pause" -> {
+                rect2.set(cx - h * 0.7f, cy - h, cx - h * 0.2f, cy + h); c.drawRoundRect(rect2, 2 * d, 2 * d, dot)
+                rect2.set(cx + h * 0.2f, cy - h, cx + h * 0.7f, cy + h); c.drawRoundRect(rect2, 2 * d, 2 * d, dot)
+            }
+            "prev", "next" -> {
+                val dir = if (kind == "next") 1 else -1
+                path.moveTo(cx - dir * h * 0.75f, cy - h * 0.8f); path.lineTo(cx + dir * h * 0.45f, cy); path.lineTo(cx - dir * h * 0.75f, cy + h * 0.8f); path.close()
+                c.drawPath(path, dot)
+                val bx = cx + dir * h * 0.55f
+                rect2.set(min(bx, bx + dir * h * 0.22f), cy - h * 0.8f, max(bx, bx + dir * h * 0.22f), cy + h * 0.8f)
+                c.drawRoundRect(rect2, 1.5f * d, 1.5f * d, dot)
+            }
+        }
+    }
+
+    /** An opened live activity: details, and the app's own buttons (a tap anywhere else opens the app). */
+    private fun drawCard(c: Canvas, l0: Float, r0: Float, alpha: Float) {
+        val a = card ?: return
+        cardBtns.clear()
+        barRect.setEmpty()
+        c.saveLayerAlpha(l0, 0f, r0, bigHeight().toFloat(), (255 * alpha).toInt())
+        val pad = 18 * d
+        val l = l0 + pad
+        val r = r0 - pad
+        val y0 = top()
+        when (a.kind) {
+            "media" -> {
+                val s = 54 * d
+                drawPic(c, a.pic ?: cardIcon, l, y0, s, false, a.title)
+                drawHead(c, l + s + 12 * d, r, y0, s, a.title, a.text, 0xFFA1A7B1.toInt())
+                // Controls: the app's two extras (like, shuffle) at the ends, previous / play / next in the middle.
+                val cy = y0 + s + 12 * d + 22 * d
+                val slotW = (r - l) / 5
+                var customSeen = 0
+                a.actions.forEachIndexed { i, act ->
+                    val k = when (act.role) {
+                        "prev" -> 1
+                        "play" -> 2
+                        "next" -> 3
+                        else -> if (customSeen++ == 0) 0 else 4
+                    }
+                    val cx = l + slotW * (k + 0.5f)
+                    when (act.role) {
+                        "play" -> glyph(c, if (a.playing) "pause" else "play", cx, cy, 30 * d)
+                        "prev", "next" -> glyph(c, act.role, cx, cy, 22 * d)
+                        else -> act.icon?.let { ic ->
+                            tint.colorFilter = android.graphics.PorterDuffColorFilter(Color.WHITE, android.graphics.PorterDuff.Mode.SRC_IN)
+                            rect2.set(cx - 11 * d, cy - 11 * d, cx + 11 * d, cy + 11 * d)
+                            c.drawBitmap(ic, null, rect2, tint)
+                        }
+                    }
+                    cardBtns += i to RectF(cx - 24 * d, cy - 24 * d, cx + 24 * d, cy + 24 * d)
+                }
+                // The song's place: a bar you can drag, with the times either side.
+                val py = cy + 22 * d + 6 * d + 10 * d
+                val pos = if (seeking) (a.durMs * seekF).toLong()
+                else if (a.playing && a.posAt > 0) a.posMs + ((android.os.SystemClock.elapsedRealtime() - a.posAt) * a.speed).toLong() else a.posMs
+                val dur = a.durMs
+                cardSub.textSize = 12f * d
+                cardSub.color = 0xFFA1A7B1.toInt()
+                val left = fmtMs(min(pos, if (dur > 0) dur else pos))
+                val right = if (dur > 0) fmtMs(dur) else ""
+                c.drawText(left, l, baseline(cardSub, py), cardSub)
+                val rw = cardSub.measureText(right)
+                c.drawText(right, r - rw, baseline(cardSub, py), cardSub)
+                val bl = l + cardSub.measureText("00:00") + 10 * d
+                val br = r - max(rw, cardSub.measureText("00:00")) - 10 * d
+                barRect.set(bl, py - 2.5f * d, br, py + 2.5f * d)
+                dim.alpha = 255
+                c.drawRoundRect(barRect, 2.5f * d, 2.5f * d, dim)
+                if (dur > 0) {
+                    dot.color = Color.WHITE
+                    dot.alpha = 255
+                    val f = (pos.toFloat() / dur).coerceIn(0f, 1f)
+                    rect2.set(bl, barRect.top, bl + (br - bl) * f, barRect.bottom)
+                    c.drawRoundRect(rect2, 2.5f * d, 2.5f * d, dot)
+                    if (seeking) c.drawCircle(bl + (br - bl) * f, py, 7 * d, dot)
+                }
+                if (a.playing || seeking) postInvalidateDelayed(if (seeking) 16 else 500)
+            }
+            "timer" -> {
+                val isz = 20 * d
+                cardIcon?.let { drawPic(c, it, l, y0, isz, true, "") }
+                cardSub.textSize = 13f * d
+                cardSub.color = 0xFFA1A7B1.toInt()
+                c.drawText(a.title.ifBlank { a.text }, l + isz + 8 * d, baseline(cardSub, y0 + isz / 2), cardSub)
+                cardTitle.textSize = 40f * d
+                val big = actBig(a)
+                c.drawText(big, l, y0 + 22 * d + 44 * d, cardTitle)
+                drawPills(c, a, l, r, y0 + 22 * d + 50 * d + 8 * d)
+                if (a.chronoBase > 0) postInvalidateDelayed(500)
+            }
+            else -> {
+                val s = 54 * d
+                val isCall = a.kind == "call"
+                drawPic(c, if (isCall) a.pic else cardIcon, l, y0, s, isCall, a.title)
+                val second = when {
+                    isCall && a.callType == 2 && a.chronoBase > 0 -> actBig(a)
+                    else -> a.text
+                }
+                drawHead(c, l + s + 12 * d, r, y0, s, a.title, second, if (isCall && a.callType == 2) 0xFF34D399.toInt() else 0xFFA1A7B1.toInt())
+                drawPills(c, a, l, r, y0 + s + 14 * d)
+                if (isCall) postInvalidateDelayed(500)
+            }
+        }
+        c.restore()
+    }
+
     /** The big value: a running timer counts live; anything else as the app wrote it. */
     private fun actBig(a: Live): String {
         if (a.chronoBase <= 0L) return a.big
@@ -833,6 +1149,20 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val cy = ch / 2
         val isz = ch * 0.62f
         val ix = rect.left + ch * 0.28f
+        if (a.kind == "media") {
+            val art = a.pic ?: actIcon
+            if (art != null) {
+                c.save()
+                rect2.set(ix, cy - isz / 2, ix + isz, cy + isz / 2)
+                path.reset()
+                path.addRoundRect(rect2, isz * 0.28f, isz * 0.28f, Path.Direction.CW)
+                c.clipPath(path)
+                c.drawBitmap(art, null, rect2, bmp)
+                c.restore()
+            }
+            drawWave(c, rect.right - ch / 2 - 13 * d, cy, ch * 0.55f, accentOf(art), a.playing)
+            return
+        }
         actIcon?.let { bm ->
             c.save()
             path.reset()

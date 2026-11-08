@@ -12,6 +12,12 @@ import android.media.session.PlaybackState
 import android.service.notification.StatusBarNotification
 
 /**
+ * A button the app put on its notification (or one we add: the media controls, mute).
+ * [role]: "answer", "decline", "hangup", "mute", "prev", "play", "next", "custom" or "".
+ */
+data class Act(val title: String, val intent: PendingIntent?, val icon: Bitmap?, val role: String, val customId: String = "")
+
+/**
  * One live activity from another app, as the notch shows it: a big value on the camera's left
  * (minutes, a time, a percentage, a running timer), a short label on its right (a car plate…).
  */
@@ -30,6 +36,18 @@ data class Live(
     val at: Long,
     /** When the ride / order is due (from "in 2 min" or "at 12:40 PM"), 0 if unknown: the circle counts down to it. */
     val target: Long = 0L,
+    /** The buttons the opened card shows. */
+    val actions: List<Act> = emptyList(),
+    /** A call: the caller's picture; music: the album art. */
+    val pic: Bitmap? = null,
+    /** A call: 1 ringing, 2 in progress. */
+    val callType: Int = 0,
+    /** Music: playing, where it is (at [posAt], moving at [speed]), and how long it is. */
+    val playing: Boolean = false,
+    val posMs: Long = 0L,
+    val posAt: Long = 0L,
+    val speed: Float = 1f,
+    val durMs: Long = 0L,
 )
 
 /**
@@ -106,15 +124,96 @@ object Activities {
         val max = x.getInt(Notification.EXTRA_PROGRESS_MAX)
         val prog = if (max > 0) x.getInt(Notification.EXTRA_PROGRESS) / max.toFloat() else -1f
         val chrono = x.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER)
-        val (big, right) = parse(t, tx, prog)
+        var (big, right) = parse(t, tx, prog)
+        var callType = 0
+        var base = if (chrono) n.`when` else 0L
+        if (kind == "call") {
+            // Android 12's call style says ringing (1) or ongoing (2); older dialers: a full-screen intent means ringing.
+            callType = x.getInt("android.callType", 0).takeIf { it == 1 || it == 2 }
+                ?: if (n.fullScreenIntent != null && !chrono) 1 else 2
+            if (callType == 2 && base == 0L) base = callStart.getOrPut(s.key) { s.postTime }
+            big = if (callType == 1) L.t("call_in") else ""
+            right = t
+        }
+        if (kind == "timer") right = t.ifBlank { tx }
         return Live(
             key = s.key, pkg = s.packageName, kind = kind, title = t, text = tx,
             big = big, right = right, progress = prog,
-            chronoBase = if (chrono) n.`when` else 0L,
+            chronoBase = base,
             countDown = chrono && x.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN),
             intent = n.contentIntent, at = s.postTime,
             target = target(t, s.postTime),
+            actions = actions(ctx, s, kind),
+            pic = if (kind == "call") largeIcon(ctx, n) else null,
+            callType = callType,
         )
+    }
+
+    private val callStart = HashMap<String, Long>()
+
+    private fun largeIcon(ctx: Context, n: Notification): Bitmap? = try {
+        (n.getLargeIcon()?.loadDrawable(ctx) ?: n.extras.getParcelable<android.graphics.drawable.Icon>(Notification.EXTRA_LARGE_ICON)?.loadDrawable(ctx))
+            ?.let { toBitmap(it, 128) }
+    } catch (e: Exception) {
+        null
+    }
+
+    fun toBitmap(dr: android.graphics.drawable.Drawable, size: Int): Bitmap {
+        val bm = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val c = android.graphics.Canvas(bm)
+        dr.setBounds(0, 0, size, size)
+        dr.draw(c)
+        return bm
+    }
+
+    /** The notification's own buttons, with what each one is for (call buttons, mute) when we can tell. */
+    private fun actions(ctx: Context, s: StatusBarNotification, kind: String): List<Act> {
+        val n = s.notification
+        val x = n.extras
+        @Suppress("DEPRECATION")
+        val answer = x.getParcelable<PendingIntent>("android.answerIntent")
+        @Suppress("DEPRECATION")
+        val decline = x.getParcelable<PendingIntent>("android.declineIntent")
+        @Suppress("DEPRECATION")
+        val hang = x.getParcelable<PendingIntent>("android.hangUpIntent")
+        val out = ArrayList<Act>()
+        n.actions?.forEach { a ->
+            val sem = a.semanticAction
+            val role = when {
+                a.actionIntent != null && a.actionIntent == answer -> "answer"
+                a.actionIntent != null && a.actionIntent == decline -> "decline"
+                a.actionIntent != null && a.actionIntent == hang -> "hangup"
+                sem == Notification.Action.SEMANTIC_ACTION_MUTE || sem == Notification.Action.SEMANTIC_ACTION_UNMUTE -> "mute"
+                sem == Notification.Action.SEMANTIC_ACTION_CALL -> "answer"
+                sem == Notification.Action.SEMANTIC_ACTION_DELETE -> "decline"
+                else -> ""
+            }
+            val icon = try {
+                a.getIcon()?.loadDrawable(ctx)?.let { toBitmap(it, 48) }
+            } catch (e: Exception) {
+                null
+            }
+            out += Act(a.title?.toString().orEmpty(), a.actionIntent, icon, role)
+        }
+        if (kind == "call") {
+            // Call-style notifications without their buttons in the list: build them from the extras.
+            if (out.none { it.role == "answer" } && answer != null) out += Act(L.t("call_answer"), answer, null, "answer")
+            if (out.none { it.role == "decline" } && decline != null) out.add(0, Act(L.t("call_decline"), decline, null, "decline"))
+            if (out.none { it.role == "hangup" } && hang != null) out += Act(L.t("call_hang"), hang, null, "hangup")
+            // A dialer that put no buttons up: the phone's own answer / end (with the "answer calls" permission).
+            val ringing = x.getInt("android.callType", 0) == 1 || (n.fullScreenIntent != null && !x.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER))
+            if (out.isEmpty()) {
+                if (ringing) {
+                    out += Act(L.t("call_decline"), null, null, "decline")
+                    out += Act(L.t("call_answer"), null, null, "answer")
+                } else {
+                    out += Act(L.t("call_hang"), null, null, "hangup")
+                }
+            }
+            // Mute during a call: the dialer's button if it has one, else the phone's microphone.
+            if (!ringing && out.none { it.role == "mute" }) out.add(0, Act(L.t("call_mute"), null, null, "mute"))
+        }
+        return out.take(4)
     }
 
     private val minutes = Regex("(\\d{1,3})\\s*(min|mins|minutes|minute|دقيقة|دقائق|دقيقه|دقايق|د)(?![\\p{L}])", RegexOption.IGNORE_CASE)
@@ -170,18 +269,48 @@ object Activities {
         }
         return try {
             val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-            val c = msm.getActiveSessions(ComponentName(ctx, NotifListener::class.java))
-                .firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING && it.packageName != ctx.packageName }
+            val now = System.currentTimeMillis()
+            val all = msm.getActiveSessions(ComponentName(ctx, NotifListener::class.java)).filter { it.packageName != ctx.packageName }
+            // A song paused from the notch stays there for a while (to play it again), like the phone's own island.
+            val c = all.firstOrNull { it.playbackState?.state == PlaybackState.STATE_PLAYING }
+                ?: all.firstOrNull { it.packageName == lastPkg && it.playbackState?.state == PlaybackState.STATE_PAUSED && now - lastPlayAt < 5 * 60_000L }
             media = c
             c ?: return null
+            val isPlaying = c.playbackState?.state == PlaybackState.STATE_PLAYING
+            if (isPlaying) {
+                lastPkg = c.packageName
+                lastPlayAt = now
+            }
             val md = c.metadata
             val title = md?.getString(MediaMetadata.METADATA_KEY_TITLE).orEmpty()
             val artist = md?.getString(MediaMetadata.METADATA_KEY_ARTIST).orEmpty()
-            Live("media:${c.packageName}", c.packageName, "media", title, artist, title, artist, -1f, 0L, false, c.sessionActivity, System.currentTimeMillis())
+            val ps = c.playbackState
+            // Up to two of the app's own extra buttons (YouTube Music: like, shuffle), with the app's icons.
+            val custom = ps?.customActions.orEmpty().take(2).map { ca ->
+                val icon = try {
+                    ctx.createPackageContext(c.packageName, 0).getDrawable(ca.icon)?.let { toBitmap(it, 48) }
+                } catch (e: Exception) {
+                    null
+                }
+                Act(ca.name?.toString().orEmpty(), null, icon, "custom", ca.action)
+            }
+            val acts = listOfNotNull(custom.getOrNull(0)) +
+                listOf(Act("", null, null, "prev"), Act("", null, null, "play"), Act("", null, null, "next")) +
+                listOfNotNull(custom.getOrNull(1))
+            Live(
+                "media:${c.packageName}", c.packageName, "media", title, artist, title, artist, -1f, 0L, false,
+                c.sessionActivity, System.currentTimeMillis(),
+                actions = acts, pic = mediaArt(), playing = isPlaying,
+                posMs = ps?.position ?: 0L, posAt = ps?.lastPositionUpdateTime ?: 0L, speed = ps?.playbackSpeed ?: 1f,
+                durMs = md?.getLong(MediaMetadata.METADATA_KEY_DURATION) ?: 0L,
+            )
         } catch (e: Exception) {
             null
         }
     }
+
+    private var lastPkg = ""
+    private var lastPlayAt = 0L
 
     fun mediaArt(): Bitmap? = try {
         media?.metadata?.let { it.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART) ?: it.getBitmap(MediaMetadata.METADATA_KEY_ART) }

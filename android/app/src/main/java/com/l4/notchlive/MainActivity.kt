@@ -135,6 +135,7 @@ class MainActivity : Activity() {
             if (step in 1..4 && step != 3 && granted(step)) step++
             drawOnboarding()
         } else {
+            askCallPerm(false)
             draw()
         }
         main.removeCallbacks(tick)
@@ -1034,7 +1035,10 @@ class MainActivity : Activity() {
             })
             val pill = SystemPill.pillOn(this)
             la.addView(divider())
-            la.addView(toggleRow(L.t("live_system"), if (pill) L.t("live_has_pill") else L.t("live_system_d"), prefs.liveSystem) { prefs.liveSystem = it })
+            la.addView(toggleRow(L.t("live_system"), if (pill) L.t("live_has_pill") else L.t("live_system_d"), prefs.liveSystem) {
+                prefs.liveSystem = it
+                if (it) askCallPerm(true)
+            })
             la.addView(divider())
             la.addView(toggleRow(L.t("live_media"), if (pill) L.t("live_has_pill") else null, prefs.liveMedia) { prefs.liveMedia = it })
             la.addView(divider())
@@ -1880,6 +1884,16 @@ class MainActivity : Activity() {
                 draw()
             }
             .show()
+    }
+
+    /** Answer / end calls from the notch: asked once on its own, and again whenever the switch is turned on. */
+    private fun askCallPerm(fromSwitch: Boolean) {
+        if (!prefs.liveActs || !prefs.liveSystem || SystemPill.pillOn(this)) return
+        if (checkSelfPermission(Manifest.permission.ANSWER_PHONE_CALLS) == android.content.pm.PackageManager.PERMISSION_GRANTED) return
+        if (!fromSwitch && prefs.askedCallPerm) return
+        prefs.askedCallPerm = true
+        toast(L.t("call_perm"))
+        requestPermissions(arrayOf(Manifest.permission.ANSWER_PHONE_CALLS), 7)
     }
 
     private fun toast(s: String) = android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_LONG).show()

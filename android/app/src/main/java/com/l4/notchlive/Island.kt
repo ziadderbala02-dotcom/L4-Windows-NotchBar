@@ -122,7 +122,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         others: Int = 0, idle: Boolean = false, stats: List<Stat>? = null, rec: Long = 0L,
         idleText: String = "", idleTemp: String = "", weather: String = "", weatherUntil: Long = 0L, weatherAlways: Boolean = false,
         weatherGlyph: String = "", weatherWord: String = "", act: Live? = null, actIcon: android.graphics.Bitmap? = null,
-        ringAct: Live? = null,
+        ringAct: Live? = null, card: Live? = null, cardIcon: android.graphics.Bitmap? = null,
     ) {
         if (match == null) {
             hide()
@@ -135,6 +135,10 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.act = act
         val ringGrew = (v.ringAct == null) != (ringAct == null) || (v.match?.id ?: -1) != match.id
         v.ringAct = ringAct
+        val cardGrew = (v.card?.actions?.size ?: -1) != (card?.actions?.size ?: -1) || v.card?.kind != card?.kind
+        v.card = card
+        v.cardIcon = cardIcon
+        if (cardGrew && big) post { layout() }
         if (ringGrew && !big) post { layout() }
         v.actIcon = actIcon
         if (actGrew && !big) layout()
