@@ -203,6 +203,11 @@ class Prefs(ctx: Context) {
         get() = p.getBoolean("liveSystem", true)
         set(v) = p.edit().putBoolean("liveSystem", v).apply()
 
+    /** The notch's accessibility service has run at least once (so its stopping is worth a warning). */
+    var tapsSeen: Boolean
+        get() = p.getBoolean("tapsSeen", false)
+        set(v) = p.edit().putBoolean("tapsSeen", v).apply()
+
     /** The "answer calls" permission was asked for once already (asked again only from the switch). */
     var askedCallPerm: Boolean
         get() = p.getBoolean("askedCallPerm", false)

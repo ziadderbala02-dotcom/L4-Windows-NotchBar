@@ -635,6 +635,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             return
         }
         val m = match ?: return
+        if (t == 0f) ringAct?.let { ra -> if (sideW() > 0f) drawRing(c, ra, compactHeight() / 2f) }
         if (isInline(burst)) {
             drawInline(c, m, burst!!)
             return
@@ -709,6 +710,71 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return if (ringAct != null && (match?.id ?: -1) >= 0) ch * 2 + (4 * d).toInt() else ch
     }
 
+    /** Room left of the match notch for an activity's circle (the scoreboard keeps the middle). */
+    fun sideW(): Float = if (ringAct != null && !circle && (match?.id ?: -1) >= 0 && burst == null && !info && !tucked) compactHeight() + 5 * d else 0f
+
+    /** An activity in a small circle: the song's art with its progress, a timer, a call, a ride. */
+    private fun drawRing(c: Canvas, a: Live, r: Float) {
+        val now = System.currentTimeMillis()
+        when (a.kind) {
+            "media" -> {
+                c.drawCircle(r, r, r, bg)
+                val art = a.pic
+                val ir = r - 3f * d
+                if (art != null) {
+                    c.save()
+                    path.reset()
+                    path.addCircle(r, r, ir, Path.Direction.CW)
+                    c.clipPath(path)
+                    rect2.set(r - ir, r - ir, r + ir, r + ir)
+                    bmp.alpha = 255
+                    c.drawBitmap(art, null, rect2, bmp)
+                    c.restore()
+                }
+                val col = accentOf(art)
+                stroke.strokeWidth = 1.8f * d
+                stroke.color = 0xFF3A3F47.toInt()
+                stroke.alpha = 255
+                c.drawCircle(r, r, r - 1f * d, stroke)
+                val pos = if (a.playing && a.posAt > 0) a.posMs + ((android.os.SystemClock.elapsedRealtime() - a.posAt) * a.speed).toLong() else a.posMs
+                if (a.durMs > 0) {
+                    stroke.color = col
+                    rect2.set(1f * d, 1f * d, 2 * r - 1f * d, 2 * r - 1f * d)
+                    stroke.strokeCap = Paint.Cap.ROUND
+                    c.drawArc(rect2, -90f, 360f * (pos.toFloat() / a.durMs).coerceIn(0f, 1f), false, stroke)
+                    stroke.strokeCap = Paint.Cap.BUTT
+                }
+                if (a.playing) postInvalidateDelayed(1_000L)
+            }
+            "timer", "call" -> {
+                c.drawCircle(r, r, r, bg)
+                val col = if (a.kind == "call") 0xFF34D399.toInt() else 0xFFFBBF24.toInt()
+                stroke.color = col
+                stroke.alpha = 255
+                stroke.strokeWidth = 1.6f * d
+                c.drawCircle(r, r, r - 1.6f * d, stroke)
+                val secs = if (a.chronoBase > 0) abs(now - a.chronoBase) / 1000 else -1
+                val txt = when {
+                    secs < 0 -> "•"
+                    a.kind == "timer" && secs >= 60 -> ((secs + 59) / 60).toString()
+                    a.kind == "timer" -> secs.toString()
+                    else -> "%d:%02d".format(secs / 60, secs % 60)
+                }
+                val old = score.textSize
+                score.textSize = (if (txt.length > 3) 7f else if (txt.length > 2) 8.5f else 10.5f) * d
+                score.color = col
+                score.alpha = 255
+                score.textAlign = Paint.Align.CENTER
+                c.drawText(txt, r, baseline(score, r), score)
+                score.textAlign = Paint.Align.LEFT
+                score.textSize = old
+                score.color = Color.WHITE
+                postInvalidateDelayed(1_000L)
+            }
+            else -> drawRideCircle(c, a, r)
+        }
+    }
+
     /** The ride's circle: minutes left (counting down), or a pulsing dot when there's no time. */
     private fun drawRideCircle(c: Canvas, a: Live, r: Float) {
         c.drawCircle(r, r, r, bg)
@@ -746,7 +812,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val size = compactHeight().toFloat()
         val r = size / 2
         ringAct?.let { a ->
-            drawRideCircle(c, a, r)
+            drawRing(c, a, r)
             if (m.id < 0) return
             c.translate(size + 4 * d, 0f)
         }
@@ -901,6 +967,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return when (a.kind) {
             "media" -> 54f + 12f + 44f + 6f + 20f + 14f
             "timer" -> 22f + 50f + btns + 12f
+            "call" -> 60f + btns + 14f
             else -> 54f + btns + 14f
         }
     }
@@ -928,8 +995,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             path.reset()
             path.addRoundRect(rect2, rr, rr, Path.Direction.CW)
             c.clipPath(path)
+            bmp.alpha = 255
             c.drawBitmap(bm, null, rect2, bmp)
             c.restore()
+            artEdge(c, rect2, rr)
         } else {
             dot.color = 0xFF6366F1.toInt()
             dot.alpha = 255
@@ -941,10 +1010,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         }
     }
 
+    /** A thin light edge, so dark album art doesn't vanish into the black notch. */
+    private fun artEdge(c: Canvas, r: RectF, rr: Float) {
+        stroke.color = 0x40FFFFFF
+        stroke.alpha = 0x40
+        stroke.strokeWidth = 1f * d
+        c.drawRoundRect(r, rr, rr, stroke)
+    }
+
     /** Title and a second line beside a picture. */
-    private fun drawHead(c: Canvas, x: Float, r: Float, y: Float, h: Float, t1: String, t2: String, t2Color: Int) {
+    private fun drawHead(c: Canvas, x: Float, r: Float, y: Float, h: Float, t1: String, t2: String, t2Color: Int, big: Boolean = false) {
         val w = r - x
-        cardTitle.textSize = 17f * d
+        cardTitle.textSize = (if (big) 21f else 17f) * d
         cardSub.textSize = 13f * d
         cardSub.color = t2Color
         val gapY = 4 * d
@@ -1086,15 +1163,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 val bl = l + cardSub.measureText("00:00") + 10 * d
                 val br = r - max(rw, cardSub.measureText("00:00")) - 10 * d
                 barRect.set(bl, py - 2.5f * d, br, py + 2.5f * d)
-                dim.alpha = 255
-                c.drawRoundRect(barRect, 2.5f * d, 2.5f * d, dim)
+                // Played part and the dot in the song's colour, the rest dark grey: you always see where you are.
+                dot.color = 0xFF3A3F47.toInt()
+                dot.alpha = 255
+                c.drawRoundRect(barRect, 2.5f * d, 2.5f * d, dot)
                 if (dur > 0) {
-                    dot.color = Color.WHITE
+                    val col = accentOf(a.pic ?: cardIcon)
+                    dot.color = col
                     dot.alpha = 255
                     val f = (pos.toFloat() / dur).coerceIn(0f, 1f)
                     rect2.set(bl, barRect.top, bl + (br - bl) * f, barRect.bottom)
                     c.drawRoundRect(rect2, 2.5f * d, 2.5f * d, dot)
-                    if (seeking) c.drawCircle(bl + (br - bl) * f, py, 7 * d, dot)
+                    c.drawCircle(bl + (br - bl) * f, py, (if (seeking) 8f else 6f) * d, dot)
                 }
                 if (a.playing || seeking) postInvalidateDelayed(if (seeking) 16 else 500)
             }
@@ -1111,14 +1191,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 if (a.chronoBase > 0) postInvalidateDelayed(500)
             }
             else -> {
-                val s = 54 * d
                 val isCall = a.kind == "call"
+                val s = (if (isCall) 60 else 54) * d
                 drawPic(c, if (isCall) a.pic else cardIcon, l, y0, s, isCall, a.title)
                 val second = when {
                     isCall && a.callType == 2 && a.chronoBase > 0 -> actBig(a)
                     else -> a.text
                 }
-                drawHead(c, l + s + 12 * d, r, y0, s, a.title, second, if (isCall && a.callType == 2) 0xFF34D399.toInt() else 0xFFA1A7B1.toInt())
+                drawHead(c, l + s + 12 * d, r, y0, s, a.title, second, if (isCall && a.callType == 2) 0xFF34D399.toInt() else 0xFFA1A7B1.toInt(), big = isCall)
                 drawPills(c, a, l, r, y0 + s + 14 * d)
                 if (isCall) postInvalidateDelayed(500)
             }
@@ -1157,8 +1237,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 path.reset()
                 path.addRoundRect(rect2, isz * 0.28f, isz * 0.28f, Path.Direction.CW)
                 c.clipPath(path)
+                bmp.alpha = 255
                 c.drawBitmap(art, null, rect2, bmp)
                 c.restore()
+                artEdge(c, rect2, isz * 0.28f)
             }
             drawWave(c, rect.right - ch / 2 - 13 * d, cy, ch * 0.55f, accentOf(art), a.playing)
             return

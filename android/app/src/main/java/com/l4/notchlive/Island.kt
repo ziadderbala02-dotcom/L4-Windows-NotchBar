@@ -345,9 +345,11 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             v.camX = g.cx - x
         } else {
             val (lw, rw) = v.compactExtent()
-            width = (lw + rw).toInt() + 1
+            // An activity's circle left of the match (the scoreboard keeps its place round the camera).
+            val side = v.sideW()
+            width = (lw + rw + side).toInt() + 1
             height = ch
-            x = (g.cx - lw).toInt()
+            x = (g.cx - lw - side).toInt()
             v.camX = g.cx - x
         }
         val y = if (g.portrait) (g.cy - ch / 2f + prefs.offsetY * density).toInt() else g.cy.toInt()

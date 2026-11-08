@@ -47,6 +47,7 @@ class LiveService : Service(), IslandView.Gestures {
         /** Bursts that belong to no match. */
         private const val NEWS_ID = -2
         /** Events that play inside the notch first (a tap opens them big). */
+        private const val ACCESS_URL = "notch:access"
         private val INLINE_KINDS = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
         /** The always-on notch and the recording pill. */
         private const val IDLE_ID = -5
@@ -265,13 +266,23 @@ class LiveService : Service(), IslandView.Gestures {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
         if (endPreview(m)) return
+        current?.takeIf { it.url == ACCESS_URL }?.let {
+            current = null
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_ACCESSIBILITY_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+                // No settings page.
+            }
+            render()
+            return
+        }
         if (actNow && current == null) {
             act?.let { tapActivity(it) }
             return
         }
         ringAct?.let { a ->
             // Beside the pill: the left circle is the ride (a tap opens it big, a second opens the app).
-            if (current == null && (m.id < 0 || island.tapOnRide())) {
+            if (current == null && infoMatch == null && (m.id < 0 || island.tapOnRide())) {
                 tapActivity(a)
                 return
             }
@@ -905,7 +916,8 @@ class LiveService : Service(), IslandView.Gestures {
         val sig = a.key + "|" + a.title + "|" + a.text
         if (sig != actSeen) {
             // Something new (the driver arrived, the time changed…): it shows even over a match.
-            if (a.kind != "media" || actSeen.substringBefore("|") != a.key) actFocusUntil = now + 8_000L
+            // Over a match only what matters pops up for a moment (the driver arrived); a new song or timer stays in its circle.
+            if (a.kind == "ride" || a.kind == "app") actFocusUntil = now + 5_000L
             actSeen = sig
             weatherUntil = 0L
         }
@@ -1233,8 +1245,27 @@ class LiveService : Service(), IslandView.Gestures {
     /** The accessibility service was running: when it stops (Second Space, a cleaner…), say so once. */
     private var hadTaps: Boolean? = null
 
+    private var warnedAt = 0L
+    private val warnTick = Runnable { render() }
+
     private fun watchTaps() {
         val on = TapService.instance != null
+        if (on) prefs.tapsSeen = true
+        // Taps were working before and now they're off: say so in the notch itself, like a news item
+        // (every 15 seconds; every minute while a match is on, so the score stays readable).
+        val now = System.currentTimeMillis()
+        val matchOn = (onScreen?.id ?: -1) >= 0 && liveNow(matches).isNotEmpty()
+        if (!on && prefs.tapsSeen) {
+            // Keep checking even when nothing else redraws the notch.
+            main.removeCallbacks(warnTick)
+            main.postDelayed(warnTick, 15_000L)
+        }
+        if (!on && prefs.tapsSeen && prefs.onboarded && current == null && now - warnedAt > (if (matchOn) 60_000L else 15_000L)) {
+            warnedAt = now
+            main.post {
+                if (current == null) showOverlay(Burst("news", L.t("access_warn"), "", true, 0xFFF59E0B.toInt(), NEWS_ID, url = ACCESS_URL), 5_000L)
+            }
+        }
         if (hadTaps == true && !on && prefs.onboarded) {
             try {
                 val i = PendingIntent.getActivity(
@@ -1298,7 +1329,8 @@ class LiveService : Service(), IslandView.Gestures {
         if (current?.kind == "shortcuts") {
             m = blankMatch()
             idleNow = true
-        } else if (act != null && ((m == null && current == null) || (current == null && now < actFocusUntil && infoMatch == null) || menuForAct)) {
+        } else if (act != null && ((m == null && current == null) || (current == null && now < actFocusUntil && infoMatch == null) || menuForAct ||
+                (current == null && act?.kind == "call" && act?.callType == 1))) {
             // A live activity: on a quiet notch, or for a few seconds over a match when it changes.
             m = blankMatch()
             actNow = true
@@ -1324,6 +1356,10 @@ class LiveService : Service(), IslandView.Gestures {
             m = if (news != null) newsMatch(news) else featured(list, now) ?: blankMatch()
             onScreen = m
         }
+        // The scoreboard comes first: any other activity sits in a small circle left of it.
+        if (ringAct == null && !circleNow && !actNow && !idleNow && !recNow && current == null && infoMatch == null &&
+            (m?.id ?: -1) >= 0 && act != null && act?.kind != "charge"
+        ) ringAct = act
         val hidden = !prefs.enabled || prefs.paused || now < hiddenUntil || (busy && !prefs.circle && island.portrait()) ||
             // The capsule steps aside for Xiaomi's island.
             // The always-on notch steps aside completely for the phone's own pill.
