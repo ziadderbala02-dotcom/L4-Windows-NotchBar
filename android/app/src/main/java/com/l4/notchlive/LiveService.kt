@@ -747,7 +747,8 @@ class LiveService : Service(), IslandView.Gestures {
     private fun goal(m: Match, home: Boolean) {
         val last = m.events.lastOrNull { it.kind == "goal" && it.home == home }
         val who = goalFor(m, home)
-        val bad = who == "against"
+        // 1.8: the user may want a goal against treated like any goal ("same").
+        val bad = who == "against" && prefs.againstMode != "same"
         val b = Burst(
             "goal", if (bad) L.t("goal_against") else L.t("goal"), scorerLine(m, home, last), home, m.side(home).color, m.id,
             against = bad, neutral = who == "neutral",
@@ -1427,8 +1428,10 @@ class LiveService : Service(), IslandView.Gestures {
     private fun announce(b: Burst, m: Match) {
         if (b.kind == "phone") return
         val quiet = b.matchId in muted
-        if (prefs.sound && !inCall() && !quiet) sounds.play(if (b.against) "conceded" else if (b.neutral) "neutral" else b.kind)
-        if (prefs.vibrate && !quiet && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal")
+        val silentAgainst = b.against && prefs.againstMode == "off"
+        if (prefs.sound && !inCall() && !quiet && !silentAgainst) sounds.play(if (b.against) "conceded" else if (b.neutral) "neutral" else b.kind)
+        // A goal against: one short buzz instead of the celebration pattern.
+        if (prefs.vibrate && !quiet && (b.kind == "goal" || b.kind == "red")) buzz(b.kind == "goal" && !b.against, short = b.against)
         // The notch can't show it (no permission, a call, landscape): a normal notification instead.
         if (!island.canShow() || !island.showing || prefs.paused || inCall() || System.currentTimeMillis() < hiddenUntil) {
             if (b.kind == "notice" || b.kind == "whistle" || b.kind == "news") return
@@ -1447,7 +1450,7 @@ class LiveService : Service(), IslandView.Gestures {
         }
     }
 
-    private fun buzz(goal: Boolean) {
+    private fun buzz(goal: Boolean, short: Boolean = false) {
         val v = if (Build.VERSION.SDK_INT >= 31) {
             (getSystemService(VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
         } else {
@@ -1455,7 +1458,7 @@ class LiveService : Service(), IslandView.Gestures {
             getSystemService(VIBRATOR_SERVICE) as Vibrator
         }
         if (!v.hasVibrator()) return
-        val pattern = if (goal) longArrayOf(0, 120, 80, 120, 80, 260) else longArrayOf(0, 300)
+        val pattern = if (short) longArrayOf(0, 90) else if (goal) longArrayOf(0, 120, 80, 120, 80, 260) else longArrayOf(0, 300)
         v.vibrate(VibrationEffect.createWaveform(pattern, -1))
     }
 
@@ -1623,7 +1626,10 @@ class LiveService : Service(), IslandView.Gestures {
             "goal" -> push(Burst("goal", L.t("goal"), "تريزيجيه • 88'", true, home.color, -1))
             "red" -> push(Burst("red", L.t("red"), "كوندي • 70'", false, 0xFFF87171.toInt(), -1))
             "whistle" -> push(Burst("whistle", L.t("resume"), L.t("second_half"), true, 0xFFE5E7EB.toInt(), -1))
-            "against" -> push(Burst("goal", L.t("goal_against"), "يامال • 88'", false, away.color, -1, against = true))
+            "against" -> {
+                val same = prefs.againstMode == "same"
+                push(Burst("goal", L.t(if (same) "goal" else "goal_against"), "يامال • 88'", false, away.color, -1, against = !same))
+            }
             "news" -> queue.addLast(
                 Burst("news", L.f("news_about", a.name), if (L.ar) "تجربة: عنوان خبر طويل بعض الشيء لنرى شكله على سطرين داخل النوتش" else "Test: a longish headline to see how it looks on two lines in the notch", true, 0xFF60A5FA.toInt(), NEWS_ID, logo = a.logo, url = "https://www.365scores.com/ar/news"),
             )

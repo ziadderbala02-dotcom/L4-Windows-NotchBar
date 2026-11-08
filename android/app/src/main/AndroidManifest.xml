@@ -30,6 +30,8 @@
 
     <application
         android:label="Notch Live"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_rules"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher"
         android:supportsRtl="true"
@@ -91,6 +93,8 @@
             android:name=".TapService"
             android:exported="true"
             android:label="Notch Live"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_rules"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
@@ -105,6 +109,8 @@
             android:exported="true"
             android:icon="@drawable/ic_ball"
             android:label="Notch Live"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_rules"
             android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
             <intent-filter>
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
@@ -121,6 +127,8 @@
             android:name=".NotifListener"
             android:exported="true"
             android:label="Notch Live"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_rules"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />

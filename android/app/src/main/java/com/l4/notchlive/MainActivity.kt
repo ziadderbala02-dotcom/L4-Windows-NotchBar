@@ -177,6 +177,7 @@ class MainActivity : Activity() {
             "teams" -> teamsPage(content)
             "comps" -> compsPage(content)
             "sounds" -> soundsPage(content)
+            "device" -> devicePage(content)
             "slots" -> slotsPage(content)
             "idle_content" -> idleContentPage(content)
             "city" -> cityPage(content)
@@ -260,7 +261,8 @@ class MainActivity : Activity() {
             val w = card(14).apply { background = Ui.rounded(Ui.AMBER_SOFT, dp(18).toFloat(), Ui.AMBER, dp(1)) }
             w.addView(text(L.t("access_off"), 14f, Ui.AMBER, bold = true))
             w.addView(text(L.t("access_off_d"), 12f, Ui.TEXT), lp(MATCH, WRAP, top = dp(4)))
-            w.addView(button(L.t("access_fix"), primary = true) { openAccessibility() }, lp(MATCH, WRAP, top = dp(10)))
+            if (restrictedLikely()) w.addView(restrictedGuide(), lp(MATCH, WRAP, top = dp(10)))
+            else w.addView(button(L.t("access_fix"), primary = true) { openAccessibility() }, lp(MATCH, WRAP, top = dp(10)))
             box.addView(w, lp(MATCH, WRAP))
             box.addView(View(this), lp(MATCH, dp(12)))
         }
@@ -1206,7 +1208,7 @@ class MainActivity : Activity() {
 
     private fun goBack() {
         val p = page
-        page = if (p != null && (p.startsWith("search") || p == "slot_pick" || p == "city")) backTo else null
+        page = if (p == "device") "position" else if (p != null && (p.startsWith("search") || p == "slot_pick" || p == "city")) backTo else null
         if (p != null && p.startsWith("search")) {
             main.removeCallbacks(searchRun)
             searchBox = null
@@ -1234,24 +1236,55 @@ class MainActivity : Activity() {
         backRow(c, L.t("position"))
         val k = card()
         k.addView(text(L.t("pos_note"), 13f, Ui.MUTED))
+        // 1.8: the layout, chosen by itself from the room the status bar leaves (or picked here).
+        k.addView(label(L.t("tpl")), lp(MATCH, WRAP, top = dp(12)))
+        k.addView(segmented(listOf("auto" to "tpl_auto", "A" to "_A", "B" to "_B", "C" to "_C", "D" to "_D"), prefs.template) {
+            prefs.template = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            LiveService.start(this, LiveService.ACTION_DEMO, "preview")
+            draw()
+        }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(text(L.t("tpl_d"), 11f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(6)))
         k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY, 0) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(12)))
         k.addView(slider(L.t("size"), 50, 140, prefs.scale, 100) { prefs.scale = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(slider(L.t("width"), -40, 80, prefs.widthExtra, 0) { prefs.widthExtra = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(text(L.t("width_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
-        k.addView(slider(L.t("idle_scale"), 50, 150, prefs.idleScale, 90, preview = "idle") { prefs.idleScale = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize, 100, preview = "idle") { prefs.idleSize = it }, lp(MATCH, WRAP, top = dp(8)))
-        k.addView(button(L.t("reset_pos")) {
+        k.addView(slider(L.t("width_pct"), 40, 130, prefs.widthPct, 100) { prefs.widthPct = it }, lp(MATCH, WRAP, top = dp(8)))
+        k.addView(text(L.t("width_pct_d"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+
+        // The always-on notch has its own place (1.8): moving one no longer moves the other.
+        c.addView(label(L.t("idle_pos")), lp(MATCH, WRAP, top = dp(16)))
+        val k2 = card()
+        k2.addView(toggleRow(L.t("link_pos"), L.t("link_pos_d"), prefs.linkPos) {
+            prefs.linkPos = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            draw()
+        })
+        if (!prefs.linkPos) k2.addView(slider(L.t("up_down"), -20, 20, prefs.idleOffsetY, 0, preview = "idle") { prefs.idleOffsetY = it }, lp(MATCH, WRAP, top = dp(8)))
+        k2.addView(slider(L.t("idle_scale"), 50, 150, prefs.idleScale, 90, preview = "idle") { prefs.idleScale = it }, lp(MATCH, WRAP, top = dp(8)))
+        k2.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize, 100, preview = "idle") { prefs.idleSize = it }, lp(MATCH, WRAP, top = dp(8)))
+        c.addView(k2, lp(MATCH, WRAP, top = dp(8)))
+        c.addView(button(L.t("reset_pos")) {
             prefs.offsetY = 0
             prefs.offsetX = 0
             prefs.scale = 100
             prefs.widthExtra = 0
+            prefs.widthPct = 100
+            prefs.template = "auto"
+            prefs.idleOffsetY = 0
+            prefs.linkPos = false
             prefs.idleSize = 100
             prefs.idleScale = 90
             LiveService.start(this, LiveService.ACTION_REFRESH)
             LiveService.start(this, LiveService.ACTION_DEMO, "preview")
             draw()
         }, lp(MATCH, WRAP, top = dp(10)))
-        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(card(0).apply {
+            setPadding(dp(14), dp(2), dp(14), dp(2))
+            addView(navRow(L.t("device_info"), "") {
+                page = "device"
+                draw()
+            })
+        }, lp(MATCH, WRAP, top = dp(8)))
 
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
         val demos = listOf("goal" to "d_goal", "red" to "d_red", "whistle" to "d_whistle", "lineups" to "d_lineups", "against" to "d_against", "news" to "d_news", "info" to "d_info", "grid" to "d_grid", "none" to "d_none")
@@ -1836,6 +1869,43 @@ class MainActivity : Activity() {
             .show()
     }
 
+    /* ----- sub-page: this phone (1.8), to send when the notch looks wrong on some phone ----- */
+
+    private fun deviceReport(): String {
+        val dm = resources.displayMetrics
+        val installer = try {
+            if (Build.VERSION.SDK_INT >= 30) packageManager.getInstallSourceInfo(packageName).installingPackageName else @Suppress("DEPRECATION") packageManager.getInstallerPackageName(packageName)
+        } catch (e: Exception) {
+            null
+        }
+        val yes = { b: Boolean -> if (b) "✓" else "✗" }
+        return buildString {
+            append("Notch Live ${try { packageManager.getPackageInfo(packageName, 0).versionName } catch (e: Exception) { "?" }}\n")
+            append("${Build.MANUFACTURER} ${Build.MODEL} (${Build.DEVICE}) · Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})\n")
+            append("dpi ${dm.densityDpi} · font ${"%.2f".format(resources.configuration.fontScale)} · installer ${installer ?: "-"}\n")
+            append(Island.lastReport.ifEmpty { "(notch not measured yet: show it once)" }).append("\n")
+            append("template: ${prefs.template} → ${IslandView.lastTpl.ifEmpty { "-" }} · width ${prefs.widthPct}% · size ${prefs.scale}% · up/down ${prefs.offsetY}/${prefs.idleOffsetY}\n")
+            append("overlay ${yes(Settings.canDrawOverlays(this@MainActivity))} · accessibility ${yes(TapService.instance != null)} · notifications access ${yes(listenerGranted())} · battery ${yes((getSystemService(POWER_SERVICE) as PowerManager).isIgnoringBatteryOptimizations(packageName))} · restricted ${if (restrictedLikely()) "maybe" else "no"}")
+        }
+    }
+
+    private fun devicePage(c: LinearLayout) {
+        backRow(c, L.t("device_info"))
+        c.addView(text(L.t("device_d"), 13f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(8)))
+        val k = card()
+        val report = deviceReport()
+        k.addView(text(report, 12f).apply {
+            setTextIsSelectable(true)
+            textDirection = View.TEXT_DIRECTION_LTR
+            setLineSpacing(0f, 1.3f)
+        })
+        c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(button(L.t("send_report"), primary = true) {
+            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, report)
+            startActivity(Intent.createChooser(send, L.t("send_report")))
+        }, lp(MATCH, dp(52), top = dp(12)))
+    }
+
     /* ----- sub-page: sounds ----- */
 
     private fun soundsPage(c: LinearLayout) {
@@ -1847,6 +1917,20 @@ class MainActivity : Activity() {
                 draw()
             }, lp(MATCH, WRAP, top = dp(8)))
         }
+        // 1.8: a goal against your team: its own quiet sound (default), like any goal, or silent.
+        c.addView(label(L.t("snd_against")), lp(MATCH, WRAP, top = dp(16)))
+        c.addView(segmented(listOf("calm" to "ag_calm", "same" to "ag_same", "off" to "s_off"), prefs.againstMode) {
+            prefs.againstMode = it
+            if (it != "same") {
+                val s = Sounds(this)
+                main.postDelayed({
+                    if (it == "calm") s.play("conceded")
+                    main.postDelayed({ s.release() }, 3000)
+                }, 400)
+            }
+            draw()
+        }, lp(MATCH, WRAP, top = dp(8)))
+        c.addView(text(L.t("ag_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(6)))
         val k = card()
         k.addView(slider(L.t("volume"), 0, 100, prefs.volume, 80, preview = null) { prefs.volume = it }, lp(MATCH, WRAP))
         k.addView(button(L.t("test_sound")) {
@@ -2009,7 +2093,8 @@ class MainActivity : Activity() {
 
     /* ======================= First run: permissions step by step ======================= */
 
-    private val steps = 5
+    // 1.8: a last step lists every permission with ✓/✗, so none is missed.
+    private val steps = 6
 
     private fun granted(s: Int): Boolean {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
@@ -2042,7 +2127,11 @@ class MainActivity : Activity() {
 
         val head = row()
         head.addView(text(L.f("step_of", step + 1, steps), 13f, Ui.MUTED), lp(0, WRAP, 1f))
-        head.addView(link(L.t("skip")) { finishOnboarding() }.apply { setTextColor(Ui.MUTED) })
+        // "Skip" skips this step only (it used to end the whole setup).
+        if (step < steps - 1) head.addView(link(L.t("skip_step")) {
+            step++
+            drawOnboarding()
+        }.apply { setTextColor(Ui.MUTED) })
         c.addView(head)
         val dots = row()
         for (i in 0 until steps) {
@@ -2055,7 +2144,8 @@ class MainActivity : Activity() {
             1 -> "ob2_t" to "ob2_d"
             2 -> "ob3_t" to "ob3_d"
             3 -> "ob4_t" to "ob4_d"
-            else -> "ob5_t" to "ob5_d"
+            4 -> "ob5_t" to "ob5_d"
+            else -> "ob6_t" to "ob6_d"
         }
         if (step in 1..2) c.addView(phoneArt(), lp(dp(200), dp(170), top = dp(22)).apply { gravity = Gravity.CENTER_HORIZONTAL })
         c.addView(text(L.t(title), 24f, bold = true).apply { setLineSpacing(0f, 1.2f) }, lp(MATCH, WRAP, top = dp(22)))
@@ -2088,9 +2178,12 @@ class MainActivity : Activity() {
                     drawOnboarding()
                 }.apply { setTextColor(Ui.MUTED) }, lp(WRAP, WRAP, top = dp(8)))
             }
-            1 -> action = { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))) }
+            1 -> action = { openOverlay() }
             2 -> {
-                c.addView(hint(L.t("ob3_h")), lp(MATCH, WRAP, top = dp(14)))
+                // Android 13+ blocks accessibility for apps installed outside the store until the user
+                // allows "restricted settings": the step most people can't find (Omar, 1.8).
+                if (restrictedLikely()) c.addView(restrictedGuide(), lp(MATCH, WRAP, top = dp(14)))
+                else c.addView(hint(L.t("ob3_h")), lp(MATCH, WRAP, top = dp(14)))
                 action = { openAccessibility() }
             }
             3 -> {
@@ -2120,8 +2213,21 @@ class MainActivity : Activity() {
                 })
                 c.addView(k, lp(MATCH, WRAP, top = dp(16)))
             }
-            else -> action = {
+            4 -> action = {
                 if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            }
+            else -> {
+                // The summary: each permission with ✓/✗; a tap goes back to its step.
+                val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+                listOf(1 to "perm_overlay", 2 to "perm_access", 3 to "perm_battery", 4 to "perm_notif").forEachIndexed { i, (st, key) ->
+                    if (i > 0) k.addView(divider())
+                    k.addView(navRow(L.t(key), if (granted(st)) "✓" else "✗") {
+                        step = st
+                        drawOnboarding()
+                    })
+                }
+                c.addView(k, lp(MATCH, WRAP, top = dp(16)))
+                if ((1..4).any { !granted(it) }) c.addView(hint(L.t("perm_later")), lp(MATCH, WRAP, top = dp(12)))
             }
         }
         if (step == 1 || step == 2) c.addView(hint(L.t("ob_hint")), lp(MATCH, WRAP, top = dp(14)))
@@ -2189,6 +2295,65 @@ class MainActivity : Activity() {
         }
         f.addView(lines, FrameLayout.LayoutParams(dp(150), WRAP, Gravity.CENTER_HORIZONTAL).apply { topMargin = dp(56) })
         return f
+    }
+
+    /** "Display over other apps", with fallbacks for ROMs that refuse the direct page. */
+    private fun openOverlay() {
+        for (i in listOf(
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION),
+        )) {
+            try {
+                startActivity(i)
+                return
+            } catch (e: Exception) {
+                // Next one.
+            }
+        }
+        appDetails()
+    }
+
+    /**
+     * Android 13+ marks sideloaded apps "restricted": accessibility and notification access stay grey
+     * until App info → ⋮ → Allow restricted settings. Not for store installs, or once it's allowed.
+     */
+    private fun restrictedLikely(): Boolean {
+        if (Build.VERSION.SDK_INT < 33 || TapService.instance != null) return false
+        try {
+            if (packageManager.getInstallSourceInfo(packageName).installingPackageName == "com.android.vending") return false
+        } catch (e: Exception) {
+            // Unknown: keep checking.
+        }
+        return try {
+            val ops = getSystemService(APP_OPS_SERVICE) as android.app.AppOpsManager
+            ops.unsafeCheckOpNoThrow("android:access_restricted_settings", applicationInfo.uid, packageName) != android.app.AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    /** Three numbered steps with a button each: try once, allow restricted settings, turn it on. */
+    private fun restrictedGuide(): View {
+        val k = card(14).apply { background = Ui.rounded(Ui.CARD, dp(16).toFloat(), Ui.AMBER, dp(1)) }
+        k.addView(text(L.t("rs_title"), 15f, Ui.AMBER, bold = true))
+        k.addView(text(L.t("rs_why"), 12f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(4)))
+        val b = (Build.MANUFACTURER + " " + Build.BRAND).lowercase()
+        val where = when {
+            b.contains("honor") || b.contains("huawei") -> "rs_where_honor"
+            b.contains("samsung") -> "rs_where_samsung"
+            b.contains("xiaomi") || b.contains("redmi") || b.contains("poco") -> "rs_where_xiaomi"
+            else -> "rs_where"
+        }
+        listOf(
+            Triple("rs_1", "rs_1b") { openAccessibility() },
+            Triple("rs_2", "rs_2b") { appDetails() },
+            Triple("rs_3", "rs_3b") { openAccessibility() },
+        ).forEachIndexed { i, (t, btn, go) ->
+            k.addView(text(L.t(t), 13f, bold = true), lp(MATCH, WRAP, top = dp(12)))
+            if (i == 1) k.addView(text(L.t(where), 12f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(2)))
+            k.addView(button(L.t(btn), primary = i == 1) { go() }, lp(MATCH, WRAP, top = dp(6)))
+        }
+        return k
     }
 
     private fun appDetails() {

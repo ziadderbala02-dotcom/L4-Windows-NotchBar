@@ -27,6 +27,23 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         /** Status bar room on Omar's phone: left icons end at 27% of the width, right icons start at 69%. */
         const val LEFT_EDGE = 195f / 720f
         const val RIGHT_EDGE = 496f / 720f
+
+        /**
+         * 1.8: the free room in the status bar, as fractions of the width from the camera's centre.
+         * Xiaomi/Redmi/POCO were measured on Omar's phone; other brands put notification icons nearer
+         * the middle (an Honor left 16%), so they get a narrower default (24%). The width slider scales it.
+         */
+        fun edges(cxFrac: Float): Pair<Float, Float> {
+            val b = (Build.MANUFACTURER + " " + Build.BRAND).lowercase()
+            return if (b.contains("xiaomi") || b.contains("redmi") || b.contains("poco")) {
+                LEFT_EDGE to RIGHT_EDGE
+            } else {
+                (cxFrac - 0.12f) to (cxFrac + 0.12f)
+            }
+        }
+
+        /** What the last measure found, for the device page. */
+        var lastReport = ""
     }
 
     private var view: IslandView? = null
@@ -43,7 +60,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
     /** The notch is on screen and visible right now (else alerts go to a notification). */
     val showing get() = view != null && (statusBarVisible || prefs.overFullscreen)
 
-    private class Geo(val cx: Float, val cy: Float, val r: Float, val screenW: Int, val portrait: Boolean)
+    /** [r] half the camera's height, [hw] half its width (a notch is wider than tall), [sb] status bar height. */
+    private class Geo(val cx: Float, val cy: Float, val r: Float, val screenW: Int, val portrait: Boolean, val hw: Float = r, val sb: Int = 0)
 
     private var geo: Geo? = null
 
@@ -84,19 +102,34 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         }
         if (screenW > screenH) {
             // Landscape: the camera is on a side; the pill goes to the top centre instead.
-            return Geo(screenW / 2f, 6 * density, 0f, screenW, false)
+            return Geo(screenW / 2f, 6 * density, 0f, screenW, false, 0f, sb)
         }
         // The punch hole: a small cut-out at the top, closest to the middle.
         val hole = cut.filter { it.top <= sb && it.width() < screenW / 3 }.minByOrNull { abs(it.centerX() - screenW / 2) }
         val dx = 0f
-        return if (hole != null) {
-            Geo(hole.exactCenterX() + dx, hole.exactCenterY(), min(hole.width(), hole.height()) / 2f, screenW, screenH >= screenW)
+        val g = if (hole != null) {
+            // The real cut-out: a punch hole is round, a notch/teardrop is wider than tall (1.8).
+            Geo(hole.exactCenterX() + dx, hole.exactCenterY(), min(hole.width(), hole.height()) / 2f, screenW, screenH >= screenW, hole.width() / 2f, sb)
         } else {
-            Geo(screenW / 2f + dx, sb / 2f, sb * 0.28f, screenW, screenH >= screenW)
+            Geo(screenW / 2f + dx, sb / 2f, sb * 0.28f, screenW, screenH >= screenW, sb * 0.28f, sb)
         }
+        val shape = when {
+            hole == null -> "none"
+            hole.width() > hole.height() * 1.4f -> "notch"
+            hole.exactCenterX() < screenW * 0.35f || hole.exactCenterX() > screenW * 0.65f -> "corner"
+            else -> "hole"
+        }
+        val (le, re) = edges(g.cx / screenW)
+        lastReport = "screen ${screenW}x$screenH px · density ${"%.2f".format(density)} · status bar ${sb}px (${"%.1f".format(sb / density)}dp)\n" +
+            "camera: $shape ${hole?.let { "${it.width()}x${it.height()} at ${it.left},${it.top}" } ?: "-"} · cutouts ${cut.size}\n" +
+            "room: ${(le * 100).toInt()}%..${(re * 100).toInt()}% · fit ${"%.2f".format(fitFor(sb, density))}"
+        return g
     }
 
     private var big = false
+
+    /** 1.8: the notch at 100% is ~92% of the status bar's height, whatever the phone's display size. */
+    private fun fitFor(sb: Int, density: Float): Float = min(1f, sb * 0.92f / (28f * density * 1.1f)).coerceAtLeast(0.5f)
 
     private fun density() = ctx.resources.displayMetrics.density
 
@@ -154,7 +187,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         v.weatherWord = weatherWord
         v.idleScale = prefs.idleScale / 100f
         if (grew && !big) layout()
-        v.stretch = prefs.widthExtra * density()
+        v.stretch = 0f
+        v.tplPref = prefs.template
         v.recSince = rec
         if (v.infoStats?.size != stats?.size) {
             v.infoStats = stats
@@ -249,16 +283,21 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val v = IslandView(h, gestures)
         v.calm = calm
         v.camR = g.r
+        v.camHW = if (g.portrait) max(g.r, g.hw) else g.r
+        v.sbH = g.sb.toFloat()
+        v.fit = fitFor(g.sb, density())
         v.scale = prefs.scale / 100f
         v.landscape = !g.portrait
+        v.tplPref = prefs.template
         if (g.portrait) {
-            // The room between the status bar icons (measured on Omar's Redmi, with a spare icon each
-            // side), widened or narrowed per side by the user for other phones.
-            // The user's width slider moves both edges together.
-            val extra = prefs.widthExtra * density()
-            v.leftMax = g.cx - g.screenW * LEFT_EDGE + extra
-            v.rightMax = g.screenW * RIGHT_EDGE - g.cx + extra
+            // The room between the status bar icons, from the camera outwards, times the width slider
+            // (100% = up to the icons). Measured on Omar's Redmi; narrower by default on other brands.
+            val (le, re) = edges(g.cx / g.screenW)
+            val f = prefs.widthPct / 100f
+            v.leftMax = max(0f, g.cx - g.screenW * le) * f
+            v.rightMax = max(0f, g.screenW * re - g.cx) * f
         }
+        v.belowMax = g.screenW * 0.62f * prefs.widthPct / 100f
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val was = statusBarVisible
@@ -343,6 +382,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             height = ch
             x = (g.cx + g.r + 2 * density).toInt()
             v.camX = g.cx - x
+        } else if (v.below()) {
+            // 1.8, templates C and D: a pill just under the status bar, centred on the camera.
+            val (bw, bh) = v.belowSize()
+            width = bw
+            height = bh
+            x = (g.cx - bw / 2f).toInt()
+            v.camX = g.cx - x
         } else {
             val (lw, rw) = v.compactExtent()
             // An activity's circle left of the match (the scoreboard keeps its place round the camera).
@@ -352,7 +398,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             x = (g.cx - lw - side).toInt()
             v.camX = g.cx - x
         }
-        val y = if (g.portrait) (g.cy - ch / 2f + prefs.offsetY * density).toInt() else g.cy.toInt()
+        // The always-on notch has its own up/down unless linked (1.8).
+        val off = if (v.idle && !big && !prefs.linkPos) prefs.idleOffsetY else prefs.offsetY
+        val y = when {
+            !g.portrait -> g.cy.toInt()
+            !big && !v.circle && !v.tucked && v.below() -> (g.sb + 3 * density + off * density).toInt()
+            else -> (g.cy - ch / 2f + off * density).toInt()
+        }
         if (p.width == width && p.height == height && p.x == x && p.y == y) return
         p.width = width
         p.height = height

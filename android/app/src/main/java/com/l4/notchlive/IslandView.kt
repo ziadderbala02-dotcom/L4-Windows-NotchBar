@@ -161,12 +161,27 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     /** Camera centre x inside this view, its radius, and the room the status bar leaves each side. */
     var camX = 0f
     var camR = 0f
+
+    /** Half the cut-out's width: a teardrop or a notch is wider than tall (1.8). */
+    var camHW = 0f
+
+    /** Status bar height (px) and how much the whole notch shrinks to stay inside it (1.8). */
+    var sbH = 0f
+    var fit = 1f
+
+    /** "auto", "A" round the camera, "B" one side, "C" stacked under the bar, "D" one line under the bar. */
+    var tplPref = "auto"
+
+    /** Text size factor while fitting (1 → 0.7): text shrinks first, then words shorten, then items go. */
+    private var fitK = 1f
+    private val KS = floatArrayOf(1f, 0.9f, 0.8f, 0.7f)
     var leftMax = Float.MAX_VALUE
     var rightMax = Float.MAX_VALUE
     var scale = 1f
 
     /** Everything is drawn 10% above Android's base size (Omar: "a little bigger"), times the size slider. */
-    private val d get() = resources.displayMetrics.density * (if (idleSized()) idleScale else scale) * 1.1f
+    // 1.8: × [fit], so on a phone with a big display size the notch still fits its status bar.
+    private val d get() = resources.displayMetrics.density * (if (idleSized()) idleScale else scale) * 1.1f * fit
 
     /** The always-on notch has its own size (height and text), apart from the match notch. */
     var idleScale = 1f
@@ -207,20 +222,21 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private val dim = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0x33FFFFFF }
 
     private fun sizes() {
-        score.textSize = 13.5f * d
-        minute.textSize = 11f * d
-        small.textSize = 8.5f * d
+        val k = fitK
+        score.textSize = 13.5f * d * k
+        minute.textSize = 11f * d * k
+        small.textSize = 8.5f * d * k
         title.textSize = 16f * d
         sub.textSize = 12f * d
-        name.textSize = 12.5f * d
-        line.textSize = 10.5f * d
+        name.textSize = 12.5f * d * k
+        line.textSize = 10.5f * d * k
     }
 
     /* ---------- geometry ---------- */
 
     fun compactHeight(): Int = max(2 * (camR + 5 * d), 28 * d).toInt()
 
-    private fun gap() = if (landscape) 9 * d else camR + 6 * d
+    private fun gap() = if (landscape) 9 * d else max(camR, camHW) + 6 * d
 
     /** Scores, or nothing before kickoff (the countdown says it all). */
     private fun scoreText(m: Match, home: Boolean) = if (m.state == Api.PRE) "" else m.side(home).score.toString()
@@ -251,16 +267,36 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
      *   right: 0 everything · 1 crest at 80% · 2 no crest
      * The score and the live dot always stay; red cards sit on the crest's corner.
      */
-    private fun leftLevel(): Int {
-        if (roomy) return 0
-        for (k in 0..3) if (leftWidth(k) <= leftMax) return k
-        return 4
+    private var aL = 0
+    private var aR = 0
+    private fun leftLevel(): Int = aL
+    private fun rightLevel(): Int = aR
+
+    /**
+     * 1.8 auto-fit for template A: first the text shrinks (down to 70%), then the old steps.
+     * Leaves [fitK], [aL] and [aR] set. True when it still looks like a scoreboard (minute and crests).
+     */
+    private fun fitA(): Boolean {
+        aL = 0
+        aR = 0
+        if (roomy) {
+            fitK = 1f
+            sizes()
+            return true
+        }
+        for (k in KS) {
+            fitK = k
+            if (leftWidth(0) <= leftMax && rightWidth(0) <= rightMax) return true
+        }
+        fitK = 0.7f
+        aL = (0..3).firstOrNull { leftWidth(it) <= leftMax } ?: 4
+        aR = (0..1).firstOrNull { rightWidth(it) <= rightMax } ?: 2
+        return aL <= 2 && aR <= 1
     }
 
-    private fun rightLevel(): Int {
-        if (roomy) return 0
-        for (k in 0..1) if (rightWidth(k) <= rightMax) return k
-        return 2
+    private fun resetFit() {
+        fitK = 1f
+        sizes()
     }
 
     private fun leftWidth(k: Int): Float {
@@ -319,7 +355,393 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             if (idleTemp.isNotEmpty()) right = max(right, gap() + minute.measureText(idleTemp) + (if (weatherGlyph.isNotEmpty()) 16 * d else 0f) + 12 * d)
             return left to right
         }
-        return leftWidth(leftLevel()) to rightWidth(rightLevel())
+        return when (tpl()) {
+            "B" -> {
+                val lv = fitB()
+                val w = gap() + bWidth(if (lv < 0) 3 else lv) + 10 * d
+                val other = max(gap(), compactHeight() / 2f)
+                resetFit()
+                if (bRight()) other to w else w to other
+            }
+            "C", "D" -> {
+                val (bw, _) = belowSize()
+                bw / 2f to bw / 2f
+            }
+            else -> {
+                fitA()
+                val r = leftWidth(aL) to rightWidth(aR)
+                resetFit()
+                r
+            }
+        }
+    }
+
+    /* ---------- 1.8 templates ---------- */
+
+    companion object {
+        /** The last template drawn, for the device page. */
+        var lastTpl = ""
+    }
+
+    /** Max width of a pill under the status bar (set by Island from the width slider). */
+    var belowMax = 0f
+
+    /** The template the small notch uses now. Landscape and full screen keep the classic look. */
+    fun tpl(): String {
+        if (landscape || roomy) return "A"
+        if (idle) {
+            return when (tplPref) {
+                "C", "D" -> "D"
+                "A", "B" -> "A"
+                else -> if (idleFitsA()) "A" else "D"
+            }
+        }
+        if (act != null || recSince > 0) return "A"
+        return when (tplPref) {
+            "A", "B", "C", "D" -> tplPref
+            else -> {
+                val t = when {
+                    fitA() -> "A"
+                    fitB() >= 0 -> "B"
+                    fitD() >= 0 -> "D"
+                    else -> "C"
+                }
+                resetFit()
+                t
+            }
+        }
+    }
+
+    /** Templates C and D sit under the status bar, away from the camera. */
+    fun below(): Boolean = !landscape && !roomy && !tucked && !circle && act == null && recSince == 0L &&
+        burst == null && !info && tpl().let { it == "C" || it == "D" }
+
+    private fun idleFitsA(): Boolean {
+        if (idleText.isEmpty()) return true
+        fitK = 0.8f
+        sizes()
+        val ok = gap() + line.measureText(idleText) + 12 * d <= min(leftMax, 150 * d) + 1f
+        resetFit()
+        return ok
+    }
+
+    /* B: everything on the roomier side of the camera. */
+    private fun bRight() = rightMax >= leftMax
+    private fun bWidth(lv: Int): Float {
+        sizes()
+        val m = match ?: return 0f
+        var w = minute.measureText(clockLabel(m)) + 6 * d
+        if (lv < 1 && added.isNotEmpty()) w += small.measureText(added) + 2 * d
+        val crest = if (lv >= 2) crestAt(1) else crestAt(0)
+        if (lv < 3) w += 2 * (crest + 5 * d) + redsWidth(true) + redsWidth(false)
+        w += score.measureText(scoreText(m, true)) + score.measureText(scoreText(m, false)) + minute.measureText("–") + 8 * d
+        w += 12 * d
+        if (others > 0) w += 7 * d
+        return w
+    }
+
+    /** Level (0 all … 3 no crests) that fits B, or -1. Leaves [fitK] set. */
+    private fun fitB(): Int {
+        val room = max(leftMax, rightMax) - gap() - 10 * d
+        for (k in KS) {
+            fitK = k
+            if (bWidth(0) <= room) return 0
+        }
+        fitK = 0.7f
+        return (1..3).firstOrNull { bWidth(it) <= room } ?: -1
+    }
+
+    private fun drawB(c: Canvas, m: Match, ch: Float, a: Int) {
+        val lv = fitB().let { if (it < 0) 3 else it }
+        val al = a / 255f
+        val cy = ch / 2
+        var x = if (bRight()) camX + gap() else camX - gap() - bWidth(lv)
+        if (lv < 1 && added.isNotEmpty()) {
+            small.alpha = a
+            c.drawText(added, x, cy - 1 * d, small)
+            x += small.measureText(added) + 2 * d
+        }
+        x = drawMinute(c, m, x, cy, a) + 6 * d
+        val crest = if (lv >= 2) crestAt(1) else crestAt(0)
+        if (lv < 3) {
+            drawCrest(c, m.home.logo, x, cy - crest / 2, crest, al)
+            if (reds(true) > 0) drawRedCards(c, reds(true), x - 2 * d, cy + crest / 2 - 5 * d, al)
+            x += crest + 5 * d
+        }
+        x = drawScores(c, m, x, cy, a)
+        if (lv < 3) {
+            x += 5 * d
+            drawCrest(c, m.away.logo, x, cy - crest / 2, crest, al)
+            x += crest
+            if (reds(false) > 0) drawRedCards(c, reds(false), x - min(reds(false), 3) * 4 * d + 2 * d, cy + crest / 2 - 5 * d, al)
+        }
+        drawLiveDot(c, m, x + 9 * d, cy, a)
+    }
+
+    /** "92'" (or VAR blinking) at [x]; returns where it ends. */
+    private fun drawMinute(c: Canvas, m: Match, x: Float, cy: Float, a: Int): Float {
+        val label = clockLabel(m)
+        minute.color = minuteColor(m)
+        minute.alpha = a
+        minute.textAlign = Paint.Align.LEFT
+        if (m.phase == "var" && !calm) {
+            minute.alpha = (a * (0.35f + 0.65f * abs(sin(System.currentTimeMillis() / 300.0)).toFloat())).toInt()
+            postInvalidateDelayed(50)
+        }
+        c.drawText(label, x, baseline(minute, cy), minute)
+        return x + minute.measureText(label)
+    }
+
+    /** "2 – 1" from [x]; returns where it ends. */
+    private fun drawScores(c: Canvas, m: Match, x0: Float, cy: Float, a: Int): Float {
+        var x = x0
+        val hs = scoreText(m, true)
+        drawScore(c, hs, x, cy, m.home.color, homeFlash, a)
+        x += score.measureText(hs) + 4 * d
+        minute.color = 0xFF9CA3AF.toInt()
+        minute.alpha = a
+        minute.textAlign = Paint.Align.LEFT
+        c.drawText("–", x, baseline(minute, cy), minute)
+        x += minute.measureText("–") + 4 * d
+        val aw = scoreText(m, false)
+        drawScore(c, aw, x, cy, m.away.color, awayFlash, a)
+        return x + score.measureText(aw)
+    }
+
+    private fun drawLiveDot(c: Canvas, m: Match, dx: Float, cy: Float, a: Int) {
+        val (color, breathe) = when {
+            m.state == Api.POST -> 0xFF6B7280.toInt() to false
+            m.state == Api.PRE || m.phase == "break" -> 0xFFFBBF24.toInt() to false
+            m.phase == "var" -> 0xFF60A5FA.toInt() to true
+            else -> 0xFF34D399.toInt() to true
+        }
+        val level = if (breathe && !calm) 0.35f + 0.65f * ((sin(System.currentTimeMillis() / 450.0) + 1) / 2).toFloat() else 1f
+        dot.color = color
+        dot.alpha = (a * level).toInt()
+        c.drawCircle(dx, cy, 3 * d, dot)
+        if (breathe && !calm) {
+            dot.alpha = (a * level * 0.25f).toInt()
+            c.drawCircle(dx, cy, 5.5f * d, dot)
+            postInvalidateDelayed(50)
+        }
+        if (others > 0) {
+            dot.color = Color.WHITE
+            dot.alpha = (a * 0.7f).toInt()
+            c.drawCircle(dx + 7 * d, cy, 2 * d, dot)
+        }
+    }
+
+    /* D: one line under the status bar. Levels: 0 names · 1 no names · 2 no "+N" · 3 no crests. */
+    private fun dH() = 22 * d
+    private fun dCrest() = dH() - 7 * d
+    private fun dPad() = dH() * 0.45f
+    private fun dWidth(lv: Int): Float {
+        sizes()
+        val m = match ?: return 0f
+        var w = 2 * dPad() + minute.measureText(clockLabel(m)) + 6 * d
+        if (lv < 2 && added.isNotEmpty()) w += small.measureText(added) + 2 * d
+        if (lv < 3) w += 2 * (dCrest() + 5 * d) + redsWidth(true) + redsWidth(false)
+        if (lv < 1) w += name.measureText(teamName(true)) + name.measureText(teamName(false)) + 10 * d
+        w += score.measureText(scoreText(m, true)) + score.measureText(scoreText(m, false)) + minute.measureText("–") + 8 * d
+        w += 12 * d
+        if (others > 0) w += 7 * d
+        return w
+    }
+
+    private fun fitD(): Int {
+        val room = if (belowMax > 0f) belowMax else resources.displayMetrics.widthPixels * 0.62f
+        for (lv in 0..3) for (k in KS) {
+            fitK = k
+            if (dWidth(lv) <= room) return lv
+        }
+        return -1
+    }
+
+    /* C: two rows (crest, name, score) with the minute and the live dot in a column on the left. */
+    private fun cRow() = 18 * d
+    private fun cH() = 2 * cRow() + 6 * d
+    private fun cCol(m: Match): Float = max(minute.measureText(clockLabel(m)), small.measureText(added) + 12 * d)
+    private fun cWidth(names: Boolean): Float {
+        sizes()
+        val m = match ?: return 0f
+        val row = { home: Boolean ->
+            (cRow() - 3 * d) + 5 * d + (if (names) name.measureText(teamName(home)) + 6 * d else 0f) + score.measureText(scoreText(m, home)) + redsWidth(home)
+        }
+        return 2 * dPad() + cCol(m) + 10 * d + max(row(true), row(false))
+    }
+
+    private fun fitC(): Boolean {
+        val room = (if (belowMax > 0f) belowMax else resources.displayMetrics.widthPixels * 0.62f) * 0.7f
+        for (k in KS) {
+            fitK = k
+            if (cWidth(true) <= room) return true
+        }
+        fitK = 0.7f
+        return false
+    }
+
+    /* The always-on notch as a line under the bar: date/prayer · weather. */
+    private fun idleBelowWidth(): Float {
+        sizes()
+        val room = if (belowMax > 0f) belowMax else resources.displayMetrics.widthPixels * 0.62f
+        var w = 2 * dPad()
+        if (idleText.isNotEmpty()) w += line.measureText(idleText)
+        if (idleTemp.isNotEmpty()) w += 10 * d + minute.measureText(idleTemp) + (if (weatherGlyph.isNotEmpty()) 16 * d else 0f)
+        if (idleText.isEmpty() && idleTemp.isEmpty()) w += 10 * d
+        return min(room, w)
+    }
+
+    /** Size of the pill under the bar (C or D, or the always-on line). */
+    fun belowSize(): Pair<Int, Int> {
+        val m = match
+        val r = when {
+            idle -> idleBelowWidth() to dH()
+            tpl() == "C" -> {
+                fitC()
+                cWidth(true).let { w -> if (w <= belowMax * 0.7f || belowMax <= 0f) w else cWidth(false) } to cH()
+            }
+            else -> {
+                val lv = fitD().let { if (it < 0) 3 else it }
+                dWidth(lv) to dH()
+            }
+        }
+        resetFit()
+        return (r.first.toInt() + 1) to r.second.toInt()
+    }
+
+    private fun drawBelow(c: Canvas) {
+        val w = width.toFloat()
+        val h = height.toFloat()
+        rect.set(0f, 0f, w, h)
+        val rad = if (h > dH() + 1) min(h / 2, 12 * d) else h / 2
+        c.drawRoundRect(rect, rad, rad, bg)
+        val m = match
+        if (idle) {
+            lastTpl = "D (idle)"
+            drawIdleBelow(c, w, h)
+            return
+        }
+        m ?: return
+        val cy = h / 2
+        if (tpl() == "C") {
+            lastTpl = "C"
+            fitC()
+            val names = cWidth(true) <= belowMax * 0.7f || belowMax <= 0f
+            val x0 = dPad()
+            val y1 = 3 * d + cRow() / 2
+            val y2 = y1 + cRow()
+            drawMinute(c, m, x0, y1, 255)
+            if (added.isNotEmpty()) {
+                small.alpha = 255
+                c.drawText(added, x0, baseline(small, y2), small)
+            }
+            drawLiveDot(c, m, x0 + (if (added.isNotEmpty()) small.measureText(added) + 6 * d else 3 * d), y2, 255)
+            val cx = x0 + cCol(m) + 10 * d
+            for ((home, y) in listOf(true to y1, false to y2)) {
+                var x = cx
+                val crest = cRow() - 3 * d
+                drawCrest(c, m.side(home).logo, x, y - crest / 2, crest, 1f)
+                x += crest + 5 * d
+                if (names) {
+                    name.alpha = 255
+                    name.textAlign = Paint.Align.LEFT
+                    c.drawText(teamName(home), x, baseline(name, y), name)
+                    x += name.measureText(teamName(home)) + 6 * d
+                }
+                drawScore(c, scoreText(m, home), x, y, m.side(home).color, if (home) homeFlash else awayFlash, 255)
+                x += score.measureText(scoreText(m, home))
+                if (reds(home) > 0) drawRedCards(c, reds(home), x + 3 * d, y - 2.5f * d, 1f)
+            }
+            resetFit()
+            return
+        }
+        lastTpl = "D"
+        val lv = fitD().let { if (it < 0) 3 else it }
+        var x = dPad()
+        if (lv < 2 && added.isNotEmpty()) {
+            small.alpha = 255
+            c.drawText(added, x, cy - 1 * d, small)
+            x += small.measureText(added) + 2 * d
+        }
+        x = drawMinute(c, m, x, cy, 255) + 6 * d
+        val crest = dCrest()
+        if (lv < 3) {
+            drawCrest(c, m.home.logo, x, cy - crest / 2, crest, 1f)
+            if (reds(true) > 0) drawRedCards(c, reds(true), x - 2 * d, cy + crest / 2 - 5 * d, 1f)
+            x += crest + 5 * d
+        }
+        name.alpha = 255
+        name.textAlign = Paint.Align.LEFT
+        if (lv < 1) {
+            c.drawText(teamName(true), x, baseline(name, cy), name)
+            x += name.measureText(teamName(true)) + 5 * d
+        }
+        x = drawScores(c, m, x, cy, 255)
+        if (lv < 1) {
+            x += 5 * d
+            c.drawText(teamName(false), x, baseline(name, cy), name)
+            x += name.measureText(teamName(false))
+        }
+        if (lv < 3) {
+            x += 5 * d
+            drawCrest(c, m.away.logo, x, cy - crest / 2, crest, 1f)
+            x += crest
+            if (reds(false) > 0) drawRedCards(c, reds(false), x - min(reds(false), 3) * 4 * d + 2 * d, cy + crest / 2 - 5 * d, 1f)
+        }
+        drawLiveDot(c, m, x + 9 * d, cy, 255)
+        resetFit()
+    }
+
+    private fun drawIdleBelow(c: Canvas, w: Float, h: Float) {
+        val cy = h / 2
+        val now = System.currentTimeMillis()
+        val busyBg = weather.isNotEmpty() && (weatherAlways || now < weatherUntil)
+        if (busyBg && !calm) {
+            c.save()
+            path.reset()
+            path.addRoundRect(rect, h / 2, h / 2, Path.Direction.CW)
+            c.clipPath(path)
+            val f = fx?.takeIf { it.kind == weather } ?: WeatherFx(weather).also { fx = it }
+            f.draw(c, 0f, w, h, now)
+            c.restore()
+            postInvalidateOnAnimation()
+        }
+        var right = w - dPad()
+        if (idleTemp.isNotEmpty()) {
+            val showWord = weatherWord.isNotEmpty() && now < weatherUntil - 2_000L
+            val label = if (showWord) weatherWord else idleTemp
+            minute.color = Color.WHITE
+            minute.alpha = 255
+            minute.textAlign = Paint.Align.RIGHT
+            shadowed(minute, busyBg)
+            c.drawText(label, right, baseline(minute, cy), minute)
+            right -= minute.measureText(label)
+            if (weatherGlyph.isNotEmpty()) {
+                val sz = 14 * d
+                WeatherFx.icon(c, weatherGlyph, right - 4 * d - sz / 2, cy, sz)
+                right -= sz + 4 * d
+            }
+            shadowed(minute, false)
+            minute.textAlign = Paint.Align.LEFT
+            right -= 10 * d
+            if (showWord) postInvalidateDelayed(250)
+        }
+        if (idleText.isNotEmpty()) {
+            if (idleText != idleTextShown) {
+                idleTextShown = idleText
+                idleTextSince = now
+            }
+            line.color = 0xFFE5E7EB.toInt()
+            line.alpha = 255
+            shadowed(line, busyBg)
+            marquee(c, idleText, line, dPad(), right, baseline(line, cy), idleTextSince)
+            shadowed(line, false)
+            line.color = 0xFFC8C8C8.toInt()
+        } else if (idleTemp.isEmpty()) {
+            dot.color = 0xFF6B7280.toInt()
+            dot.alpha = 255
+            c.drawCircle(w / 2, cy, 2.5f * d, dot)
+        }
     }
 
     /** The tucked mark: a window right of the camera, wide enough to swipe on. */
@@ -358,7 +780,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private val INLINE = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
 
     /** Played inside the notch (not opened yet). */
-    fun isInline(b: Burst?) = b != null && inlineEvents && !b.expanded && b.kind in INLINE
+    // 1.8: only template A plays events inside the notch; B/C/D open the event view instead.
+    fun isInline(b: Burst?) = b != null && inlineEvents && !b.expanded && b.kind in INLINE && tpl() == "A"
 
     /** Distance from the camera to the right edge of the word (left of the home crest). */
     private fun inlineWordRight(): Float {
@@ -613,6 +1036,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     private fun lerp(a: Float, b: Float, f: Float) = a + (b - a) * f
 
     override fun onDraw(c: Canvas) {
+        fitK = 1f
         sizes()
         if (recSince > 0 && burst == null && !info) {
             drawRec(c)
@@ -622,7 +1046,12 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             drawAct(c)
             return
         }
+        if (t == 0f && below()) {
+            drawBelow(c)
+            return
+        }
         if (idle && burst == null && !info && t == 0f && !tucked) {
+            lastTpl = "A (idle)"
             drawIdle(c)
             return
         }
@@ -687,7 +1116,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         }
 
         val compactAlpha = (1f - t * 2.5f).coerceIn(0f, 1f)
-        if (compactAlpha > 0f) drawCompact(c, m, ch, compactAlpha)
+        if (compactAlpha > 0f) {
+            drawCompact(c, m, ch, compactAlpha)
+            resetFit()
+        }
         val bigAlpha = ((t - 0.5f) * 2f).coerceIn(0f, 1f)
         if (bigAlpha > 0f) {
             if (b?.kind == "menu") drawMenu(c, b, camX - bw / 2, camX + bw / 2, bigAlpha)
@@ -711,7 +1143,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     }
 
     /** Room left of the match notch for an activity's circle (the scoreboard keeps the middle). */
-    fun sideW(): Float = if (ringAct != null && !circle && (match?.id ?: -1) >= 0 && burst == null && !info && !tucked) compactHeight() + 5 * d else 0f
+    fun sideW(): Float = if (ringAct != null && !circle && (match?.id ?: -1) >= 0 && burst == null && !info && !tucked && !below()) compactHeight() + 5 * d else 0f
 
     /** An activity in a small circle: the song's art with its progress, a timer, a call, a ride. */
     private fun drawRing(c: Canvas, a: Live, r: Float) {
@@ -1598,6 +2030,14 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         }
         val a = (alpha * (if (idle) 0.85f else 1f) * 255).toInt()
         val al = a / 255f
+        val tp = tpl()
+        if (tp == "B" && !landscape) {
+            if (t == 0f) lastTpl = "B"
+            drawB(c, m, ch, a)
+            return
+        }
+        if (t == 0f && !landscape) lastTpl = "A"
+        fitA()
         val lk = leftLevel()
         val rk = rightLevel()
         val cy = ch / 2

@@ -164,6 +164,30 @@ class Prefs(ctx: Context) {
         get() = p.getInt("widthExtra", 0)
         set(v) = p.edit().putInt("widthExtra", v).apply()
 
+    /** 1.8: notch width as a share (40..130%) of the room the status bar leaves round the camera. */
+    var widthPct: Int
+        get() = p.getInt("widthPct", 100)
+        set(v) = p.edit().putInt("widthPct", v).apply()
+
+    /** 1.8: layout of the small notch: "auto", "A" round the camera, "B" one side, "C" stacked, "D" a line under the bar. */
+    var template: String
+        get() = p.getString("template", "auto") ?: "auto"
+        set(v) = p.edit().putString("template", v).apply()
+
+    /** 1.8: the always-on notch's own up/down nudge (dp), unless linked to the match notch. */
+    var idleOffsetY: Int
+        get() = p.getInt("idleOffsetY", 0)
+        set(v) = p.edit().putInt("idleOffsetY", v).apply()
+
+    var linkPos: Boolean
+        get() = p.getBoolean("linkPos", false)
+        set(v) = p.edit().putBoolean("linkPos", v).apply()
+
+    /** 1.8: a goal against a favourite: "calm" (its own quiet sound, no celebration), "same" (like any goal) or "off" (silent). */
+    var againstMode: String
+        get() = p.getString("againstMode", "calm") ?: "calm"
+        set(v) = p.edit().putString("againstMode", v).apply()
+
     /** What the always-on notch shows: any of "weather", "date", "hijri", "prayer", "match". */
     var idleShow: Set<String>
         get() = p.getStringSet("idleShow", setOf("weather", "date")) ?: setOf("weather", "date")
