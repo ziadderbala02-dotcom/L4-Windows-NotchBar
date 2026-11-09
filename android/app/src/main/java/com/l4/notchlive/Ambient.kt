@@ -62,6 +62,16 @@ object Ambient {
     @Volatile
     var alert: Alert? = null
 
+    /** Today's high and low, and the place they're for (the Home page shows them, 1.9.1). */
+    @Volatile
+    var todayMax: Int? = null
+
+    @Volatile
+    var todayMin: Int? = null
+
+    @Volatile
+    var place = ""
+
     private var dustAt = 0L
     private var dustHours: List<Pair<Long, Double>> = emptyList()
 
@@ -144,6 +154,11 @@ object Ambient {
             else -> base
         }
         alert = findAlert(r, now)
+        r.optJSONObject("daily")?.let { d ->
+            todayMax = d.optJSONArray("temperature_2m_max")?.optDouble(0)?.takeIf { !it.isNaN() }?.let { Math.round(it).toInt() }
+            todayMin = d.optJSONArray("temperature_2m_min")?.optDouble(0)?.takeIf { !it.isNaN() }?.let { Math.round(it).toInt() }
+        }
+        place = city.name
         fetchedAt = now
         return was != kind
     }

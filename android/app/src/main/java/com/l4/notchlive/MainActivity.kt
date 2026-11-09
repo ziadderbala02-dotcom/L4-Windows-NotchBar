@@ -132,7 +132,7 @@ class MainActivity : Activity() {
         if (prefs.enabled) LiveService.start(this, LiveService.ACTION_REFRESH)
         if (onboarding) {
             // Came back from a settings page: move on if it's granted.
-            if (stepId() in setOf("overlay", "access", "notif") && granted(step)) step++
+            if (stepId() in setOf("overlay", "access", "notif", "restricted") && granted(step)) step++
             drawOnboarding()
         } else {
             askCallPerm(false)
@@ -249,6 +249,104 @@ class MainActivity : Activity() {
         drawHome()
     }
 
+    private fun dayHome(box: LinearLayout) {
+        val show = prefs.idleShow
+        val now = System.currentTimeMillis()
+        val loc = if (L.ar) Locale("ar", "EG") else Locale.ENGLISH
+        // Today.
+        if ("date" in show || "hijri" in show) {
+            val k = card()
+            k.addView(text(L.t("today"), 13f, Ui.MUTED))
+            if ("date" in show) k.addView(text(SimpleDateFormat("EEEE d MMMM", loc).format(java.util.Date(now)), 20f, bold = true), lp(MATCH, WRAP, top = dp(6)))
+            if ("hijri" in show) Ambient.hijriText(now).takeIf { it.isNotBlank() }?.let {
+                k.addView(text(it, 14f, Ui.MUTED), lp(MATCH, WRAP, top = dp(2)))
+            }
+            box.addView(k, lp(MATCH, WRAP, top = dp(18)))
+        }
+        // Weather.
+        if ("weather" in show) {
+            val k = card()
+            val head = row()
+            head.addView(text(L.t("ic_weather"), 13f, Ui.MUTED), lp(0, WRAP, 1f))
+            head.addView(text(Ambient.place.ifEmpty { Locator.city(this, prefs).name }, 12f, Ui.MUTED))
+            k.addView(head)
+            val t = Ambient.temp
+            if (t == null) {
+                k.addView(text(L.t("loading"), 14f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+                io.execute {
+                    try {
+                        Ambient.refreshWeather(Locator.city(this, prefs))
+                        main.post { drawHome() }
+                    } catch (e: Exception) {
+                        // Offline.
+                    }
+                }
+            } else {
+                val r = row()
+                r.addView(text("$t°", 34f, bold = true))
+                val side = column()
+                side.addView(text(Ambient.word(), 15f, bold = true))
+                val parts = listOfNotNull(
+                    Ambient.feels?.let { L.f("feels", it) },
+                    if (Ambient.todayMax != null && Ambient.todayMin != null) L.f("al_detail", Ambient.todayMax!!, Ambient.todayMin!!) else null,
+                )
+                side.addView(text(parts.joinToString(" · "), 12f, Ui.MUTED), lp(WRAP, WRAP, top = dp(2)))
+                r.addView(side, lp(0, WRAP, 1f, start = dp(14)))
+                k.addView(r, lp(MATCH, WRAP, top = dp(8)))
+                Ambient.alert?.takeIf { prefs.weatherAlerts && it.day == SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date(now)) }?.let { a ->
+                    val (title, _) = Ambient.alertText(a, now)
+                    k.addView(text("⚠ $title", 13f, Ui.AMBER, bold = true), lp(MATCH, WRAP, top = dp(10)))
+                }
+            }
+            box.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        }
+        // Prayer times, the next one marked.
+        if ("prayer" in show) {
+            val k = card()
+            k.addView(text(L.t("prayer_times"), 13f, Ui.MUTED))
+            val day = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 0); set(Calendar.MINUTE, 0); set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }
+            val list = try {
+                Ambient.prayers(Locator.city(this, prefs), day)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            val next = list.firstOrNull { it.second > now }
+            val fmt = SimpleDateFormat("h:mm a", loc)
+            for ((name, at) in list) {
+                val isNext = next?.first == name
+                val r = row().apply { minimumHeight = dp(34) }
+                r.addView(text(L.t("pr_$name"), 15f, if (isNext) Ui.ACCENT else Ui.TEXT, bold = isNext), lp(0, WRAP, 1f))
+                if (isNext) {
+                    val mins = ((at - now + 59_999L) / 60_000L).toInt()
+                    r.addView(text(remaining(0, mins / 60, mins % 60), 12f, Ui.ACCENT))
+                }
+                r.addView(text(fmt.format(java.util.Date(at)), 15f, if (at < now) Ui.MUTED else Ui.TEXT, bold = isNext), lp(WRAP, WRAP, start = dp(10)))
+                k.addView(r, lp(MATCH, WRAP, top = dp(4)))
+            }
+            box.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        }
+        // The notch: on/off, what it shows, shortcuts.
+        val n = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        n.addView(toggleRow(L.t("idle"), L.t("idle_d"), prefs.idleNotch) {
+            prefs.idleNotch = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            drawHome()
+        })
+        n.addView(divider())
+        n.addView(navRow(L.t("idle_content"), "") {
+            page = "idle_content"
+            draw()
+        })
+        n.addView(divider())
+        n.addView(navRow(L.t("slots"), L.f("slots_n", Shortcuts.load(this).count { it != null })) {
+            page = "slots"
+            draw()
+        })
+        box.addView(n, lp(MATCH, WRAP, top = dp(12)))
+    }
+
     private fun drawHome() {
         val box = homeBox ?: return
         if (box.parent == null) return
@@ -265,6 +363,13 @@ class MainActivity : Activity() {
             else w.addView(button(L.t("access_fix"), primary = true) { openAccessibility() }, lp(MATCH, WRAP, top = dp(10)))
             box.addView(w, lp(MATCH, WRAP))
             box.addView(View(this), lp(MATCH, dp(12)))
+        }
+
+        // 1.9.1: not into football: Home is about the day instead (each card only if the
+        // always-on notch shows that thing, so no prayers for someone who turned them off).
+        if (!prefs.football) {
+            dayHome(box)
+            return
         }
 
         // In the notch now.
@@ -560,7 +665,7 @@ class MainActivity : Activity() {
         c.addView(search, lp(MATCH, WRAP, top = dp(14)))
 
         val chips = row()
-        listOf("today" to "f_today", "live" to "f_live", "mine" to "f_mine", "pinned" to "f_pinned", "comps" to "f_comps").forEachIndexed { i, (k, key) ->
+        listOf("today" to "f_today", "live" to "f_live", "mine" to "f_mine", "comps" to "f_comps", "pinned" to "f_pinned").forEachIndexed { i, (k, key) ->
             val on = filter == k
             val label = if (k == "pinned" && prefs.pinned.isNotEmpty()) "${L.t(key)} · ${prefs.pinned.size}" else L.t(key)
             chips.addView(text(label, 13f, if (on) Ui.ON_ACCENT else Ui.TEXT, bold = on).apply {
@@ -885,17 +990,19 @@ class MainActivity : Activity() {
         // 1.9: today, the whole day (not just matches): data exactly, battery as an estimate.
         val cards = row().apply { gravity = Gravity.TOP }
         val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date())
-        val bytes = prefs.daily[todayKey] ?: 0L
+        val bytes = prefs.usedOn(todayKey)
         val dataCard = statCard(
             "down", Ui.BLUE, L.t("data_today"),
             String.format(Locale.US, "%.1f", bytes / 1_048_576.0),
             L.t("mb"), L.t("exact"), Ui.ACCENT,
         )
-        val est = batteryEstimate(prefs.dailyCpu[todayKey] ?: 0L, bytes)
+        // 1.9.1: no battery percentage (Android gives no app its own share, and a guess misled):
+        // the app's own processor time today, measured, with the phone's battery page below.
+        val cpuMin = (prefs.dailyCpu[todayKey] ?: 0L) / 60_000.0
         val batCard = statCard(
-            "bolt", Ui.AMBER, L.t("battery_today"),
-            String.format(Locale.US, "~%.1f%%", est),
-            "", L.t("estimate"), Ui.AMBER,
+            "bolt", Ui.AMBER, L.t("active_today"),
+            String.format(Locale.US, if (cpuMin < 10) "%.1f" else "%.0f", cpuMin),
+            L.t("minutes"), L.t("exact"), Ui.ACCENT,
         )
         cards.addView(dataCard, lp(0, WRAP, 1f))
         cards.addView(batCard, lp(0, WRAP, 1f, start = dp(10)))
@@ -908,7 +1015,7 @@ class MainActivity : Activity() {
             SimpleDateFormat("yyyy-MM-dd", Locale.US).format(cal.time) to cal
         }
         val daily = prefs.daily
-        val values = days.map { (k, _) -> daily[k] ?: 0L }
+        val values = days.map { (k, _) -> prefs.usedOn(k) }
         val total = values.sum()
         val wh = row()
         wh.addView(text(L.t("week"), 14f, bold = true), lp(0, WRAP, 1f))
@@ -952,19 +1059,6 @@ class MainActivity : Activity() {
                 appDetails()
             }
         }, lp(MATCH, WRAP, top = dp(8)))
-    }
-
-    /**
-     * Android tells no app its own share of the battery, so this is worked out: the app's CPU time
-     * (~150 mA while busy) plus its data (~0.8 mAh per MB), over the battery's full charge.
-     */
-    private fun batteryEstimate(cpuMs: Long, bytes: Long): Double {
-        val mAh = cpuMs / 3_600_000.0 * 150.0 + bytes / 1_048_576.0 * 0.8
-        val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
-        val pct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val charge = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
-        val full = if (pct in 5..100 && charge > 0) charge / 1000.0 / (pct / 100.0) else 5000.0
-        return mAh / full.coerceIn(1500.0, 10000.0) * 100.0
     }
 
     private fun statCard(icon: String, iconColor: Int, title: String, value: String, unit: String, tag: String, tagColor: Int): View {
@@ -2153,7 +2247,11 @@ class MainActivity : Activity() {
     private fun stepIds(): List<String> = wizard ?: buildList {
         add("football")
         if (prefs.football) add("teams")
-        addAll(listOf("overlay", "access", "battery", "notif", "look", "idle", "location", "summary"))
+        // 1.9.1 (Omar's order): notifications, then restricted settings (its own step with a ✓),
+        // then the permissions it unlocks.
+        add("notif")
+        if (restrictedNeeded()) add("restricted")
+        addAll(listOf("overlay", "access", "battery", "look", "idle", "location", "summary"))
     }
 
     private val steps get() = stepIds().size
@@ -2169,6 +2267,7 @@ class MainActivity : Activity() {
             "battery" -> pm.isIgnoringBatteryOptimizations(packageName)
             "notif" -> Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             "location" -> !prefs.locAuto || Locator.canBg(this)
+            "restricted" -> restrictedOk()
             else -> true
         }
     }
@@ -2231,6 +2330,7 @@ class MainActivity : Activity() {
             "access" -> "ob3_t" to "ob3_d"
             "battery" -> "ob4_t" to "ob4_d"
             "notif" -> "ob5_t" to "ob5_d"
+            "restricted" -> "rs_title" to "rs_why"
             "look" -> "ob_look_t" to "ob_look_d"
             "idle" -> "ob_idle_t" to "ob_idle_d"
             "location" -> "ob_loc_t" to "ob_loc_d"
@@ -2288,6 +2388,13 @@ class MainActivity : Activity() {
             "notif" -> action = {
                 if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
             }
+            "restricted" -> {
+                if (restrictedOk()) {
+                    c.addView(text("✓ " + L.t("rs_done"), 16f, Ui.ACCENT, bold = true), lp(MATCH, WRAP, top = dp(18)))
+                } else {
+                    c.addView(restrictedGuide(steps = false), lp(MATCH, WRAP, top = dp(14)))
+                }
+            }
             "look" -> {
                 // On the real notch (it shows a sample while these change).
                 c.addView(label(L.t("pill_mode")), lp(MATCH, WRAP, top = dp(16)))
@@ -2324,19 +2431,27 @@ class MainActivity : Activity() {
                     LiveService.start(this, LiveService.ACTION_REFRESH)
                     drawOnboarding()
                 })
+                c.addView(k, lp(MATCH, WRAP, top = dp(16)))
                 if (prefs.idleNotch) {
-                    k.addView(divider())
-                    k.addView(navRow(L.t("idle_content"), "") {
-                        page = "idle_content"
-                        draw()
-                    })
-                    k.addView(divider())
-                    k.addView(navRow(L.t("slots"), L.f("slots_n", Shortcuts.load(this).count { it != null })) {
+                    // What it shows, right here: anyone can drop what they don't use (prayers…).
+                    c.addView(label(L.t("idle_content")), lp(MATCH, WRAP, top = dp(16)))
+                    val ck = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+                    val keys = listOf("weather", "date", "hijri", "prayer") + if (prefs.football) listOf("match") else emptyList()
+                    keys.forEachIndexed { i, key ->
+                        if (i > 0) ck.addView(divider())
+                        ck.addView(toggleRow(L.t("ic_$key"), null, key in prefs.idleShow) { on ->
+                            prefs.idleShow = if (on) prefs.idleShow + key else prefs.idleShow - key
+                            LiveService.start(this, LiveService.ACTION_DEMO, "idle")
+                        })
+                    }
+                    c.addView(ck, lp(MATCH, WRAP, top = dp(8)))
+                    val sk = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+                    sk.addView(navRow(L.t("slots"), L.f("slots_n", Shortcuts.load(this).count { it != null })) {
                         page = "slots"
                         draw()
                     })
+                    c.addView(sk, lp(MATCH, WRAP, top = dp(8)))
                 }
-                c.addView(k, lp(MATCH, WRAP, top = dp(16)))
             }
             "location" -> {
                 locationCard(c)
@@ -2346,7 +2461,7 @@ class MainActivity : Activity() {
                 // The summary: each permission with ✓/✗; a tap goes back to its step.
                 val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
                 val ids = stepIds()
-                listOf("overlay" to "perm_overlay", "access" to "perm_access", "battery" to "perm_battery", "notif" to "perm_notif", "location" to "perm_location")
+                listOf("notif" to "perm_notif", "restricted" to "perm_restricted", "overlay" to "perm_overlay", "access" to "perm_access", "battery" to "perm_battery", "location" to "perm_location")
                     .filter { it.first in ids }.forEachIndexed { i, (sid, key) ->
                         if (i > 0) k.addView(divider())
                         k.addView(navRow(L.t(key), if (grantedId(sid)) "✓" else "✗") {
@@ -2436,18 +2551,22 @@ class MainActivity : Activity() {
         val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
         val auto = prefs.autoCity
         val sub = when {
-            !prefs.locAuto -> L.t("loc_off")
-            !Locator.canFg(this) -> L.t("loc_need")
+            !prefs.locAuto || !Locator.canFg(this) -> L.t("loc_off")
             !Locator.canBg(this) -> L.t("loc_need_bg")
             auto != null && auto.name.isNotEmpty() -> L.f("loc_here", auto.name)
             else -> L.t("loc_finding")
         }
-        k.addView(toggleRow(L.t("loc_auto"), sub, prefs.locAuto) {
+        // Shown on only once there's a permission: turning it on asks straight away (1.9.1).
+        k.addView(toggleRow(L.t("loc_auto"), sub, prefs.locAuto && Locator.canFg(this)) {
             prefs.locAuto = it
             if (it) askLocation()
             LiveService.start(this, LiveService.ACTION_REFRESH)
             if (onboarding) drawOnboarding() else draw()
         })
+        if (prefs.locAuto && Locator.canFg(this) && !Locator.canBg(this)) {
+            k.addView(divider())
+            k.addView(navRow(L.t("loc_allow_always"), "") { askLocation() })
+        }
         if (prefs.locAuto && Locator.canFg(this)) {
             k.addView(divider())
             k.addView(navRow(L.t("loc_now"), "") {
@@ -2542,6 +2661,27 @@ class MainActivity : Activity() {
      * Android 13+ marks sideloaded apps "restricted": accessibility and notification access stay grey
      * until App info → ⋮ → Allow restricted settings. Not for store installs, or once it's allowed.
      */
+    /** Android 13+ and installed outside the store: the restricted-settings step applies. */
+    private fun restrictedNeeded(): Boolean {
+        if (Build.VERSION.SDK_INT < 33) return false
+        return try {
+            packageManager.getInstallSourceInfo(packageName).installingPackageName != "com.android.vending"
+        } catch (e: Exception) {
+            true
+        }
+    }
+
+    /** Restricted settings allowed (or not needed, or accessibility already on). */
+    private fun restrictedOk(): Boolean {
+        if (!restrictedNeeded() || TapService.instance != null) return true
+        return try {
+            val ops = getSystemService(APP_OPS_SERVICE) as android.app.AppOpsManager
+            ops.unsafeCheckOpNoThrow("android:access_restricted_settings", applicationInfo.uid, packageName) == android.app.AppOpsManager.MODE_ALLOWED
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     private fun restrictedLikely(): Boolean {
         if (Build.VERSION.SDK_INT < 33 || TapService.instance != null) return false
         try {
@@ -2558,10 +2698,12 @@ class MainActivity : Activity() {
     }
 
     /** Three numbered steps with a button each: try once, allow restricted settings, turn it on. */
-    private fun restrictedGuide(): View {
+    private fun restrictedGuide(steps: Boolean = true): View {
         val k = card(14).apply { background = Ui.rounded(Ui.CARD, dp(16).toFloat(), Ui.AMBER, dp(1)) }
-        k.addView(text(L.t("rs_title"), 15f, Ui.AMBER, bold = true))
-        k.addView(text(L.t("rs_why"), 12f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(4)))
+        if (steps) {
+            k.addView(text(L.t("rs_title"), 15f, Ui.AMBER, bold = true))
+            k.addView(text(L.t("rs_why"), 12f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(4)))
+        }
         val b = (Build.MANUFACTURER + " " + Build.BRAND).lowercase()
         val where = when {
             b.contains("honor") || b.contains("huawei") -> "rs_where_honor"

@@ -157,7 +157,14 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     private val screenOn = object : BroadcastReceiver() {
-        override fun onReceive(c: Context, i: Intent) = refresh()
+        override fun onReceive(c: Context, i: Intent) {
+            // 1.9.1: with the screen off the notch asks for no frames at all.
+            IslandView.screenOn = i.action != Intent.ACTION_SCREEN_OFF
+            if (IslandView.screenOn) {
+                refresh()
+                render()
+            }
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -197,7 +204,7 @@ class LiveService : Service(), IslandView.Gestures {
         else startForeground(NOTIF_ID, n)
         sounds = Sounds(this)
         island = Island(this, prefs, this)
-        registerReceiver(screenOn, IntentFilter(Intent.ACTION_SCREEN_ON))
+        registerReceiver(screenOn, IntentFilter(Intent.ACTION_SCREEN_ON).apply { addAction(Intent.ACTION_SCREEN_OFF) })
         refresh()
         main.post(tick)
         checkUpdate()
@@ -1052,10 +1059,23 @@ class LiveService : Service(), IslandView.Gestures {
 
     private var weatherUntil = 0L
 
-    /** 1.9: how long the weather plays on unlock or a change: 15 s fast, 10 s balanced, none on saver. */
-    private fun fxMs(): Long = when (effectiveSpeed(this)) {
-        "saver" -> 0L
-        "balanced" -> 10_000L
+    /** Battery level, and whether it's charging (for the weather's rules). */
+    private fun batteryLow(at: Int): Boolean {
+        val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+        return !bm.isCharging && bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) in 1..at
+    }
+
+    /** No weather animation at all: saver chosen by the user, or battery ≤ 10%. */
+    private fun weatherStill() = prefs.speed == "saver" || batteryLow(10)
+
+    /** Battery ≤ 20%: "always" plays only 15 s after unlocking (1.9.1). */
+    private fun weatherShort() = prefs.autoSaver && batteryLow(20)
+
+    /** 1.9: how long the weather plays on unlock or a change: 15 s fast, 10 s balanced, none when still. */
+    private fun fxMs(): Long = when {
+        weatherStill() -> 0L
+        weatherShort() -> 15_000L
+        effectiveSpeed(this) == "balanced" -> 10_000L
         else -> 15_000L
     }
 
@@ -1440,8 +1460,7 @@ class LiveService : Service(), IslandView.Gestures {
                 current = b
                 b.startedAt = now
                 // News gets time for its headline to slide through.
-                // 1.9: news stays 20 s, so anyone notices it (its headline goes through twice).
-                currentUntil = now + if (b.kind == "news") 20_000L else if (b.kind == "phone") 12_000L else BURST_MS
+                currentUntil = now + if (b.kind == "news" || b.kind == "phone") 12_000L else BURST_MS
                 infoMatch = null
                 announce(b, owner)
             }
@@ -1527,11 +1546,11 @@ class LiveService : Service(), IslandView.Gestures {
                 idleAlert = idleNow && alertActive(now),
                 weather = if (idleNow && now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather
                     else if (idleNow && now < alertFxUntil && alertFxKind.isNotEmpty()) alertFxKind
-                    else if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off") Ambient.kind else "",
+                    else if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off" && !weatherStill()) Ambient.kind else "",
                 weatherGlyph = if (idleNow && "weather" in prefs.idleShow) Ambient.glyph(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
                 weatherWord = if (idleNow && "weather" in prefs.idleShow && Ambient.temp != null) Ambient.word(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
                 weatherUntil = if (now < alertFxUntil) alertFxUntil else weatherUntil,
-                weatherAlways = prefs.weatherAnim == "always",
+                weatherAlways = prefs.weatherAnim == "always" && !weatherShort() && !weatherStill(),
             )
         }
         updateOngoing(if (idleNow || recNow || actNow) null else shownM, now)

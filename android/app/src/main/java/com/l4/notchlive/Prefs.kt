@@ -252,6 +252,30 @@ class Prefs(ctx: Context) {
             p.edit().putString("dailyCpu", o.toString()).apply()
         }
 
+    /** 1.9.1: bytes of app updates downloaded per day, left out of the day's data use. */
+    var dailyUpd: Map<String, Long>
+        get() = try {
+            val o = JSONObject(p.getString("dailyUpd", "{}") ?: "{}")
+            o.keys().asSequence().associateWith { o.getLong(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        set(v) {
+            val o = JSONObject()
+            v.entries.sortedBy { it.key }.takeLast(14).forEach { o.put(it.key, it.value) }
+            p.edit().putString("dailyUpd", o.toString()).apply()
+        }
+
+    fun addUpdateBytes(n: Long) {
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+        val m = dailyUpd.toMutableMap()
+        m[day] = (m[day] ?: 0L) + n
+        dailyUpd = m
+    }
+
+    /** The day's data without app updates. */
+    fun usedOn(day: String): Long = ((daily[day] ?: 0L) - (dailyUpd[day] ?: 0L)).coerceAtLeast(0L)
+
     /** 1.9: install updates by themselves when Android allows it. */
     var autoUpdate: Boolean
         get() = p.getBoolean("autoUpdate", true)

@@ -299,8 +299,13 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
             val f = prefs.widthPct / 100f
             v.leftMax = max(0f, g.cx - g.screenW * le) * f
             v.rightMax = max(0f, g.screenW * re - g.cx) * f
+            // 1.9.1: "auto" picks the layout from the phone's full room, so the width slider only
+            // narrows the notch and never flips it to another layout (or moves it under the bar).
+            v.fullLeft = max(0f, g.cx - g.screenW * le)
+            v.fullRight = max(0f, g.screenW * re - g.cx)
         }
         v.belowMax = g.screenW * 0.62f * prefs.widthPct / 100f
+        v.fullBelow = g.screenW * 0.62f
         v.setOnApplyWindowInsetsListener { _, ins ->
             if (Build.VERSION.SDK_INT >= 30) {
                 val was = statusBarVisible

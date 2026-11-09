@@ -385,6 +385,18 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     companion object {
         /** The last template drawn, for the device page. */
         var lastTpl = ""
+
+        /** 1.9.1: with the screen off nothing asks for frames (the service redraws on screen on). */
+        @Volatile
+        var screenOn = true
+    }
+
+    override fun postInvalidateDelayed(delayMilliseconds: Long) {
+        if (screenOn) super.postInvalidateDelayed(delayMilliseconds)
+    }
+
+    override fun postInvalidateOnAnimation() {
+        if (screenOn) super.postInvalidateOnAnimation()
     }
 
     /** Max width of a pill under the status bar (set by Island from the width slider). */
@@ -404,17 +416,32 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         return when (tplPref) {
             "A", "B", "C", "D" -> tplPref
             else -> {
+                // Decided on the full room (width at 100%), then drawn at the user's width.
+                val (l0, r0, b0) = Triple(leftMax, rightMax, belowMax)
+                if (fullLeft > 0f || fullRight > 0f) {
+                    leftMax = fullLeft
+                    rightMax = fullRight
+                }
+                if (fullBelow > 0f) belowMax = fullBelow
                 val t = when {
                     fitA() -> "A"
                     fitB() >= 0 -> "B"
                     fitD() >= 0 -> "D"
                     else -> "C"
                 }
+                leftMax = l0
+                rightMax = r0
+                belowMax = b0
                 resetFit()
                 t
             }
         }
     }
+
+    /** The room at 100% width (set by Island): what "auto" decides on. */
+    var fullLeft = 0f
+    var fullRight = 0f
+    var fullBelow = 0f
 
     /** Templates C and D sit under the status bar, away from the camera. */
     fun below(): Boolean = !landscape && !roomy && !tucked && !circle && act == null && recSince == 0L &&
@@ -424,7 +451,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (idleText.isEmpty()) return true
         fitK = 0.8f
         sizes()
-        val ok = gap() + line.measureText(idleText) + 12 * d <= min(leftMax, 150 * d) + 1f
+        val ok = gap() + line.measureText(idleText) + 12 * d <= min(if (fullLeft > 0f) fullLeft else leftMax, 150 * d) + 1f
         resetFit()
         return ok
     }
@@ -526,7 +553,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (breathe && !calm) {
             dot.alpha = (a * level * 0.25f).toInt()
             c.drawCircle(dx, cy, 5.5f * d, dot)
-            postInvalidateDelayed(50)
+            // 1.9.1: the breathing is slow (~3 s), 10 frames a second look the same.
+            postInvalidateDelayed(100)
         }
         if (others > 0) {
             dot.color = Color.WHITE
@@ -707,7 +735,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         val cy = h / 2
         val now = System.currentTimeMillis()
         val busyBg = weather.isNotEmpty() && (weatherAlways || now < weatherUntil)
-        if (busyBg && !calm) {
+        if (busyBg) {
             c.save()
             path.reset()
             path.addRoundRect(rect, h / 2, h / 2, Path.Direction.CW)
@@ -1250,7 +1278,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             dot.color = green
             dot.alpha = (255 * level).toInt()
             c.drawCircle(r, r, 3.2f * d, dot)
-            if (!calm) postInvalidateDelayed(50)
+            if (!calm) postInvalidateDelayed(100)
         }
     }
 
@@ -1291,7 +1319,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         c.drawText(txt, r, baseline(score, r), score)
         score.textAlign = Paint.Align.LEFT
         score.textSize = old
-        if (breathe && !calm) postInvalidateDelayed(50)
+        if (breathe && !calm) postInvalidateDelayed(100)
     }
 
     /** Always-on, nothing on: a black ring round the camera and a small grey dot. */
@@ -1301,7 +1329,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         rect.set(camX - lw, 0f, camX + rw, ch)
         c.drawRoundRect(rect, ch / 2, ch / 2, bg)
         val now = System.currentTimeMillis()
-        if (weather.isNotEmpty() && (weatherAlways || now < weatherUntil) && !calm) {
+        // The service sends no weather when it must stay still (saver chosen, battery ≤ 10%).
+        if (weather.isNotEmpty() && (weatherAlways || now < weatherUntil)) {
             c.save()
             path.reset()
             path.addRoundRect(rect, ch / 2, ch / 2, Path.Direction.CW)
@@ -1357,7 +1386,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             dot.alpha = 255
             c.drawCircle(rect.right - 8 * d, cy, 2.5f * d, dot)
         }
-        if (idleText.isNotEmpty() && line.measureText(idleText) > camX - gap() - rect.left - ch / 2) postInvalidateDelayed(40)
+        // (1.9.1: no endless redraw for long text: marquee() asks for frames only while it moves.)
     }
 
     /** Sound bars that move while the song plays (still when paused), in the album's colour. */
@@ -1929,7 +1958,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         line.color = Color.WHITE
         line.alpha = (255 * ((grow - 0.3f) / 0.7f).coerceIn(0f, 1f)).toInt()
         val y = ch + rowHeight() * grow / 2 - 1 * d
-        marquee(c, b.sub, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 900, repeat = 2)
+        marquee(c, b.sub, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 900)
         line.textSize = old
         line.color = 0xFFC8C8C8.toInt()
         line.alpha = 255
@@ -2151,7 +2180,8 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         if (breathe && !calm) {
             dot.alpha = (a * level * 0.25f).toInt()
             c.drawCircle(dx, cy, 5.5f * d, dot)
-            postInvalidateDelayed(50)
+            // 1.9.1: the breathing is slow (~3 s), 10 frames a second look the same.
+            postInvalidateDelayed(100)
         }
         // Another followed match is live: a small white dot beside it.
         if (others > 0) {

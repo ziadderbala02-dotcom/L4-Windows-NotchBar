@@ -118,6 +118,8 @@ object Installer {
                         }
                     }
                     progress(done, total)
+                    // 1.9.1: an update isn't "use": it's taken out of the day's data.
+                    Prefs(ctx).addUpdateBytes(done + 2048)
                     session.fsync(out)
                 }
             }
