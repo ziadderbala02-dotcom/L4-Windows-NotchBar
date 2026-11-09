@@ -202,6 +202,70 @@ class Prefs(ctx: Context) {
         )
         set(v) = p.edit().putString("cityName", v.name).putFloat("cityLat", v.lat.toFloat()).putFloat("cityLon", v.lon.toFloat()).apply()
 
+    /** 1.9: follow the phone's location for weather and prayers (needs the location permission). */
+    var locAuto: Boolean
+        get() = p.getBoolean("locAuto", true)
+        set(v) = p.edit().putBoolean("locAuto", v).apply()
+
+    /** The last automatic place (name may be empty until looked up). */
+    var autoCity: City?
+        get() = if (!p.contains("autoLat")) null else City(
+            p.getString("autoName", "") ?: "",
+            p.getFloat("autoLat", 0f).toDouble(),
+            p.getFloat("autoLon", 0f).toDouble(),
+        )
+        set(v) {
+            if (v == null) p.edit().remove("autoLat").remove("autoLon").remove("autoName").apply()
+            else p.edit().putString("autoName", v.name).putFloat("autoLat", v.lat.toFloat()).putFloat("autoLon", v.lon.toFloat()).apply()
+        }
+
+    /** 1.9: unusual weather today shows in the notch. */
+    var weatherAlerts: Boolean
+        get() = p.getBoolean("weatherAlerts", true)
+        set(v) = p.edit().putBoolean("weatherAlerts", v).apply()
+
+    /** The alerts already shown ("day:kind"), the morning one and the hour-before one. */
+    var alertShown: String
+        get() = p.getString("alertShown", "") ?: ""
+        set(v) = p.edit().putString("alertShown", v).apply()
+
+    var alertSoon: String
+        get() = p.getString("alertSoon", "") ?: ""
+        set(v) = p.edit().putString("alertSoon", v).apply()
+
+    /** 1.9: false = the user doesn't follow football; everything about it is off. */
+    var football: Boolean
+        get() = p.getBoolean("football", true)
+        set(v) = p.edit().putBoolean("football", v).apply()
+
+    /** 1.9: the app's own CPU time per day (ms), for the battery estimate. */
+    var dailyCpu: Map<String, Long>
+        get() = try {
+            val o = JSONObject(p.getString("dailyCpu", "{}") ?: "{}")
+            o.keys().asSequence().associateWith { o.getLong(it) }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        set(v) {
+            val o = JSONObject()
+            v.entries.sortedBy { it.key }.takeLast(14).forEach { o.put(it.key, it.value) }
+            p.edit().putString("dailyCpu", o.toString()).apply()
+        }
+
+    /** 1.9: install updates by themselves when Android allows it. */
+    var autoUpdate: Boolean
+        get() = p.getBoolean("autoUpdate", true)
+        set(v) = p.edit().putBoolean("autoUpdate", v).apply()
+
+    /** When the notch last said an update is ready, and until when the user put it off. */
+    var updateNotedAt: Long
+        get() = p.getLong("updateNotedAt", 0L)
+        set(v) = p.edit().putLong("updateNotedAt", v).apply()
+
+    var updateSnooze: Long
+        get() = p.getLong("updateSnooze", 0L)
+        set(v) = p.edit().putLong("updateSnooze", v).apply()
+
     /** Weather animation: "auto" (5 s on unlock and when it changes), "always" or "off". */
     var weatherAnim: String
         get() = p.getString("weatherAnim", "auto") ?: "auto"

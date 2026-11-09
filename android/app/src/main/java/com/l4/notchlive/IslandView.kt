@@ -121,6 +121,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
     var weather = ""
     /** Animate the weather until this time (or always when [weatherAlways]). */
     var weatherUntil = 0L
+
+    /** 1.9: the prayer's colour as it gets close (0 = normal), and the unusual-weather dot. */
+    var idleTone = 0
+    var idleAlert = false
     var weatherAlways = false
     /** Weather glyph and its one word ("مطر"), shown in place of the temperature for a moment. */
     var weatherGlyph = ""
@@ -692,6 +696,13 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         resetFit()
     }
 
+    /** Small orange dot: unusual weather today (1.9). */
+    private fun alertDot(c: Canvas, x: Float, y: Float) {
+        dot.color = 0xFFF59E0B.toInt()
+        dot.alpha = 255
+        c.drawCircle(x, y, 2.2f * d, dot)
+    }
+
     private fun drawIdleBelow(c: Canvas, w: Float, h: Float) {
         val cy = h / 2
         val now = System.currentTimeMillis()
@@ -715,6 +726,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             minute.textAlign = Paint.Align.RIGHT
             shadowed(minute, busyBg)
             c.drawText(label, right, baseline(minute, cy), minute)
+            if (idleAlert) alertDot(c, right + 3.5f * d, cy - h * 0.24f)
             right -= minute.measureText(label)
             if (weatherGlyph.isNotEmpty()) {
                 val sz = 14 * d
@@ -731,7 +743,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 idleTextShown = idleText
                 idleTextSince = now
             }
-            line.color = 0xFFE5E7EB.toInt()
+            line.color = if (idleTone != 0) idleTone else 0xFFE5E7EB.toInt()
             line.alpha = 255
             shadowed(line, busyBg)
             marquee(c, idleText, line, dPad(), right, baseline(line, cy), idleTextSince)
@@ -815,7 +827,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
      * Text that may not fit [areaL]..[areaR]: shown from its start, then (after a beat) it slides
      * once at an easy reading speed to show the rest, and stays. Arabic slides left-to-right.
      */
-    private fun marquee(c: Canvas, text: String, p: Paint, areaL: Float, areaR: Float, y: Float, since: Long) {
+    private fun marquee(c: Canvas, text: String, p: Paint, areaL: Float, areaR: Float, y: Float, since: Long, repeat: Int = 1) {
         val aw = areaR - areaL
         if (aw <= 4 * d) return
         val oldAlign = p.textAlign
@@ -840,7 +852,10 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             val over = tw - aw
             val speed = 38 * d / 1000f
             val run = (over / speed).toLong()
-            val age = (System.currentTimeMillis() - since - 900).coerceAtLeast(0)
+            var age = (System.currentTimeMillis() - since - 900).coerceAtLeast(0)
+            // News goes through twice (1.9), with a rest on its start between.
+            val cycle = 2 * run + 2700
+            if (repeat > 1 && age < cycle * repeat) age %= cycle
             val shift = when {
                 age < run -> age * speed
                 age < run + 1200 -> over
@@ -1311,7 +1326,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
                 idleTextShown = idleText
                 idleTextSince = now
             }
-            line.color = 0xFFE5E7EB.toInt()
+            line.color = if (idleTone != 0) idleTone else 0xFFE5E7EB.toInt()
             line.alpha = 255
             shadowed(line, busyBg)
             marquee(c, idleText, line, rect.left + ch / 2, camX - gap() - 2 * d, baseline(line, cy), idleTextSince)
@@ -1336,6 +1351,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
             shadowed(minute, false)
             minute.textAlign = Paint.Align.LEFT
             if (showWord) postInvalidateDelayed(250)
+            if (idleAlert) alertDot(c, right + 3.5f * d, cy - ch * 0.24f)
         } else {
             dot.color = 0xFF6B7280.toInt()
             dot.alpha = 255
@@ -1913,7 +1929,7 @@ class IslandView(ctx: Context, private val gestures: Gestures) : View(ctx) {
         line.color = Color.WHITE
         line.alpha = (255 * ((grow - 0.3f) / 0.7f).coerceIn(0f, 1f)).toInt()
         val y = ch + rowHeight() * grow / 2 - 1 * d
-        marquee(c, b.sub, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 900)
+        marquee(c, b.sub, line, l + ch / 2, r - ch / 2, baseline(line, y), b.startedAt + 900, repeat = 2)
         line.textSize = old
         line.color = 0xFFC8C8C8.toInt()
         line.alpha = 255

@@ -44,12 +44,16 @@ class WeatherFx(val kind: String) {
             "snow" -> repeat(36) { ps += P(rnd(l, r), rnd(-9 * u, 31 * u), rnd(0.25f, 0.6f) * u, rnd(0.8f, 1.9f) * u, rnd(0f, 6f)) }
             "clouds" -> repeat(4) { i -> ps += P(l + i * 60 * u, 0f, rnd(0.12f, 0.25f) * u, rnd(0.8f, 1.25f)) }
             "wind" -> repeat(12) { ps += P(rnd(l, r), rnd(cy - 11 * u, cy + 11 * u), rnd(3f, 5.5f) * u, rnd(14f, 32f) * u) }
+            // 1.9: cold (a few slow flakes over frost), heat (rising shimmer), dust (a brown drift).
+            "cold" -> repeat(16) { ps += P(rnd(l, r), rnd(-9 * u, 31 * u), rnd(0.15f, 0.35f) * u, rnd(0.6f, 1.3f) * u, rnd(0f, 6f)) }
+            "hot" -> repeat(7) { i -> ps += P(l + (r - l) * (i + 0.5f) / 7f, rnd(0f, 30 * u), rnd(0.25f, 0.45f) * u, rnd(10f, 18f) * u, rnd(0f, 6f)) }
+            "dust" -> repeat(60) { ps += P(rnd(l, r), rnd(0f, 30 * u), rnd(2.5f, 5f) * u, rnd(0.5f, 1.3f) * u) }
         }
     }
 
     /** Draws one frame for the notch spanning [left]..[right], [height] tall. */
     fun draw(c: Canvas, left: Float, right: Float, height: Float, now: Long) {
-        if (left != l || right != r || height != h || ps.isEmpty() && kind in setOf("rain", "storm", "snow", "clouds", "wind")) {
+        if (left != l || right != r || height != h || ps.isEmpty() && kind in setOf("rain", "storm", "snow", "clouds", "wind", "cold", "hot", "dust")) {
             l = left; r = right; h = height; u = height / 30f
             seed()
         }
@@ -64,6 +68,9 @@ class WeatherFx(val kind: String) {
             "clouds" -> clouds(c, k)
             "wind" -> wind(c, k)
             "fog" -> fog(c, now)
+            "cold" -> cold(c, k, now)
+            "hot" -> hot(c, k, now)
+            "dust" -> dust(c, k, now)
         }
     }
 
@@ -180,6 +187,92 @@ class WeatherFx(val kind: String) {
             c.drawRect(l, top, r, top + 12 * u, fill)
         }
         fill.shader = null
+    }
+
+    /** Frost creeping in from both ends, and a few slow flakes. */
+    private fun cold(c: Canvas, k: Float, now: Long) {
+        val breathe = 0.75f + 0.25f * sin(now / 900.0).toFloat()
+        val w = 46 * u
+        val ice = Color.argb((150 * breathe).toInt(), 150, 205, 255)
+        val clear = Color.argb(0, 150, 205, 255)
+        fill.shader = LinearGradient(l, 0f, l + w, 0f, ice, clear, Shader.TileMode.CLAMP)
+        c.drawRect(l, 0f, l + w, h, fill)
+        fill.shader = LinearGradient(r - w, 0f, r, 0f, clear, ice, Shader.TileMode.CLAMP)
+        c.drawRect(r - w, 0f, r, h, fill)
+        fill.shader = null
+        // Tiny frost crystals on the edges.
+        line.color = Color.argb((170 * breathe).toInt(), 210, 235, 255)
+        line.strokeWidth = 0.8f * u
+        for (x in listOf(l + 10 * u, r - 10 * u)) {
+            for (i in 0 until 3) {
+                val a = i * PI / 3
+                val dx = (cos(a) * 4 * u).toFloat()
+                val dy = (sin(a) * 4 * u).toFloat()
+                c.drawLine(x - dx, cy - dy, x + dx, cy + dy, line)
+            }
+        }
+        fill.color = Color.argb(220, 235, 245, 255)
+        for (p in ps) {
+            p.y += p.v * k
+            p.b += 0.025f * k
+            if (p.y > cy + 17 * u) {
+                p.y = cy - 17 * u
+                p.x = rnd(l, r)
+            }
+            c.drawCircle(p.x + sin(p.b) * 3f * u, p.y, p.a, fill)
+        }
+    }
+
+    /** Warm glow at the bottom edge and wavy lines of hot air rising. */
+    private fun hot(c: Canvas, k: Float, now: Long) {
+        val pulse = 0.7f + 0.3f * sin(now / 800.0).toFloat()
+        fill.shader = LinearGradient(
+            0f, h, 0f, 0f,
+            intArrayOf(Color.argb((150 * pulse).toInt(), 255, 120, 30), Color.argb((45 * pulse).toInt(), 255, 170, 60), Color.argb(0, 255, 170, 60)),
+            floatArrayOf(0f, 0.45f, 1f), Shader.TileMode.CLAMP,
+        )
+        c.drawRect(l, 0f, r, h, fill)
+        fill.shader = null
+        line.strokeWidth = 1.1f * u
+        for (p in ps) {
+            p.y -= p.v * k
+            p.b += 0.08f * k
+            if (p.y < -p.a) p.y = h + p.a
+            val fade = (p.y / h).coerceIn(0f, 1f)
+            line.color = Color.argb((120 * fade).toInt(), 255, 190, 110)
+            path.reset()
+            var y = p.y + p.a / 2
+            path.moveTo(p.x, y)
+            for (i in 1..6) {
+                val ny = p.y + p.a / 2 - i * p.a / 6
+                path.lineTo(p.x + sin(p.b + i * 1.3f) * 2.2f * u, ny)
+                y = ny
+            }
+            c.drawPath(path, line)
+        }
+    }
+
+    /** A brownish haze sliding sideways with grains of dust. */
+    private fun dust(c: Canvas, k: Float, now: Long) {
+        val span = 200 * u
+        val off = ((now / 14.0) * u % span).toFloat()
+        fill.shader = LinearGradient(
+            l - span + off, 0f, l + off, 0f,
+            intArrayOf(Color.argb(60, 190, 140, 80), Color.argb(130, 205, 155, 90), Color.argb(60, 190, 140, 80)),
+            null, Shader.TileMode.MIRROR,
+        )
+        c.drawRect(l, 0f, r, h, fill)
+        fill.shader = null
+        for (p in ps) {
+            p.x += p.v * k
+            p.y += sin((now / 300.0) + p.x / (20 * u)).toFloat() * 0.3f * u * k
+            if (p.x > r) {
+                p.x = l - rnd(0f, 20 * u)
+                p.y = rnd(0f, h)
+            }
+            fill.color = Color.argb(200, 215, 170, 110)
+            c.drawCircle(p.x, p.y, p.a, fill)
+        }
     }
 
     companion object {

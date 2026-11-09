@@ -68,10 +68,15 @@ object Updater {
  */
 object Installer {
     /** Runs on a background thread. [progress] gets (bytes so far, total or -1). Throws on failure. */
-    fun downloadAndInstall(ctx: android.content.Context, r: Updater.Release, progress: (Long, Long) -> Unit) {
+    fun downloadAndInstall(ctx: android.content.Context, r: Updater.Release, auto: Boolean = false, progress: (Long, Long) -> Unit) {
         val pi = ctx.packageManager.packageInstaller
         val params = android.content.pm.PackageInstaller.SessionParams(android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL)
         params.setAppPackageName(ctx.packageName)
+        // 1.9: Android 12+ lets an app update itself without asking, once it installed itself the
+        // last time. Where the phone still asks (first time, some ROMs), the notch offers it.
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            params.setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+        }
         val id = pi.createSession(params)
         val session = pi.openSession(id)
         try {
@@ -120,7 +125,7 @@ object Installer {
             val flags = android.app.PendingIntent.FLAG_UPDATE_CURRENT or
                 if (android.os.Build.VERSION.SDK_INT >= 31) android.app.PendingIntent.FLAG_MUTABLE else 0
             val done = android.app.PendingIntent.getBroadcast(
-                ctx, id, android.content.Intent(ctx, InstallReceiver::class.java), flags,
+                ctx, id, android.content.Intent(ctx, InstallReceiver::class.java).putExtra("auto", auto).putExtra("version", r.version), flags,
             )
             session.commit(done.intentSender)
             session.close()
@@ -139,6 +144,13 @@ class InstallReceiver : android.content.BroadcastReceiver() {
             @Suppress("DEPRECATION")
             val confirm = i.getParcelableExtra<android.content.Intent>(android.content.Intent.EXTRA_INTENT) ?: return
             confirm.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            if (i.getBooleanExtra("auto", false)) {
+                // Downloaded in the background: keep the confirm screen for a tap on the notch.
+                pending = confirm
+                pendingVersion = i.getStringExtra("version") ?: ""
+                LiveService.instance?.updateReady()
+                return
+            }
             try {
                 ctx.startActivity(confirm)
             } catch (e: Exception) {
@@ -152,5 +164,12 @@ class InstallReceiver : android.content.BroadcastReceiver() {
     companion object {
         @Volatile
         var lastError: String? = null
+
+        /** A downloaded update waiting for the user's OK (1.9). */
+        @Volatile
+        var pending: android.content.Intent? = null
+
+        @Volatile
+        var pendingVersion = ""
     }
 }

@@ -48,6 +48,7 @@ class LiveService : Service(), IslandView.Gestures {
         private const val NEWS_ID = -2
         /** Events that play inside the notch first (a tap opens them big). */
         private const val ACCESS_URL = "notch:access"
+        private const val UPDATE_URL = "notch:update"
         private val INLINE_KINDS = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
         /** The always-on notch and the recording pill. */
         private const val IDLE_ID = -5
@@ -202,6 +203,9 @@ class LiveService : Service(), IslandView.Gestures {
         checkUpdate()
         net.schedule({ pollNews() }, 20, TimeUnit.SECONDS)
         net.schedule({ pollWeather() }, 3, TimeUnit.SECONDS)
+        // 1.9: the weather and prayers follow the phone; a move of ~1 km refetches the weather.
+        Locator.onMoved = { net.execute { fetchWeather() } }
+        Locator.start(this, prefs)
         // The weather plays for a few seconds each time the phone is unlocked.
         try {
             registerReceiver(unlock, android.content.IntentFilter(Intent.ACTION_USER_PRESENT))
@@ -219,6 +223,8 @@ class LiveService : Service(), IslandView.Gestures {
             ACTION_REFRESH -> {
                 island.reattach()
                 refresh()
+                Locator.start(this, prefs)
+                net.execute { fetchWeather() }
             }
             ACTION_DEMO -> startDemo(intent.getStringExtra("kind") ?: "goal")
         }
@@ -226,6 +232,8 @@ class LiveService : Service(), IslandView.Gestures {
     }
 
     override fun onDestroy() {
+        Locator.stop(this)
+        Locator.onMoved = null
         try {
             unregisterReceiver(unlock)
         } catch (e: Exception) {
@@ -266,6 +274,18 @@ class LiveService : Service(), IslandView.Gestures {
         val m = onScreen ?: return
         val now = System.currentTimeMillis()
         if (endPreview(m)) return
+        current?.takeIf { it.url == UPDATE_URL }?.let {
+            current = null
+            InstallReceiver.pending?.let { i ->
+                try {
+                    startActivity(i)
+                } catch (e: Exception) {
+                    startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                }
+            } ?: startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            render()
+            return
+        }
         current?.takeIf { it.url == ACCESS_URL }?.let {
             current = null
             try {
@@ -559,6 +579,8 @@ class LiveService : Service(), IslandView.Gestures {
     override fun swipe(right: Boolean) {
         onScreen?.let { if (endPreview(it)) return }
         if (current != null) {
+            // A swipe on "update ready" puts it off for 6 hours (1.9).
+            if (current?.url == UPDATE_URL) prefs.updateSnooze = System.currentTimeMillis() + 6 * 3600_000L
             // A swipe sends away whatever is showing (news, a goal, a menu).
             current = null
             nextBurstAt = System.currentTimeMillis() + 600
@@ -610,8 +632,9 @@ class LiveService : Service(), IslandView.Gestures {
         var next = SLOW_MS
         val speed = effectiveSpeed(this)
         try {
-            val favs = prefs.teams.map { it.id }.toSet()
-            val pins = prefs.pinned
+            // 1.9: football off = no matches at all (the teams stay saved for when it's back on).
+            val favs = if (prefs.football) prefs.teams.map { it.id }.toSet() else emptySet()
+            val pins = if (prefs.football) prefs.pinned else emptySet()
             // One light request for the favourite teams and the teams of pinned matches.
             val ids = (favs + pins.flatMap { pinTeams[it]?.toList() ?: emptyList() }).toList()
             var list = if (ids.isEmpty()) emptyList() else Api.teamGames(ids)
@@ -1029,29 +1052,118 @@ class LiveService : Service(), IslandView.Gestures {
 
     private var weatherUntil = 0L
 
+    /** 1.9: how long the weather plays on unlock or a change: 15 s fast, 10 s balanced, none on saver. */
+    private fun fxMs(): Long = when (effectiveSpeed(this)) {
+        "saver" -> 0L
+        "balanced" -> 10_000L
+        else -> 15_000L
+    }
+
+    private fun playWeather() {
+        val ms = fxMs()
+        if (ms > 0) weatherUntil = max(weatherUntil, System.currentTimeMillis() + ms)
+    }
+
     private val unlock = object : android.content.BroadcastReceiver() {
         override fun onReceive(c: android.content.Context, i: Intent) {
-            weatherUntil = System.currentTimeMillis() + 5_000L
+            playWeather()
+            checkAlert(System.currentTimeMillis(), unlocked = true)
+            prefs.updateNotedAt = 0L
+            nagUpdate(System.currentTimeMillis())
+            checkUpdate()
             render()
         }
     }
 
-    /** Every 30 min while the always-on notch shows the weather. */
-    private fun pollWeather() {
+    /** The place for the weather and prayers: the phone's location, or the chosen city. */
+    private fun place(): City = Locator.city(this, prefs)
+
+    private fun wantWeather() = (prefs.idleNotch && "weather" in prefs.idleShow) || prefs.weatherAlerts
+
+    private fun fetchWeather() {
         try {
-            if (prefs.idleNotch && "weather" in prefs.idleShow) {
-                if (Ambient.refreshWeather(prefs.city)) {
-                    main.post {
-                        weatherUntil = System.currentTimeMillis() + 5_000L
-                        render()
-                    }
-                }
+            if (!wantWeather()) return
+            val changed = Ambient.refreshWeather(place())
+            main.post {
+                if (changed) playWeather()
+                checkAlert(System.currentTimeMillis(), unlocked = false)
+                render()
             }
         } catch (e: Exception) {
             // Try again next time.
         }
-        if (instance === this) net.schedule({ pollWeather() }, 30, TimeUnit.MINUTES)
     }
+
+    /**
+     * 1.9: fast = every 10 min on Wi-Fi, 15 on mobile data; balanced 30; saver (or battery ≤ 20%) 60.
+     * The weather itself changes about every 15 min, so faster wouldn't be more accurate.
+     */
+    private fun weatherEvery(): Long {
+        if (effectiveSpeed(this) == "saver") return 60
+        if (prefs.speed != "fast") return 30
+        val cm = getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork)
+        return if (caps != null && caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI)) 10 else 15
+    }
+
+    private fun pollWeather() {
+        fetchWeather()
+        if (instance === this) net.schedule({ pollWeather() }, weatherEvery(), TimeUnit.MINUTES)
+    }
+
+    /* ---------- 1.9: unusual weather today ---------- */
+
+    /** The alert's animation plays with it (and an hour before), whatever the weather setting. */
+    private var alertFxUntil = 0L
+    private var alertFxKind = ""
+
+    /**
+     * The morning alert: the first unlock after 7:00 (once a day). An hour before it starts, a short
+     * reminder. While a match is being played it waits for a break or the end.
+     */
+    private fun checkAlert(now: Long, unlocked: Boolean) {
+        val a = Ambient.alert ?: return
+        if (!prefs.weatherAlerts || current != null || queue.isNotEmpty()) return
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now))
+        if (a.day != today) return
+        val busy = liveNow(matches).any { it.phase != "break" }
+        if (busy) return
+        val hour = java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY)
+        val (title, detail) = Ambient.alertText(a, now)
+        if (prefs.alertShown != a.key && hour >= 7 && (unlocked || (getSystemService(POWER_SERVICE) as android.os.PowerManager).isInteractive)) {
+            prefs.alertShown = a.key
+            showAlert(a, title, detail, 20_000L)
+            return
+        }
+        if (prefs.alertSoon != a.key && a.at - now in 1..3600_000L && prefs.alertShown == a.key) {
+            prefs.alertSoon = a.key
+            showAlert(a, L.t("al_head"), L.f("al_soon", L.t("al_${a.kind}")), 6_000L)
+        }
+    }
+
+    private fun showAlert(a: Ambient.Alert, title: String, detail: String, ms: Long) {
+        val icon = try {
+            val bmp = android.graphics.Bitmap.createBitmap(96, 96, android.graphics.Bitmap.Config.ARGB_8888)
+            WeatherFx.icon(android.graphics.Canvas(bmp), Ambient.glyph(Ambient.alertFx(a.kind)).ifEmpty { "clouds" }, 48f, 48f, 80f)
+            bmp
+        } catch (e: Exception) {
+            null
+        }
+        alertFxKind = Ambient.alertFx(a.kind)
+        alertFxUntil = System.currentTimeMillis() + ms + 4_000L
+        showOverlay(Burst("news", if (ms > 10_000L) L.t("al_head") else title, if (ms > 10_000L) "$title · $detail" else detail, true, 0xFFF59E0B.toInt(), NEWS_ID, icon = icon), ms)
+    }
+
+    /** The orange dot beside the temperature while today's alert is still ahead or going on. */
+    private fun alertActive(now: Long): Boolean {
+        val a = Ambient.alert ?: return false
+        if (!prefs.weatherAlerts) return false
+        val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date(now))
+        return a.day == today
+    }
+
+    /** The prayer colour for the always-on notch (0 = normal); set by idleLeft. */
+    private var idleTone = 0
 
     /** Left side of the always-on notch: the date, the next prayer, the next match, taking turns every 10 s. */
     private fun idleLeft(now: Long): String {
@@ -1059,12 +1171,18 @@ class LiveService : Service(), IslandView.Gestures {
         val items = ArrayList<String>()
         if ("date" in show) items += Ambient.dateText(now)
         if ("hijri" in show) Ambient.hijriText(now).takeIf { it.isNotBlank() }?.let { items += it }
+        idleTone = 0
         if ("prayer" in show) try {
-            items += Ambient.nextPrayerText(prefs.city, now, android.text.format.DateFormat.getTimeFormat(this))
+            // 1.9: from 30 min before a prayer it stays on screen, orange then red; green when it's time.
+            Ambient.prayerState(place(), now)?.let { (text, tone) ->
+                idleTone = tone
+                return text
+            }
+            items += Ambient.nextPrayerText(place(), now, android.text.format.DateFormat.getTimeFormat(this))
         } catch (e: Exception) {
             // No city yet.
         }
-        if ("match" in show) {
+        if ("match" in show && prefs.football) {
             matches.filter { it.state == Api.PRE && it.kickoff > now }.minByOrNull { it.kickoff }?.let { m ->
                 val fav = prefs.teams.map { it.id }
                 val mine = if (m.away.id in fav && m.home.id !in fav) m.away else m.home
@@ -1100,7 +1218,7 @@ class LiveService : Service(), IslandView.Gestures {
     /** Checks the favourite teams' news (every 10/15/30 min by speed); new ones join the line. */
     private fun pollNews() {
         try {
-            if (prefs.enabled && prefs.news) {
+            if (prefs.enabled && prefs.news && prefs.football) {
                 val seen = prefs.seenNews.toMutableSet()
                 val first = seen.isEmpty()
                 val fresh = ArrayList<Pair<TeamOption, Api.News>>()
@@ -1146,17 +1264,29 @@ class LiveService : Service(), IslandView.Gestures {
     /* ---------- data per day ---------- */
 
     private var lastTraffic = -1L
+    private var lastCpu = -1L
 
-    /** Adds what was downloaded since last time to today's total (kept 14 days). */
+    /**
+     * Adds what was downloaded since last time to today's total (kept 14 days): everything the app
+     * fetched (matches, news, weather, logos, updates). 1.9: also the app's CPU time, for the
+     * day's battery estimate.
+     */
     private fun countData() {
         val now = traffic()
+        val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
         if (lastTraffic >= 0 && now >= lastTraffic) {
-            val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
             val d = prefs.daily.toMutableMap()
             d[day] = (d[day] ?: 0L) + (now - lastTraffic)
             prefs.daily = d
         }
         lastTraffic = now
+        val cpu = android.os.Process.getElapsedCpuTime()
+        if (lastCpu >= 0 && cpu >= lastCpu) {
+            val c = prefs.dailyCpu.toMutableMap()
+            c[day] = (c[day] ?: 0L) + (cpu - lastCpu)
+            prefs.dailyCpu = c
+        }
+        lastCpu = cpu
     }
 
     /** The feed's Arabic status words, in the app's language. */
@@ -1295,7 +1425,8 @@ class LiveService : Service(), IslandView.Gestures {
             current = null
             nextBurstAt = now + 600
         }
-        if (hadBurst && current == null && queue.isEmpty()) weatherUntil = max(weatherUntil, now + 5_000L)
+        if (hadBurst && current == null && queue.isEmpty()) playWeather()
+        if (current == null) checkAlert(now, unlocked = false)
         watchTaps()
         hadBurst = current != null
         if (infoMatch != null && now >= infoUntil) infoMatch = null
@@ -1309,7 +1440,8 @@ class LiveService : Service(), IslandView.Gestures {
                 current = b
                 b.startedAt = now
                 // News gets time for its headline to slide through.
-                currentUntil = now + if (b.kind == "news" || b.kind == "phone") 12_000L else BURST_MS
+                // 1.9: news stays 20 s, so anyone notices it (its headline goes through twice).
+                currentUntil = now + if (b.kind == "news") 20_000L else if (b.kind == "phone") 12_000L else BURST_MS
                 infoMatch = null
                 announce(b, owner)
             }
@@ -1391,11 +1523,14 @@ class LiveService : Service(), IslandView.Gestures {
                 actIcon = if (actNow) act?.let { a -> if (a.kind == "charge") null else if (a.kind == "media") Activities.mediaArt() ?: appIcon(a.pkg) else appIcon(a.pkg) } else null,
                 idleText = if (idleNow) idleLeft(now) else "",
                 idleTemp = if (idleNow) idleRight() else "",
+                idleTone = if (idleNow) idleTone else 0,
+                idleAlert = idleNow && alertActive(now),
                 weather = if (idleNow && now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather
+                    else if (idleNow && now < alertFxUntil && alertFxKind.isNotEmpty()) alertFxKind
                     else if (idleNow && "weather" in prefs.idleShow && prefs.weatherAnim != "off") Ambient.kind else "",
                 weatherGlyph = if (idleNow && "weather" in prefs.idleShow) Ambient.glyph(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
                 weatherWord = if (idleNow && "weather" in prefs.idleShow && Ambient.temp != null) Ambient.word(if (now < demoIdleUntil && demoWeather.isNotEmpty()) demoWeather else Ambient.kind) else "",
-                weatherUntil = weatherUntil,
+                weatherUntil = if (now < alertFxUntil) alertFxUntil else weatherUntil,
                 weatherAlways = prefs.weatherAnim == "always",
             )
         }
@@ -1555,7 +1690,7 @@ class LiveService : Service(), IslandView.Gestures {
 
     private fun checkUpdate() {
         val now = System.currentTimeMillis()
-        if (now - prefs.lastUpdateCheck < 12 * 3600_000L) return
+        if (now - prefs.lastUpdateCheck < 6 * 3600_000L) return
         prefs.lastUpdateCheck = now
         net.execute {
             val r = try {
@@ -1564,19 +1699,49 @@ class LiveService : Service(), IslandView.Gestures {
                 null
             } ?: return@execute
             if (!Updater.newer(r.version, Updater.current(this))) return@execute
-            val n = Notification.Builder(this, CH_ALERT)
-                .setSmallIcon(R.drawable.ic_ball)
-                .setContentTitle(L.f("update_title", r.version))
-                .setContentText(L.t("update_text"))
-                .setAutoCancel(true)
-                .setContentIntent(mainIntent())
-                .build()
-            try {
-                nm.notify(UPDATE_ID, n)
-            } catch (e: SecurityException) {
-                // Notifications are off; the app shows it too.
+            // 1.9: fetch and install it in the background (Wi-Fi, or mobile data too: the APK is small).
+            if (prefs.autoUpdate) {
+                // Its own thread, so match polling isn't held up by the download.
+                Thread {
+                    try {
+                        Installer.downloadAndInstall(this, r, auto = true) { _, _ -> }
+                    } catch (e: Exception) {
+                        main.post { notifyUpdate(r.version) }
+                    }
+                }.start()
+                return@execute
             }
+            notifyUpdate(r.version)
         }
+    }
+
+    private fun notifyUpdate(version: String) {
+        val n = Notification.Builder(this, CH_ALERT)
+            .setSmallIcon(R.drawable.ic_ball)
+            .setContentTitle(L.f("update_title", version))
+            .setContentText(L.t("update_text"))
+            .setAutoCancel(true)
+            .setContentIntent(mainIntent())
+            .build()
+        try {
+            nm.notify(UPDATE_ID, n)
+        } catch (e: SecurityException) {
+            // Notifications are off; the app shows it too.
+        }
+    }
+
+    /** The phone wants an OK for a downloaded update: say so in the notch (on unlock, at most hourly). */
+    fun updateReady() = main.post {
+        prefs.updateNotedAt = 0L
+        nagUpdate(System.currentTimeMillis())
+    }
+
+    private fun nagUpdate(now: Long) {
+        if (InstallReceiver.pending == null || current != null || queue.isNotEmpty()) return
+        if (now < prefs.updateSnooze || now - prefs.updateNotedAt < 3600_000L) return
+        if (liveNow(matches).any { it.phase != "break" }) return
+        prefs.updateNotedAt = now
+        showOverlay(Burst("news", L.f("upd_ready", InstallReceiver.pendingVersion), L.t("upd_tap"), true, 0xFF34D399.toInt(), NEWS_ID, url = UPDATE_URL), 8_000L)
     }
 
     /* ---------- demo (to check the position without a live match) ---------- */
@@ -1586,10 +1751,18 @@ class LiveService : Service(), IslandView.Gestures {
     private var demoWeather = ""
 
     private fun startDemo(kind: String) {
+        if (kind == "alert") {
+            // A sample of the morning weather alert (1.9).
+            val now = System.currentTimeMillis()
+            val a = Ambient.Alert("rain", now + 3 * 3600_000L, "", 23, 14, 70)
+            val (title, detail) = Ambient.alertText(a, now)
+            showAlert(a, title, detail, 20_000L)
+            return
+        }
         if (kind == "idle" || kind.startsWith("w_")) {
             // The empty notch (or one weather kind on it) for a few seconds.
             demoWeather = kind.removePrefix("w_").takeIf { kind.startsWith("w_") }.orEmpty()
-            demoIdleUntil = System.currentTimeMillis() + if (demoWeather.isEmpty()) 4_000L else 5_000L
+            demoIdleUntil = System.currentTimeMillis() + if (demoWeather.isEmpty()) 4_000L else 8_000L
             weatherUntil = demoIdleUntil
             demo = null
             render()

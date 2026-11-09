@@ -132,7 +132,7 @@ class MainActivity : Activity() {
         if (prefs.enabled) LiveService.start(this, LiveService.ACTION_REFRESH)
         if (onboarding) {
             // Came back from a settings page: move on if it's granted.
-            if (step in 1..4 && step != 3 && granted(step)) step++
+            if (stepId() in setOf("overlay", "access", "notif") && granted(step)) step++
             drawOnboarding()
         } else {
             askCallPerm(false)
@@ -517,6 +517,17 @@ class MainActivity : Activity() {
     private var listBox: LinearLayout? = null
 
     private fun matches(c: LinearLayout) {
+        if (!prefs.football) {
+            // 1.9: football is off: say so, with a way to turn it on (teams, competitions, size).
+            c.addView(text(L.t("tab_matches"), 24f, bold = true))
+            val k = card(18)
+            k.addView(Icon(this, "ball", 28).apply { color = Ui.MUTED })
+            k.addView(text(L.t("fb_off_t"), 17f, bold = true), lp(MATCH, WRAP, top = dp(10)))
+            k.addView(text(L.t("fb_off_d"), 13f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(6)))
+            k.addView(button(L.t("fb_on"), primary = true) { startFootballWizard() }, lp(MATCH, dp(52), top = dp(14)))
+            c.addView(k, lp(MATCH, WRAP, top = dp(16)))
+            return
+        }
         val head = row()
         head.addView(text(L.t("tab_matches"), 24f, bold = true), lp(0, WRAP, 1f))
         head.addView(link(L.t("refresh")) { load() })
@@ -871,23 +882,20 @@ class MainActivity : Activity() {
             c.addView(text(L.t("saver_now"), 12f, Ui.AMBER, bold = true), lp(MATCH, WRAP, top = dp(6)))
         }
 
-        // Last match.
+        // 1.9: today, the whole day (not just matches): data exactly, battery as an estimate.
         val cards = row().apply { gravity = Gravity.TOP }
-        val bytes = prefs.lastBytes
+        val todayKey = SimpleDateFormat("yyyy-MM-dd", Locale.US).format(java.util.Date())
+        val bytes = prefs.daily[todayKey] ?: 0L
         val dataCard = statCard(
-            "down", Ui.BLUE, L.t("data_last"),
-            if (bytes >= 0) String.format(Locale.US, "%.1f", bytes / 1_048_576.0) else L.t("no_data_yet"),
-            if (bytes >= 0) L.t("mb") else "", L.t("exact"), Ui.ACCENT,
+            "down", Ui.BLUE, L.t("data_today"),
+            String.format(Locale.US, "%.1f", bytes / 1_048_576.0),
+            L.t("mb"), L.t("exact"), Ui.ACCENT,
         )
-        val bat = prefs.lastBattery
+        val est = batteryEstimate(prefs.dailyCpu[todayKey] ?: 0L, bytes)
         val batCard = statCard(
-            "bolt", Ui.AMBER, L.t("battery_last"),
-            when {
-                bat == -2 -> "—"
-                bat >= 0 -> "~$bat%"
-                else -> L.t("no_data_yet")
-            },
-            "", if (bat == -2) L.t("charging") else L.t("estimate"), Ui.AMBER,
+            "bolt", Ui.AMBER, L.t("battery_today"),
+            String.format(Locale.US, "~%.1f%%", est),
+            "", L.t("estimate"), Ui.AMBER,
         )
         cards.addView(dataCard, lp(0, WRAP, 1f))
         cards.addView(batCard, lp(0, WRAP, 1f, start = dp(10)))
@@ -936,7 +944,27 @@ class MainActivity : Activity() {
             LiveService.start(this, LiveService.ACTION_REFRESH)
         })
         c.addView(opts, lp(MATCH, WRAP, top = dp(12)))
-        c.addView(text(L.t("battery_note"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(12)))
+        c.addView(text(L.t("battery_note2"), 11f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(12)))
+        c.addView(button(L.t("battery_page")) {
+            try {
+                startActivity(Intent(Intent.ACTION_POWER_USAGE_SUMMARY))
+            } catch (e: Exception) {
+                appDetails()
+            }
+        }, lp(MATCH, WRAP, top = dp(8)))
+    }
+
+    /**
+     * Android tells no app its own share of the battery, so this is worked out: the app's CPU time
+     * (~150 mA while busy) plus its data (~0.8 mAh per MB), over the battery's full charge.
+     */
+    private fun batteryEstimate(cpuMs: Long, bytes: Long): Double {
+        val mAh = cpuMs / 3_600_000.0 * 150.0 + bytes / 1_048_576.0 * 0.8
+        val bm = getSystemService(BATTERY_SERVICE) as android.os.BatteryManager
+        val pct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val charge = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER)
+        val full = if (pct in 5..100 && charge > 0) charge / 1000.0 / (pct / 100.0) else 5000.0
+        return mAh / full.coerceIn(1500.0, 10000.0) * 100.0
     }
 
     private fun statCard(icon: String, iconColor: Int, title: String, value: String, unit: String, tag: String, tagColor: Int): View {
@@ -991,6 +1019,15 @@ class MainActivity : Activity() {
         n.addView(toggleRow(L.t("roomy"), L.t("roomy_d"), prefs.roomyFullscreen) {
             prefs.roomyFullscreen = it
             LiveService.start(this, LiveService.ACTION_REFRESH)
+        })
+        n.addView(divider())
+        n.addView(toggleRow(L.t("football"), L.t("football_d"), prefs.football) {
+            if (it) startFootballWizard() else {
+                prefs.football = false
+                prefs.idleNotch = true
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                draw()
+            }
         })
         n.addView(divider())
         n.addView(toggleRow(L.t("idle"), L.t("idle_d"), prefs.idleNotch) {
@@ -1133,12 +1170,18 @@ class MainActivity : Activity() {
         c.addView(label(L.t("permissions")), lp(MATCH, WRAP, top = dp(16)))
         val pr = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
         pr.addView(navRow(L.t("setup_again"), "") {
+            wizard = null
             onboarding = true
-            step = 1
+            step = stepIds().indexOf("overlay")
             drawOnboarding()
         })
         c.addView(pr, lp(MATCH, WRAP, top = dp(8)))
         c.addView(text(L.t("quick_tile"), 11f, Ui.MUTED), lp(MATCH, WRAP, top = dp(10)))
+
+        // 1.9: updates install by themselves where Android allows; else the notch offers them.
+        val up = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        up.addView(toggleRow(L.t("auto_update"), L.t("auto_update_d"), prefs.autoUpdate) { prefs.autoUpdate = it })
+        c.addView(up, lp(MATCH, WRAP, top = dp(12)))
 
         val v = row()
         v.addView(text(L.f("version", Updater.current(this)), 12f, Ui.MUTED), lp(0, WRAP, 1f))
@@ -1565,7 +1608,7 @@ class MainActivity : Activity() {
                 prefs.idleShow = if (on) prefs.idleShow + key else prefs.idleShow - key
                 if (on && key == "weather") io.execute {
                     try {
-                        Ambient.refreshWeather(prefs.city)
+                        Ambient.refreshWeather(Locator.city(this, prefs))
                     } catch (e: Exception) {
                         // Next time.
                     }
@@ -1573,14 +1616,16 @@ class MainActivity : Activity() {
                 LiveService.start(this, LiveService.ACTION_DEMO, "idle")
             })
         }
-        k.addView(divider())
-        k.addView(navRow(L.t("city"), prefs.city.name) {
-            backTo = "idle_content"
-            searchQuery = ""
-            page = "city"
-            draw()
-        })
         c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+        // 1.9: the weather and the prayers follow the phone (or a chosen district).
+        c.addView(label(L.t("place")), lp(MATCH, WRAP, top = dp(16)))
+        locationCard(c)
+        val wa = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        wa.addView(toggleRow(L.t("w_alerts"), L.t("w_alerts_d"), prefs.weatherAlerts) {
+            prefs.weatherAlerts = it
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+        })
+        c.addView(wa, lp(MATCH, WRAP, top = dp(8)))
         c.addView(label(L.t("weather_anim")), lp(MATCH, WRAP, top = dp(16)))
         c.addView(segmented(listOf("auto" to "wa_auto", "always" to "wa_always", "off" to "wa_off"), prefs.weatherAnim) {
             prefs.weatherAnim = it
@@ -1591,7 +1636,7 @@ class MainActivity : Activity() {
 
         // Try each weather on the notch (5 s), whatever it is outside.
         c.addView(label(L.t("try")), lp(MATCH, WRAP, top = dp(16)))
-        val kinds = listOf("sun", "clouds", "rain", "storm", "snow", "fog", "wind")
+        val kinds = listOf("sun", "clouds", "rain", "storm", "snow", "fog", "wind", "dust", "cold", "hot")
         for (rowItems in kinds.chunked(4)) {
             val r = row()
             rowItems.forEachIndexed { i, k ->
@@ -1602,6 +1647,7 @@ class MainActivity : Activity() {
             for (i in rowItems.size until 4) r.addView(View(this), lp(0, WRAP, 1f, start = dp(6)))
             c.addView(r, lp(MATCH, WRAP, top = dp(8)))
         }
+        c.addView(button(L.t("try_alert")) { LiveService.start(this, LiveService.ACTION_DEMO, "alert") }, lp(MATCH, WRAP, top = dp(8)))
     }
 
     /** City search (Open-Meteo): the weather and prayer times follow it. */
@@ -2093,25 +2139,61 @@ class MainActivity : Activity() {
 
     /* ======================= First run: permissions step by step ======================= */
 
-    // 1.8: a last step lists every permission with ✓/✗, so none is missed.
-    private val steps = 6
+    /*
+     * 1.9: the steps by name. Football first (yes: teams and competitions; no: everything about it
+     * off), then permissions, the notch's look on the real notch, the always-on notch and its
+     * shortcuts, the place, and a check of every permission. Each step can be skipped, and from the
+     * look step on the rest can be left for later.
+     * [wizard]: only some steps (turning football on from the Matches page).
+     */
+    private var wizard: List<String>? = null
+    private val REQ_LOC = 7
+    private val REQ_LOC_BG = 8
 
-    private fun granted(s: Int): Boolean {
+    private fun stepIds(): List<String> = wizard ?: buildList {
+        add("football")
+        if (prefs.football) add("teams")
+        addAll(listOf("overlay", "access", "battery", "notif", "look", "idle", "location", "summary"))
+    }
+
+    private val steps get() = stepIds().size
+    private fun stepId(i: Int = step) = stepIds().getOrElse(i) { "summary" }
+
+    private fun granted(s: Int): Boolean = grantedId(stepId(s))
+
+    private fun grantedId(id: String): Boolean {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
-        return when (s) {
-            1 -> Settings.canDrawOverlays(this)
-            2 -> TapService.instance != null
-            3 -> pm.isIgnoringBatteryOptimizations(packageName)
-            4 -> Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        return when (id) {
+            "overlay" -> Settings.canDrawOverlays(this)
+            "access" -> TapService.instance != null
+            "battery" -> pm.isIgnoringBatteryOptimizations(packageName)
+            "notif" -> Build.VERSION.SDK_INT < 33 || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+            "location" -> !prefs.locAuto || Locator.canBg(this)
             else -> true
         }
     }
 
     private fun finishOnboarding() {
+        val w = wizard
+        wizard = null
         prefs.onboarded = true
         onboarding = false
+        if (w != null) {
+            page = null
+            tab = 1
+        }
         LiveService.start(this)
+        LiveService.start(this, LiveService.ACTION_REFRESH)
         draw()
+    }
+
+    /** Matches page with football off → "turn it on": teams and competitions, then the notch's size. */
+    private fun startFootballWizard() {
+        prefs.football = true
+        wizard = listOf("teams", "look")
+        onboarding = true
+        step = 0
+        drawOnboarding()
     }
 
     private fun drawOnboarding() {
@@ -2119,6 +2201,7 @@ class MainActivity : Activity() {
             finishOnboarding()
             return
         }
+        val id = stepId()
         root.removeAllViews()
         val scroll = ScrollView(this).apply { isFillViewport = true }
         val c = column().apply { setPadding(dp(24), dp(28), dp(24), dp(24)) }
@@ -2127,7 +2210,7 @@ class MainActivity : Activity() {
 
         val head = row()
         head.addView(text(L.f("step_of", step + 1, steps), 13f, Ui.MUTED), lp(0, WRAP, 1f))
-        // "Skip" skips this step only (it used to end the whole setup).
+        // "Skip" skips this step only.
         if (step < steps - 1) head.addView(link(L.t("skip_step")) {
             step++
             drawOnboarding()
@@ -2138,28 +2221,51 @@ class MainActivity : Activity() {
             dots.addView(View(this).apply { background = Ui.rounded(if (i <= step) Ui.ACCENT else Ui.LINE, dp(2).toFloat()) }, lp(0, dp(4), 1f, start = if (i > 0) dp(6) else 0))
         }
         c.addView(dots, lp(MATCH, WRAP, top = dp(8)))
+        // Said on every step: nothing here is final.
+        c.addView(text(L.t("ob_change_later"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
 
-        val (title, body) = when (step) {
-            0 -> "ob1_t" to "ob1_d"
-            1 -> "ob2_t" to "ob2_d"
-            2 -> "ob3_t" to "ob3_d"
-            3 -> "ob4_t" to "ob4_d"
-            4 -> "ob5_t" to "ob5_d"
+        val (title, body) = when (id) {
+            "football" -> "ob1_t" to "ob_fb_d"
+            "teams" -> "ob_teams_t" to "ob_teams_d"
+            "overlay" -> "ob2_t" to "ob2_d"
+            "access" -> "ob3_t" to "ob3_d"
+            "battery" -> "ob4_t" to "ob4_d"
+            "notif" -> "ob5_t" to "ob5_d"
+            "look" -> "ob_look_t" to "ob_look_d"
+            "idle" -> "ob_idle_t" to "ob_idle_d"
+            "location" -> "ob_loc_t" to "ob_loc_d"
             else -> "ob6_t" to "ob6_d"
         }
-        if (step in 1..2) c.addView(phoneArt(), lp(dp(200), dp(170), top = dp(22)).apply { gravity = Gravity.CENTER_HORIZONTAL })
-        c.addView(text(L.t(title), 24f, bold = true).apply { setLineSpacing(0f, 1.2f) }, lp(MATCH, WRAP, top = dp(22)))
+        if (id == "overlay" || id == "access") c.addView(phoneArt(), lp(dp(200), dp(170), top = dp(22)).apply { gravity = Gravity.CENTER_HORIZONTAL })
+        c.addView(text(L.t(title), 24f, bold = true).apply { setLineSpacing(0f, 1.2f) }, lp(MATCH, WRAP, top = dp(18)))
         c.addView(text(L.t(body), 15f, Ui.MUTED).apply { setLineSpacing(0f, 1.3f) }, lp(MATCH, WRAP, top = dp(10)))
 
         var action: (() -> Unit)? = null
-        when (step) {
-            0 -> {
+        var mainButton = true
+        when (id) {
+            "football" -> {
                 c.addView(label(L.t("language")), lp(MATCH, WRAP, top = dp(20)))
                 c.addView(segmented(listOf("ar" to "_العربية", "en" to "_English", "system" to "lang_system"), prefs.lang) {
                     prefs.lang = it
                     L.load(this)
                     recreate()
                 }, lp(MATCH, WRAP, top = dp(8)))
+                // Two big answers instead of a small "skip" link.
+                c.addView(button(L.t("fb_yes"), primary = true) {
+                    prefs.football = true
+                    step++
+                    drawOnboarding()
+                }, lp(MATCH, dp(58), top = dp(24)))
+                c.addView(button(L.t("fb_no")) {
+                    prefs.football = false
+                    prefs.idleNotch = true
+                    step++
+                    drawOnboarding()
+                }, lp(MATCH, dp(58), top = dp(10)))
+                c.addView(text(L.t("fb_no_d"), 12f, Ui.MUTED), lp(MATCH, WRAP, top = dp(8)))
+                mainButton = false
+            }
+            "teams" -> {
                 c.addView(label(L.t("ob_teams")), lp(MATCH, WRAP, top = dp(16)))
                 teamsEditor(c)
                 c.addView(label(L.t("comps")), lp(MATCH, WRAP, top = dp(16)))
@@ -2169,74 +2275,98 @@ class MainActivity : Activity() {
                     draw()
                 })
                 c.addView(ck, lp(MATCH, WRAP, top = dp(8)))
-                c.addView(link(L.t("skip_football")) {
-                    // Not into football: no teams, no competitions; the notch is just shortcuts.
-                    prefs.teams = emptyList()
-                    prefs.comps = emptyList()
-                    prefs.idleNotch = true
-                    step++
-                    drawOnboarding()
-                }.apply { setTextColor(Ui.MUTED) }, lp(WRAP, WRAP, top = dp(8)))
             }
-            1 -> action = { openOverlay() }
-            2 -> {
+            "overlay" -> action = { openOverlay() }
+            "access" -> {
                 // Android 13+ blocks accessibility for apps installed outside the store until the user
-                // allows "restricted settings": the step most people can't find (Omar, 1.8).
+                // allows "restricted settings": the step most people can't find (1.8).
                 if (restrictedLikely()) c.addView(restrictedGuide(), lp(MATCH, WRAP, top = dp(14)))
                 else c.addView(hint(L.t("ob3_h")), lp(MATCH, WRAP, top = dp(14)))
                 action = { openAccessibility() }
             }
-            3 -> {
+            "battery" -> batterySteps(c)
+            "notif" -> action = {
+                if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            }
+            "look" -> {
+                // On the real notch (it shows a sample while these change).
+                c.addView(label(L.t("pill_mode")), lp(MATCH, WRAP, top = dp(16)))
+                c.addView(segmented(listOf("auto" to "pill_auto", "yes" to "pill_yes", "no" to "pill_no"), prefs.pillMode) {
+                    prefs.pillMode = it
+                    LiveService.start(this, LiveService.ACTION_REFRESH)
+                    drawOnboarding()
+                }, lp(MATCH, WRAP, top = dp(8)))
+                c.addView(label(L.t("tpl")), lp(MATCH, WRAP, top = dp(16)))
+                c.addView(segmented(listOf("auto" to "tpl_auto", "A" to "_A", "B" to "_B", "C" to "_C", "D" to "_D"), prefs.template) {
+                    prefs.template = it
+                    LiveService.start(this, LiveService.ACTION_REFRESH)
+                    LiveService.start(this, LiveService.ACTION_DEMO, if (prefs.football) "preview" else "idle")
+                    drawOnboarding()
+                }, lp(MATCH, WRAP, top = dp(8)))
+                c.addView(text(L.t("tpl_d"), 11f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(6)))
+                val k = card()
+                if (prefs.football) {
+                    k.addView(slider(L.t("size"), 50, 140, prefs.scale, 100) { prefs.scale = it })
+                    k.addView(slider(L.t("width_pct"), 40, 130, prefs.widthPct, 100) { prefs.widthPct = it }, lp(MATCH, WRAP, top = dp(8)))
+                    k.addView(slider(L.t("up_down"), -20, 20, prefs.offsetY, 0) { prefs.offsetY = it }, lp(MATCH, WRAP, top = dp(8)))
+                } else {
+                    k.addView(slider(L.t("idle_scale"), 50, 150, prefs.idleScale, 90, preview = "idle") { prefs.idleScale = it })
+                    k.addView(slider(L.t("idle_size"), 50, 150, prefs.idleSize, 100, preview = "idle") { prefs.idleSize = it }, lp(MATCH, WRAP, top = dp(8)))
+                    k.addView(slider(L.t("up_down"), -20, 20, prefs.idleOffsetY, 0, preview = "idle") { prefs.idleOffsetY = it }, lp(MATCH, WRAP, top = dp(8)))
+                }
+                c.addView(k, lp(MATCH, WRAP, top = dp(12)))
+                if (!Settings.canDrawOverlays(this)) c.addView(hint(L.t("ob_look_noperm")), lp(MATCH, WRAP, top = dp(12)))
+            }
+            "idle" -> {
                 val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
-                k.addView(navRow(L.t("battery_step"), if (granted(3)) L.t("granted") else "") {
-                    try {
-                        startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
-                    } catch (e: Exception) {
-                        appDetails()
-                    }
+                k.addView(toggleRow(L.t("idle"), L.t("idle_d"), prefs.idleNotch) {
+                    prefs.idleNotch = it
+                    LiveService.start(this, LiveService.ACTION_REFRESH)
+                    drawOnboarding()
                 })
-                k.addView(divider())
-                k.addView(navRow(L.t("autostart_step"), "") {
-                    try {
-                        startActivity(Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")))
-                    } catch (e: Exception) {
-                        appDetails()
-                    }
-                })
-                k.addView(divider())
-                k.addView(navRow(L.t("popups_step"), "") {
-                    try {
-                        startActivity(Intent("miui.intent.action.APP_PERM_EDITOR").putExtra("extra_pkgname", packageName))
-                    } catch (e: Exception) {
-                        appDetails()
-                    }
-                })
+                if (prefs.idleNotch) {
+                    k.addView(divider())
+                    k.addView(navRow(L.t("idle_content"), "") {
+                        page = "idle_content"
+                        draw()
+                    })
+                    k.addView(divider())
+                    k.addView(navRow(L.t("slots"), L.f("slots_n", Shortcuts.load(this).count { it != null })) {
+                        page = "slots"
+                        draw()
+                    })
+                }
                 c.addView(k, lp(MATCH, WRAP, top = dp(16)))
             }
-            4 -> action = {
-                if (Build.VERSION.SDK_INT >= 33) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            "location" -> {
+                locationCard(c)
+                if (prefs.locAuto && !Locator.canBg(this)) action = { askLocation() }
             }
             else -> {
                 // The summary: each permission with ✓/✗; a tap goes back to its step.
                 val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
-                listOf(1 to "perm_overlay", 2 to "perm_access", 3 to "perm_battery", 4 to "perm_notif").forEachIndexed { i, (st, key) ->
-                    if (i > 0) k.addView(divider())
-                    k.addView(navRow(L.t(key), if (granted(st)) "✓" else "✗") {
-                        step = st
-                        drawOnboarding()
-                    })
-                }
+                val ids = stepIds()
+                listOf("overlay" to "perm_overlay", "access" to "perm_access", "battery" to "perm_battery", "notif" to "perm_notif", "location" to "perm_location")
+                    .filter { it.first in ids }.forEachIndexed { i, (sid, key) ->
+                        if (i > 0) k.addView(divider())
+                        k.addView(navRow(L.t(key), if (grantedId(sid)) "✓" else "✗") {
+                            step = ids.indexOf(sid)
+                            drawOnboarding()
+                        })
+                    }
                 c.addView(k, lp(MATCH, WRAP, top = dp(16)))
-                if ((1..4).any { !granted(it) }) c.addView(hint(L.t("perm_later")), lp(MATCH, WRAP, top = dp(12)))
+                if (ids.any { !grantedId(it) }) c.addView(hint(L.t("perm_later")), lp(MATCH, WRAP, top = dp(12)))
             }
         }
-        if (step == 1 || step == 2) c.addView(hint(L.t("ob_hint")), lp(MATCH, WRAP, top = dp(14)))
+        if (id == "overlay" || id == "access") c.addView(hint(L.t("ob_hint")), lp(MATCH, WRAP, top = dp(14)))
 
         c.addView(View(this), lp(MATCH, 0, 1f))
         val done = granted(step)
         val last = step == steps - 1
         val act = action
-        if (act != null && !done) {
+        if (!mainButton) {
+            // The step's own buttons move on.
+        } else if (act != null && !done) {
             c.addView(button(L.t("open_setting"), primary = true) { act() }, lp(MATCH, dp(54), top = dp(20)))
             c.addView(button(L.t("next_step")) {
                 step++
@@ -2248,14 +2378,109 @@ class MainActivity : Activity() {
                 drawOnboarding()
             }, lp(MATCH, dp(54), top = dp(20)))
         }
+        // From the look step on, the rest can wait (all of it is in Settings).
+        if (wizard == null && !last && step >= stepIds().indexOf("look")) {
+            c.addView(link(L.t("finish_later")) { finishOnboarding() }.apply {
+                setTextColor(Ui.MUTED)
+                gravity = Gravity.CENTER
+            }, lp(MATCH, WRAP, top = dp(12)))
+        }
+    }
+
+    /** Battery: no limits, plus Xiaomi's autostart and pop-up pages. */
+    private fun batterySteps(c: LinearLayout) {
+        val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        k.addView(navRow(L.t("battery_step"), if (grantedId("battery")) L.t("granted") else "") {
+            try {
+                startActivity(Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+                appDetails()
+            }
+        })
+        k.addView(divider())
+        k.addView(navRow(L.t("autostart_step"), "") {
+            try {
+                startActivity(Intent().setComponent(ComponentName("com.miui.securitycenter", "com.miui.permcenter.autostart.AutoStartManagementActivity")))
+            } catch (e: Exception) {
+                appDetails()
+            }
+        })
+        k.addView(divider())
+        k.addView(navRow(L.t("popups_step"), "") {
+            try {
+                startActivity(Intent("miui.intent.action.APP_PERM_EDITOR").putExtra("extra_pkgname", packageName))
+            } catch (e: Exception) {
+                appDetails()
+            }
+        })
+        c.addView(k, lp(MATCH, WRAP, top = dp(16)))
+    }
+
+    /* ----- 1.9: the place (automatic, or chosen) ----- */
+
+    /** Location permission: while in use first, then "Allow all the time" (its own page on Android 11+). */
+    private fun askLocation() {
+        if (!Locator.canFg(this)) {
+            requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), REQ_LOC)
+        } else if (!Locator.canBg(this) && Build.VERSION.SDK_INT >= 29) {
+            AlertDialog.Builder(this)
+                .setTitle(L.t("loc_bg_t"))
+                .setMessage(L.t("loc_bg_d"))
+                .setPositiveButton(L.t("open_setting")) { _, _ -> requestPermissions(arrayOf(Manifest.permission.ACCESS_BACKGROUND_LOCATION), REQ_LOC_BG) }
+                .setNegativeButton(L.t("cancel"), null)
+                .show()
+        }
+    }
+
+    private fun locationCard(c: LinearLayout) {
+        val k = card(0).apply { setPadding(dp(14), dp(2), dp(14), dp(2)) }
+        val auto = prefs.autoCity
+        val sub = when {
+            !prefs.locAuto -> L.t("loc_off")
+            !Locator.canFg(this) -> L.t("loc_need")
+            !Locator.canBg(this) -> L.t("loc_need_bg")
+            auto != null && auto.name.isNotEmpty() -> L.f("loc_here", auto.name)
+            else -> L.t("loc_finding")
+        }
+        k.addView(toggleRow(L.t("loc_auto"), sub, prefs.locAuto) {
+            prefs.locAuto = it
+            if (it) askLocation()
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            if (onboarding) drawOnboarding() else draw()
+        })
+        if (prefs.locAuto && Locator.canFg(this)) {
+            k.addView(divider())
+            k.addView(navRow(L.t("loc_now"), "") {
+                Locator.refresh(this, prefs)
+                LiveService.start(this, LiveService.ACTION_REFRESH)
+                toast(L.t("loc_finding"))
+                main.postDelayed({ if (onboarding) drawOnboarding() else draw() }, 2500)
+            })
+        }
+        k.addView(divider())
+        k.addView(navRow(L.t(if (prefs.locAuto) "loc_fallback" else "city"), prefs.city.name) {
+            backTo = page
+            searchQuery = ""
+            page = "city"
+            draw()
+        })
+        c.addView(k, lp(MATCH, WRAP, top = dp(16)))
+        if (prefs.locAuto) c.addView(text(L.t("loc_note"), 11f, Ui.MUTED).apply { setLineSpacing(0f, 1.25f) }, lp(MATCH, WRAP, top = dp(6)))
     }
 
     override fun onRequestPermissionsResult(code: Int, perms: Array<out String>, results: IntArray) {
         super.onRequestPermissionsResult(code, perms, results)
-        if (onboarding && step == 4) {
-            step++
-            drawOnboarding()
+        if (code == REQ_LOC && Locator.canFg(this)) {
+            Locator.refresh(this, prefs)
+            LiveService.start(this, LiveService.ACTION_REFRESH)
+            // Straight on to "all the time".
+            if (!Locator.canBg(this)) askLocation()
         }
+        if (code == REQ_LOC_BG) LiveService.start(this, LiveService.ACTION_REFRESH)
+        if (onboarding && stepId() == "notif" && code == 1) {
+            step++
+        }
+        if (onboarding) drawOnboarding() else draw()
     }
 
     private fun hint(s: String): View {

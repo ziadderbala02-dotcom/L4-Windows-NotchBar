@@ -156,6 +156,7 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         idleText: String = "", idleTemp: String = "", weather: String = "", weatherUntil: Long = 0L, weatherAlways: Boolean = false,
         weatherGlyph: String = "", weatherWord: String = "", act: Live? = null, actIcon: android.graphics.Bitmap? = null,
         ringAct: Live? = null, card: Live? = null, cardIcon: android.graphics.Bitmap? = null,
+        idleTone: Int = 0, idleAlert: Boolean = false,
     ) {
         if (match == null) {
             hide()
@@ -180,6 +181,8 @@ class Island(private val ctx: Context, private val prefs: Prefs, private val ges
         val grew = v.idleText != idleText || v.idleTemp != idleTemp
         v.idleText = idleText
         v.idleTemp = idleTemp
+        v.idleTone = idleTone
+        v.idleAlert = idleAlert
         v.weather = weather
         v.weatherUntil = weatherUntil
         v.weatherAlways = weatherAlways
