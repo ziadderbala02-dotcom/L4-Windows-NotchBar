@@ -33,6 +33,10 @@ object SystemPill {
     @Volatile
     var ongoing: Set<String> = emptySet()
 
+    /** Packages with a media notification (playing or paused), from NotifListener (1.9.2). */
+    @Volatile
+    var mediaNotif: Set<String> = emptySet()
+
     /** Every package with an ongoing notification, and since when (to learn from the user's own swipes). */
     @Volatile
     var allOngoing: Map<String, Long> = emptyMap()
@@ -84,28 +88,12 @@ object SystemPill {
         return false
     }
 
-    /** Media playing through a proper session (Spotify, YouTube…): pills show those. */
-    private fun mediaPlaying(ctx: Context): Boolean = try {
-        val msm = ctx.getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
-        msm.getActiveSessions(ComponentName(ctx, NotifListener::class.java))
-            .any { it.playbackState?.state == PlaybackState.STATE_PLAYING && it.packageName != ctx.packageName }
-    } catch (e: Exception) {
-        false
-    }
-
-    private var mediaAt = 0L
-    private var mediaCache = false
-
     /** True when the phone's pill is probably showing. */
     fun busy(ctx: Context, audio: AudioManager, inCall: Boolean): Boolean {
         if (!pillOn(ctx)) return false
         val now = System.currentTimeMillis()
         if (inCall || now < chargingUntil) return true
-        if (!listenerOn(ctx)) return audio.isMusicActive
-        if (now - mediaAt > 2_000L) {
-            mediaAt = now
-            mediaCache = mediaPlaying(ctx)
-        }
+        if (!listenerOn(ctx) || !NotifListener.connected) return audio.isMusicActive
         return reason(ctx, audio, inCall).isNotEmpty()
     }
 
@@ -120,12 +108,11 @@ object SystemPill {
         if (inCall) return L.t("why_call")
         if (now < chargingUntil) return L.t("why_charge")
         val sound = audio.isMusicActive
-        if (!listenerOn(ctx)) return if (sound) L.t("why_sound") else ""
-        if (now - mediaAt > 2_000L) {
-            mediaAt = now
-            mediaCache = mediaPlaying(ctx)
-        }
-        if (mediaCache && sound) return L.t("why_music")
+        if (!listenerOn(ctx) || !NotifListener.connected) return if (sound) L.t("why_sound") else ""
+        // 1.9.2: the circle follows the media notification like the phone's island does: it stays
+        // while a song or video is paused, and goes when the app closes it. No notification
+        // (a Facebook feed video), no circle.
+        mediaNotif.firstOrNull()?.let { return L.f("why_media", label(ctx, it)) }
         ongoing.firstOrNull()?.let { return L.f("why_app", label(ctx, it)) }
         // Apps the user taught us: they swiped the notch away twice while it was there.
         val learned = Prefs(ctx).learnedPill

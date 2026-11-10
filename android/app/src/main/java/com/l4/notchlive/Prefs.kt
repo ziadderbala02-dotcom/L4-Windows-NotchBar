@@ -276,6 +276,11 @@ class Prefs(ctx: Context) {
     /** The day's data without app updates. */
     fun usedOn(day: String): Long = ((daily[day] ?: 0L) - (dailyUpd[day] ?: 0L)).coerceAtLeast(0L)
 
+    /** Notification access has worked here before (so losing it is worth a warning). */
+    var listenerSeen: Boolean
+        get() = p.getBoolean("listenerSeen", false)
+        set(v) = p.edit().putBoolean("listenerSeen", v).apply()
+
     /** 1.9: install updates by themselves when Android allows it. */
     var autoUpdate: Boolean
         get() = p.getBoolean("autoUpdate", true)

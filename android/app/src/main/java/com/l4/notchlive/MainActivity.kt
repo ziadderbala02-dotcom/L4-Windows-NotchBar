@@ -365,6 +365,22 @@ class MainActivity : Activity() {
             box.addView(View(this), lp(MATCH, dp(12)))
         }
 
+        // 1.9.2: notification access off: no calls, music or island circle. Say so with the way back.
+        if (prefs.liveActs && !SystemPill.listenerOn(this)) {
+            val w = card(14).apply { background = Ui.rounded(Ui.AMBER_SOFT, dp(18).toFloat(), Ui.AMBER, dp(1)) }
+            w.addView(text(L.t("notif_off"), 14f, Ui.AMBER, bold = true))
+            w.addView(text(L.t("notif_off_d"), 12f, Ui.TEXT), lp(MATCH, WRAP, top = dp(4)))
+            w.addView(button(L.t("open_setting"), primary = true) {
+                try {
+                    startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+                } catch (e: Exception) {
+                    appDetails()
+                }
+            }, lp(MATCH, WRAP, top = dp(10)))
+            box.addView(w, lp(MATCH, WRAP))
+            box.addView(View(this), lp(MATCH, dp(12)))
+        }
+
         // 1.9.1: not into football: Home is about the day instead (each card only if the
         // always-on notch shows that thing, so no prayers for someone who turned them off).
         if (!prefs.football) {

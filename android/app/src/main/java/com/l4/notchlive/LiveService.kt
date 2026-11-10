@@ -49,6 +49,7 @@ class LiveService : Service(), IslandView.Gestures {
         /** Events that play inside the notch first (a tap opens them big). */
         private const val ACCESS_URL = "notch:access"
         private const val UPDATE_URL = "notch:update"
+        private const val NOTIF_URL = "notch:notifaccess"
         private val INLINE_KINDS = setOf("goal", "red", "var", "pen", "whistle", "lineups", "notice", "news")
         /** The always-on notch and the recording pill. */
         private const val IDLE_ID = -5
@@ -290,6 +291,16 @@ class LiveService : Service(), IslandView.Gestures {
                     startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
             } ?: startActivity(Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            render()
+            return
+        }
+        current?.takeIf { it.url == NOTIF_URL }?.let {
+            current = null
+            try {
+                startActivity(Intent(android.provider.Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+            } catch (e: Exception) {
+                // No settings page.
+            }
             render()
             return
         }
@@ -1399,7 +1410,35 @@ class LiveService : Service(), IslandView.Gestures {
     private var warnedAt = 0L
     private val warnTick = Runnable { render() }
 
+    private var rebindAt = 0L
+    private var notifWarnedAt = 0L
+
+    /**
+     * 1.9.2: notification access on but the listener not bound (HyperOS after an update): calls,
+     * music and the island's circle all stop. Ask Android to bind it again, once a minute. Access
+     * taken away after it worked: say so in the notch every 15 minutes (a tap opens the page).
+     */
+    private fun watchListener(now: Long) {
+        if (!prefs.liveActs) return
+        val on = SystemPill.listenerOn(this)
+        if (on && !NotifListener.connected && now - rebindAt > 60_000L) {
+            rebindAt = now
+            try {
+                android.service.notification.NotificationListenerService.requestRebind(android.content.ComponentName(this, NotifListener::class.java))
+            } catch (e: Exception) {
+                // Try again in a minute.
+            }
+        }
+        if (!on && prefs.listenerSeen && prefs.onboarded && current == null && queue.isEmpty() &&
+            now - notifWarnedAt > 15 * 60_000L && liveNow(matches).none { it.phase != "break" }
+        ) {
+            notifWarnedAt = now
+            showOverlay(Burst("news", L.t("notif_warn"), "", true, 0xFFF59E0B.toInt(), NEWS_ID, url = NOTIF_URL), 5_000L)
+        }
+    }
+
     private fun watchTaps() {
+        watchListener(System.currentTimeMillis())
         val on = TapService.instance != null
         if (on) prefs.tapsSeen = true
         // Taps were working before and now they're off: say so in the notch itself, like a news item

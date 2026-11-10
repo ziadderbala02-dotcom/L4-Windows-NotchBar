@@ -16,6 +16,10 @@ import java.io.File
 class NotifListener : NotificationListenerService() {
     companion object {
         fun logFile(ctx: Context) = File(ctx.filesDir, "inspector.txt")
+
+        /** Bound and receiving (1.9.2): access can be on while HyperOS hasn't re-bound us after an update. */
+        @Volatile
+        var connected = false
         private const val MAX_LOG = 400_000L
     }
 
@@ -27,7 +31,21 @@ class NotifListener : NotificationListenerService() {
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) = scan()
 
-    override fun onListenerConnected() = scan()
+    override fun onListenerConnected() {
+        connected = true
+        Prefs(this).listenerSeen = true
+        scan()
+    }
+
+    override fun onListenerDisconnected() {
+        connected = false
+        // Ask to be bound again (the service also asks when it notices).
+        try {
+            requestRebind(android.content.ComponentName(this, NotifListener::class.java))
+        } catch (e: Exception) {
+            // Not allowed now.
+        }
+    }
 
     /** Which ongoing notifications would show in the phone's own pill (see SystemPill). */
     private fun scan() {
@@ -36,6 +54,13 @@ class NotifListener : NotificationListenerService() {
             val now = System.currentTimeMillis()
             val pill = HashSet<String>()
             val ongoing = HashMap<String, Long>()
+            // 1.9.2: apps with a media notification, playing or paused: that's what the phone's own
+            // island shows (a Facebook feed video has no such notification, so it isn't there).
+            val media = HashSet<String>()
+            for (sbn in all) {
+                if (sbn.packageName != packageName && sbn.notification.extras.containsKey(Notification.EXTRA_MEDIA_SESSION)) media += sbn.packageName
+            }
+            SystemPill.mediaNotif = media
             for (sbn in all) {
                 if (sbn.packageName == packageName || !sbn.isOngoing) continue
                 ongoing[sbn.packageName] = SystemPill.allOngoing[sbn.packageName] ?: now
